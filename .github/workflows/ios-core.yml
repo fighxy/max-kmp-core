@@ -39,14 +39,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
       # AGP 8.7 (libs.versions.toml) needs the Android SDK even though this job only builds the
-      # shared KMP `:core` module; the androidTarget() in core/build.gradle.kts pulls the plugin in.
-      - uses: android-actions/setup-android@v3
+      # shared KMP `:core` module. GitHub macOS runners ship a preinstalled SDK (ANDROID_HOME),
+      # so no setup action is needed.
 
       # Wrapper pins Gradle 8.10.2 (compatible with AGP 8.7.3 and Kotlin 2.1.10).
       - uses: gradle/actions/setup-gradle@v4
