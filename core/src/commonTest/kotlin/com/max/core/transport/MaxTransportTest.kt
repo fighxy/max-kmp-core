@@ -3,14 +3,18 @@
 package com.max.core.transport
 
 import com.max.core.protocol.CmdType
+import com.max.core.protocol.CompressionFormat
 import com.max.core.protocol.Opcode
 import com.max.core.protocol.PROTOCOL_VERSION
 import com.max.core.protocol.PacketHeader
+import com.max.core.protocol.decodePacket
 import com.max.core.protocol.decodePayloadPacket
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
@@ -162,6 +166,61 @@ class MaxTransportTest {
         assertEquals(0, p.cmd)
         assertEquals(mapOf("chatId" to 5, "message" to mapOf("text" to "hi")), p.payload)
         assertContentEquals(orphan + notif, chunk.await())
+    }
+
+    @Test
+    fun compressedPushesAndRepliesAreDecompressed() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val t = transport(factory)
+        t.connect()
+        val conn = factory.lastConnection!!
+
+        val pushed = async { t.pushes.take(2).toList() }
+        runCurrent()
+        val text = "compressed ".repeat(20)
+        val lz4Push = compressedPacket(CmdType.PUSH, 0, Opcode.NOTIF_MESSAGE.value, mapOf("chatId" to 5, "text" to text), CompressionFormat.LZ4_BLOCK)
+        val zstdPush = compressedPacket(CmdType.PUSH, 0, Opcode.NOTIF_TYPING.value, mapOf("chatId" to 6), CompressionFormat.ZSTD)
+        assertTrue(decodePacket(lz4Push).first.compressionFlag in 2..0x7F)
+        // a push with a corrupt compressed body is skipped, the following ones still arrive
+        val corrupt = byteArrayOf(10, 0, 0, 0, 0, 128.toByte(), 3, 0, 0, 3, 0x01, 0x00, 0x00)
+        conn.feed(corrupt + lz4Push + zstdPush)
+        val (p1, p2) = pushed.await()
+        assertEquals(Opcode.NOTIF_MESSAGE.value, p1.opcode)
+        assertEquals(mapOf("chatId" to 5, "text" to text), p1.payload)
+        assertEquals(Opcode.NOTIF_TYPING.value, p2.opcode)
+        assertEquals(mapOf("chatId" to 6), p2.payload)
+
+        val reply = async { t.request(Opcode.CHATS_LIST, null) }
+        val seq = decode(conn.takeWritten()!!).first.seq
+        val chats = List(30) { mapOf("id" to it, "title" to "chat $it") }
+        conn.feed(compressedPacket(CmdType.OK, seq, Opcode.CHATS_LIST.value, mapOf("chats" to chats), CompressionFormat.LZ4_BLOCK))
+        assertEquals(mapOf("chats" to chats), reply.await().payload)
+    }
+
+    @Test
+    fun outgoingRequestsAreLz4CompressedLikeKolibri() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val t = transport(factory)
+        t.connect()
+        val conn = factory.lastConnection!!
+
+        val big = mapOf("text" to "hello world ".repeat(50))
+        val r1 = async { t.request(Opcode.MSG_SEND, big) }
+        val frame = conn.takeWritten()!!
+        val (rawHeader, body) = decodePacket(frame)
+        assertTrue(rawHeader.compressed)
+        val rawSize = com.max.core.protocol.DefaultMessagePackCodec.encode(big).size
+        assertEquals(rawSize / body.size + 1, rawHeader.compressionFlag)
+        assertEquals(big, decode(frame).second)
+        conn.feed(ok(rawHeader.seq, Opcode.MSG_SEND.value))
+        r1.await()
+
+        // below COMPRESSION_THRESHOLD (32 B): uncompressed
+        val r2 = async { t.request(Opcode.PING, mapOf("interactive" to true)) }
+        val small = decodePacket(conn.takeWritten()!!).first
+        assertEquals(0, small.compressionFlag)
+        conn.feed(ok(small.seq, Opcode.PING.value))
+        r2.await()
     }
 
     @Test

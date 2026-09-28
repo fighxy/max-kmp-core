@@ -293,7 +293,8 @@ class MaxTransport(
                 onFailure = { waiter.completeExceptionally(TransportException("cannot decode reply seq ${header.seq}", it)) },
             )
         } else {
-            // undecodable pushes (e.g. compressed while Compression is a stub) are skipped, like kolibri
+            // compressed pushes are decompressed by decodePayloadPacket (LZ4 block / LZ4 frame / Zstd);
+            // undecodable ones (unknown flag, corrupt body, bad MessagePack) are skipped, like kolibri
             decoded.onSuccess { (h, payload) -> _pushes.tryEmit(TransportPacket(h, payload)) }
         }
     }
@@ -324,9 +325,12 @@ class MaxTransport(
         }
     }
 
-    /** Frames a request. Outgoing bodies are not compressed (Compression is still a stub). */
+    /**
+     * Frames a request like kolibri: bodies of [com.max.core.protocol.COMPRESSION_THRESHOLD] bytes
+     * or more go out as LZ4 block with the ratio-hint flag, unless compression would not shrink them.
+     */
     private fun encodeRequest(seq: Int, opcode: Int, body: ByteArray): ByteArray =
-        encodePacketCompressed(PROTOCOL_VERSION, CmdType.REQUEST.value, seq, opcode.toShort(), body, CompressionFormat.NONE)
+        encodePacketCompressed(PROTOCOL_VERSION, CmdType.REQUEST.value, seq, opcode.toShort(), body, CompressionFormat.LZ4_BLOCK)
 
     /** Same body rule as [com.max.core.protocol.encodePayloadPacket]: `null` gives an empty body. */
     private fun encodeBody(payload: Any?): ByteArray = if (payload == null) ByteArray(0) else codec.encode(payload)
