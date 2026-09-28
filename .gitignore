@@ -1,0 +1,15 @@
+.gradle/
+build/
+**/build/
+.idea/
+*.iml
+.DS_Store
+local.properties
+*.xcworkspace
+*.xcodeproj
+DerivedData/
+.kotlin/
+captures/
+*.apk
+*.aab
+*.ipa

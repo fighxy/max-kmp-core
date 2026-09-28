@@ -1,0 +1,5 @@
+# TODO: C ABI headers for iOS cinterop
+# headers = maxc.h
+# staticLibraries = libmaxc.a
+# libraryPaths = path/to/lib
+package = ru.max.ios.cinterop
