@@ -47,6 +47,18 @@ data class MaxState(
     fun typingUsers(chatId: Long, now: Long, ttlMs: Long = DEFAULT_TYPING_TTL_MS): Set<Long> =
         typing[chatId].orEmpty().filterValues { now - it <= ttlMs }.keys
 
+    /**
+     * Chats whose loaded messages end before the chat's `lastMessage` (e.g. after a reconnect the
+     * `LOGIN` reply moved `lastMessage` on, but the messages in between were never pushed). Only
+     * chats with loaded messages are listed: their history should be re-fetched
+     * (`MessagesApi.getChatHistory` → `MaxStore.putHistory`).
+     */
+    fun historyGaps(): List<Long> = chats.values.filter { chat ->
+        val last = chat.lastMessage ?: return@filter false
+        val local = messages[chat.id]
+        !local.isNullOrEmpty() && local.none { it.id == last.id } && last.time >= local.last().time
+    }.map { it.id }
+
     companion object {
         const val DEFAULT_TYPING_TTL_MS: Long = 6_000
         private fun activity(c: Chat): Long = maxOf(c.lastEventTime, c.lastMessage?.time ?: 0)

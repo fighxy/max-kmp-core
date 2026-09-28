@@ -57,6 +57,18 @@ class MaxStoreTest {
     }
 
     @Test
+    fun historyGapsAfterRelogin() {
+        val store = loggedIn()
+        assertEquals(emptyList(), store.state.value.historyGaps())
+        // a re-login reports a newer lastMessage for chat 1 (7 was never pushed) and chat 2 (no loaded messages)
+        store.applyLogin(LoginResult.from(mapOf("chats" to listOf(chat(1, 300, 2, msg(7, 300)), chat(2, 310, 1, msg(9, 310, chatId = 2))))))
+        assertEquals(listOf(1L), store.state.value.historyGaps())
+        // fetching the history closes the gap
+        store.putHistory(1, ChatHistory(listOf(msg(6, 250), msg(7, 300)).map { MaxMessage.from(it, 1)!! }, null, emptyMap<Any?, Any?>()))
+        assertEquals(emptyList(), store.state.value.historyGaps())
+    }
+
+    @Test
     fun newMessageUpdatesChatAndCounters() {
         val st = loggedIn()
         st.apply(push(129, mapOf("chatId" to 1, "userId" to 20)))
