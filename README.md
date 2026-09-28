@@ -19,7 +19,7 @@
 
 - Kotlin Multiplatform
 - kotlinx-coroutines
-- Ktor client engines (HTTP-слой, пока не используются); транспорт — raw TLS через `java.net.Socket`/`javax.net.ssl` (JVM/Android), iOS TLS — TODO
+- Ktor client engines (HTTP-слой, пока не используются); транспорт — raw TLS через `java.net.Socket`/`javax.net.ssl` (JVM/Android) и Apple Network.framework (iOS; прокси — iOS 17+)
 - kotlinx-serialization (JSON-хелперы); MessagePack — собственный кодек на чистом Kotlin (`DefaultMessagePackCodec`)
 
 ## Модули

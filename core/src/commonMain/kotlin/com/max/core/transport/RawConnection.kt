@@ -33,9 +33,10 @@ data class TlsOptions(
 )
 
 /**
- * Opens a TLS connection to [host]:[port]. With a [proxy] the factory must first open plain TCP to
- * the proxy, run [performProxyHandshake] over it and only then start TLS with [host] as the
- * server name, so that TLS runs end-to-end through the tunnel.
+ * Opens a TLS connection to [host]:[port]. With a [proxy], TLS must run end-to-end to [host]
+ * (server name and certificate check use [host]) through the tunnel: the JVM/Android factory
+ * opens plain TCP to the proxy, runs [performProxyHandshake] over it and then starts TLS; the iOS
+ * factory lets Network.framework build the tunnel (iOS 17+, see [planNativeProxy]).
  */
 fun interface ConnectionFactory {
     suspend fun open(host: String, port: Int, tls: TlsOptions, proxy: ProxyConfig?): RawConnection
@@ -44,7 +45,7 @@ fun interface ConnectionFactory {
 /**
  * The platform connection factory:
  * - JVM and Android: `java.net.Socket` + `javax.net.ssl` (`JavaSocketConnectionFactory`);
- * - iOS: not implemented yet, throws [NotImplementedError] (see the iOS actual).
+ * - iOS: Apple Network.framework (`NetworkFrameworkConnectionFactory`).
  */
 expect fun defaultConnectionFactory(): ConnectionFactory
 

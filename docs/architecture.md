@@ -44,7 +44,7 @@ flowchart LR
 | | `Opcodes.kt`: `Opcodes`, `name()` | P0 | union kolibri ∪ PyMax (§E) |
 | | `MessagePack.kt`: `MessagePackCodec`, `MsgValue` | P0 | payload (§F.3) |
 | `com.max.core.transport` | `TlsTransport` / `MaxTransport`, `TransportConfig` | P0 | TLS TCP, timeouts 15/30 s, ping, reconnect (§B.6, §C.3–C.4) |
-| | `RawConnection` / `ConnectionFactory` (expect/actual) | P0 | платформенный сокет: JVM/Android `java.net.Socket`+`javax.net.ssl`; iOS — TODO |
+| | `RawConnection` / `ConnectionFactory` (expect/actual) | P0 | платформенный сокет: JVM/Android `java.net.Socket`+`javax.net.ssl`; iOS — Network.framework (`NetworkFrameworkConnectionFactory`, прокси через `nw_proxy_config` на iOS 17+) |
 | | `PendingRequests` / `SeqCounter` / `PacketReassembler` | P0 | seq→pending, `cmd 1/2/3` = ответ, `cmd 0` = push (§B.7) |
 | | `ProxyConfig` / `ProxyHandshake` | P0 | HTTP CONNECT / SOCKS5 / SOCKS5h (§B.8) |
 | | `MincifryCa` (embedded PEM) | P0 | Root+Sub CA Минцифры; `trustMincifryCa=true` по умолчанию (§B.6) |
@@ -92,7 +92,7 @@ ios/src/
 
 1. **P0 iOS:** protocol → transport(+Dispatcher) → session(+Ping/Reconnect) → auth(SMS, пароль) → api(chats/messages) → EventBus → shared/ios export → Swift-клиент ([ios-plan.md](ios-plan.md)).
 2. **P0 Android:** те же `commonMain`, `androidMain` actual'ы, Android UI.
-3. **P1:** iOS TLS (Network.framework), QR, MediaUploader (photo/file), LOGIN2, push-регистрация (после эксперимента §K). Proxy и Минцифры CA уже в P0-транспорте.
+3. **P1:** QR, MediaUploader (photo/file), LOGIN2, push-регистрация (после эксперимента §K). Proxy, Минцифры CA и iOS TLS (Network.framework) уже в P0-транспорте.
 4. **P2:** video parallel upload, CallSignaling, stories (EXPERIMENTAL), desktop.
 
 Открытые протокольные вопросы, влияющие на ядро (cmd=2, исходящее сжатие, поля handshake, 158) — [protocol.md §K](protocol.md#k-открытые-вопросы).
@@ -209,7 +209,7 @@ max-kmp-core/
 
 | Слой | Технологии |
 |------|------------|
-| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Kotlin Serialization, собственный MessagePack-кодек, LZ4/Zstd (stubs). Транспорт: raw TLS через `java.net.Socket`/`javax.net.ssl` (JVM/Android); iOS TLS — TODO. Ktor client engines (CIO/OkHttp/Darwin) в зависимости оставлены для будущего HTTP-слоя, транспорт их не использует (`ktor-network-tls` на Native в 3.1.1 — stub). |
+| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Kotlin Serialization, собственный MessagePack-кодек, LZ4/Zstd (stubs). Транспорт: raw TLS через `java.net.Socket`/`javax.net.ssl` (JVM/Android), Apple Network.framework (iOS). Ktor client engines (CIO/OkHttp/Darwin) в зависимости оставлены для будущего HTTP-слоя, транспорт их не использует (`ktor-network-tls` на Native в 3.1.1 — stub). |
 | iOS | SwiftUI, async/await, `AsyncStream`, XCFramework из Kotlin/Native |
 | Android | Kotlin, Jetpack Compose |
 | Desktop | Compose Multiplatform (рендер через Skia) |

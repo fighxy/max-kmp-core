@@ -26,8 +26,8 @@ kotlin {
         commonMain.dependencies {
             // ktor-client-* engines are listed in libs.versions.toml but unused: the Max protocol
             // needs a raw TLS byte stream, which HTTP engines do not expose. Used instead:
-            // java.net.Socket + javax.net.ssl on JVM/Android; iOS TLS is still TODO (ktor-network-tls
-            // on Native is a stub in 3.1.1 — see DefaultConnectionFactory.ios.kt).
+            // java.net.Socket + javax.net.ssl on JVM/Android; Apple Network.framework (platform.Network,
+            // no extra dependency) on iOS, since ktor-network-tls on Native is a stub in 3.1.1.
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.core)
             implementation(libs.kotlinx.serialization.json)
@@ -46,7 +46,7 @@ kotlin {
         }
         iosMain {
             dependencies {
-                // Kept for the next HTTP layer; the transport does not use it (no raw TLS here).
+                // Kept for the next HTTP layer; the transport uses Network.framework, not Darwin.
                 implementation(libs.ktor.client.darwin)
             }
         }

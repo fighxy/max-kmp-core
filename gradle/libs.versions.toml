@@ -16,7 +16,7 @@ ktor-client-darwin = { module = "io.ktor:ktor-client-darwin", version.ref = "kto
 # ktor-client-* kept for a future HTTP layer (media / ws2); the transport does not use them.
 # ktor-network + ktor-network-tls: Network works on jvm/android/iosArm64/iosSimulatorArm64 in 3.1.1,
 # but ktor-network-tls on Native is a stub ("TLS sessions are not supported on Native platform"),
-# so the transport uses java.net.Socket + javax.net.ssl on JVM/Android instead and leaves iOS TODO.
+# so the transport uses java.net.Socket + javax.net.ssl on JVM/Android and Network.framework on iOS.
 # The ktor-network-tls alias is removed so it is not added as a dead dependency.
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
