@@ -3,6 +3,7 @@ package com.max.core.events
 import com.max.core.api.Chat
 import com.max.core.api.MaxMessage
 import com.max.core.api.ReactionCounter
+import com.max.core.calls.ConversationParams
 
 /**
  * A server-initiated notification, parsed from a push packet by [EventParser].
@@ -10,7 +11,9 @@ import com.max.core.api.ReactionCounter
  * Event kinds, opcodes and fields follow PyMax's dispatcher (`src/pymax/dispatch/mapping.py`
  * `EVENT_MAP` / `EventMapper`, `resolvers.py`) and its event models (`src/pymax/types/events/`).
  * kolibri only forwards raw pushes (`transport/dispatcher.rs`, `session/manager.rs`) and has no
- * typed events. Every event keeps the decoded payload in [raw] and the packet [opcode].
+ * typed events, except that incoming calls (`NOTIF_CALL_START` 137) are decoded as `vcp` in
+ * `kolibri-net/src/calls/` / `kolibri-py/examples/call_bot.py`. Every event keeps the decoded
+ * payload in [raw] and the packet [opcode].
  */
 sealed interface MaxEvent {
     val opcode: Int
@@ -84,6 +87,24 @@ sealed interface MaxEvent {
     data class AttachmentReady(val kind: Kind, val id: Long, override val opcode: Int, override val raw: Any?) : MaxEvent {
         enum class Kind { FILE, VIDEO, AUDIO }
     }
+
+    /**
+     * An incoming call (`NOTIF_CALL_START` 137). PyMax has no typed call event; fields follow
+     * kolibri-py `examples/call_bot.py` (`callerId`, `type`, `vcp`, `conversationId`) plus the
+     * optional `chatId` / `isContact` seen in third-party captures. [params] is the decoded [vcp]
+     * or `null` when the string is missing or corrupt — the event is still typed.
+     */
+    data class CallStart(
+        val callerId: Long,
+        val conversationId: String,
+        val type: String?,
+        val chatId: Long?,
+        val isContact: Boolean?,
+        val vcp: String?,
+        val params: ConversationParams?,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent
 
     /**
      * Any other push: opcodes without a typed event yet, payloads that do not fit the model, and

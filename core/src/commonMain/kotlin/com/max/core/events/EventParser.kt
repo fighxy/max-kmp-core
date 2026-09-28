@@ -3,6 +3,7 @@ package com.max.core.events
 import com.max.core.api.Chat
 import com.max.core.api.MaxMessage
 import com.max.core.api.ReactionInfo
+import com.max.core.calls.ConversationParams
 import com.max.core.protocol.Opcode
 import com.max.core.transport.TransportPacket
 
@@ -20,6 +21,7 @@ import com.max.core.transport.TransportPacket
  * | `NOTIF_PRESENCE` 132 | [MaxEvent.Presence] |
  * | `NOTIF_MSG_REACTIONS_CHANGED` 155 | [MaxEvent.ReactionsChanged] |
  * | `NOTIF_ATTACH` 136 | [MaxEvent.AttachmentReady] (`fileId` / `videoId` / `audioId`) |
+ * | `NOTIF_CALL_START` 137 | [MaxEvent.CallStart] (`callerId` + `conversationId`; `vcp` decoded when present) |
  *
  * Everything else — including an empty
  * payload (PyMax passes such frames on raw), a payload missing a required field, and
@@ -86,6 +88,25 @@ object EventParser {
                 video != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.VIDEO, video, opcode, raw)
                 audio != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.AUDIO, audio, opcode, raw)
                 else -> null
+            }
+        }
+        Opcode.NOTIF_CALL_START.value -> {
+            val callerId = map["callerId"].long()
+            val conversationId = map["conversationId"] as? String
+            if (callerId == null || conversationId.isNullOrEmpty()) null
+            else {
+                val vcp = map["vcp"] as? String
+                MaxEvent.CallStart(
+                    callerId = callerId,
+                    conversationId = conversationId,
+                    type = map["type"] as? String,
+                    chatId = map["chatId"].long(),
+                    isContact = map["isContact"] as? Boolean,
+                    vcp = vcp,
+                    params = vcp?.let(ConversationParams::decode),
+                    opcode = opcode,
+                    raw = raw,
+                )
             }
         }
         else -> null

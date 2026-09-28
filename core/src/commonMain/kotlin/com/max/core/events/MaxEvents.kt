@@ -34,6 +34,7 @@ class MaxEvents(private val pushes: Flow<TransportPacket>) {
     val presence: Flow<MaxEvent.Presence> get() = all.filterIsInstance()
     val reactions: Flow<MaxEvent.ReactionsChanged> get() = all.filterIsInstance()
     val attachmentsReady: Flow<MaxEvent.AttachmentReady> get() = all.filterIsInstance()
+    val calls: Flow<MaxEvent.CallStart> get() = all.filterIsInstance()
 
     /** Events of type [T]. */
     inline fun <reified T : MaxEvent> of(): Flow<T> = all.filterIsInstance()
