@@ -32,9 +32,13 @@ kotlin {
             implementation(libs.kotlinx.serialization.json)
             // MessagePack: pure-Kotlin codec in protocol/MessagePack.kt, no dependency
         }
-        commonTest.dependencies {
-            implementation(kotlin("test"))
-            implementation(libs.kotlinx.coroutines.test)
+        commonTest {
+            // Fake connection + packet builders, also used by :shared tests
+            kotlin.srcDir("src/testFixtures/kotlin")
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.test)
+            }
         }
         androidMain {
             kotlin.srcDir(jvmAndroidSharedDir)
