@@ -141,6 +141,65 @@ data class ChatMember(val userId: Long?, val contact: Map<*, *>, val presence: M
 /** `CHAT_MEMBERS` page: `members` and the `marker` for the next page (`0` when absent, as in PyMax). */
 data class ChatMembersPage(val members: List<ChatMember>, val marker: Long, val raw: Map<*, *>)
 
+/** One entry of a user's `names` (PyMax `Name`: `name`, `firstName`, `lastName`, `type`, all optional). */
+data class UserName(val name: String?, val firstName: String?, val lastName: String?, val type: String?)
+
+/**
+ * A user / contact (PyMax `User`). Only `id` is required (as in PyMax); every other field is
+ * optional and the decoded map stays in [raw].
+ *
+ * @property phone PyMax types it as an integer; a decimal string is accepted too.
+ * @property displayName first `names` entry: `name`, else `firstName lastName`.
+ */
+data class MaxUser(
+    val id: Long,
+    val names: List<UserName>,
+    val phone: Long?,
+    val accountStatus: Int?,
+    val status: String?,
+    val description: String?,
+    val link: String?,
+    val baseUrl: String?,
+    val photoId: Long?,
+    val updateTime: Long?,
+    val options: List<String>,
+    val raw: Map<*, *>,
+) {
+    val displayName: String?
+        get() = names.firstOrNull()?.let { n ->
+            n.name?.takeIf { it.isNotBlank() }
+                ?: listOfNotNull(n.firstName, n.lastName).filter { it.isNotBlank() }.joinToString(" ").takeIf { it.isNotEmpty() }
+        }
+
+    companion object {
+        /** Parses [value]; `null` if it is not a map or has no `id`. */
+        fun from(value: Any?): MaxUser? {
+            val m = value as? Map<*, *> ?: return null
+            val names = (m["names"] as? List<*>).orEmpty().mapNotNull { n ->
+                val nm = n as? Map<*, *> ?: return@mapNotNull null
+                UserName(nm["name"] as? String, nm["firstName"] as? String, nm["lastName"] as? String, nm["type"] as? String)
+            }
+            return MaxUser(
+                id = m["id"].asLong() ?: return null,
+                names = names,
+                phone = m["phone"].asLong(),
+                accountStatus = m["accountStatus"].asLong()?.toInt(),
+                status = m["status"] as? String,
+                description = m["description"] as? String,
+                link = m["link"]?.let { it as? String ?: it.asLong()?.toString() },
+                baseUrl = m["baseUrl"] as? String,
+                photoId = m["photoId"].asLong(),
+                updateTime = m["updateTime"].asLong(),
+                options = (m["options"] as? List<*>).orEmpty().filterIsInstance<String>(),
+                raw = m,
+            )
+        }
+    }
+}
+
+/** Presence of a user (PyMax `Presence`: `seen` Unix time, `status` code; both optional). */
+data class PresenceInfo(val seen: Long?, val status: Int?)
+
 /** Integer from a decoded value; ids sometimes arrive as decimal strings (e.g. in links). */
 internal fun Any?.asLong(): Long? = when (this) {
     is Number -> toLong()
