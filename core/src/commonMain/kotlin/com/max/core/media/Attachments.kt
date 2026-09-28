@@ -6,7 +6,13 @@ import com.max.core.api.asLong
 /**
  * An attachment to send in `MSG_SEND` `message.attaches`, produced by an upload (see
  * [MediaApi]). [toPayload] follows PyMax `src/pymax/api/uploads/payloads.py` (`CamelModel`
- * with `_type`, `None` fields left out).
+ * with `_type`, `None` fields left out; `VideoAttachPayload.serialize_attachment` for video /
+ * voice / video-note).
+ *
+ * Audio / voice messages are [Voice] (`_type: AUDIO`); there is no separate audio-upload path in
+ * the references — PyMax `upload_voice` uses `VIDEO_UPLOAD` with `type=2, uploaderType=1`.
+ * Stickers: incoming only ([Attachment.Sticker]); `STICKER_UPLOAD` 81 and an outgoing sticker
+ * attach payload are not implemented in PyMax or kolibri.
  */
 sealed interface OutgoingAttachment {
     fun toPayload(): Map<String, Any?>
@@ -28,8 +34,8 @@ sealed interface OutgoingAttachment {
     }
 
     /**
-     * Voice message: `{_type: "AUDIO", token, duration, wave}` (PyMax `VoiceAttachPayload`; its
-     * serializer drops `videoId` / `videoType` for AUDIO). [uploadId] is the `videoId` of the
+     * Voice / audio message: `{_type: "AUDIO", token, duration, wave}` (PyMax `VoiceAttachPayload`;
+     * its serializer drops `videoId` / `videoType` for AUDIO). [uploadId] is the `videoId` of the
      * upload slot — not sent, used to match the `NOTIF_ATTACH {audioId}` signal. PyMax sends
      * `wave` as 80 zero bytes ([SILENT_WAVE]); [durationMs] in milliseconds.
      */
@@ -46,6 +52,38 @@ sealed interface OutgoingAttachment {
             /** PyMax `upload_voice`: `wave=b"\x00" * 80`. */
             val SILENT_WAVE: ByteArray get() = ByteArray(80)
         }
+    }
+
+    /**
+     * Round video note (видеосообщение): PyMax `VideoNoteAttachPayload` (`video_type = 1`).
+     * With a [token] the serializer drops `videoId` and keeps `{_type: VIDEO, token, videoType: 1,
+     * thumbhash?, duration?}`; [uploadId] is the slot `videoId` (excluded from the payload), used
+     * to match `NOTIF_ATTACH {videoId}` on `attachment.not.ready`. [thumbhash] comes from the CDN
+     * JSON after the POST (PyMax base64-decodes with `=` padding).
+     */
+    data class VideoNote(
+        val uploadId: Long,
+        val token: String,
+        val durationMs: Long? = null,
+        val thumbhash: ByteArray? = null,
+    ) : OutgoingAttachment {
+        override fun toPayload(): Map<String, Any?> = linkedMapOf<String, Any?>().apply {
+            put("_type", "VIDEO")
+            put("token", token)
+            put("videoType", 1)
+            if (thumbhash != null) put("thumbhash", thumbhash)
+            if (durationMs != null) put("duration", durationMs)
+        }
+
+        override fun equals(other: Any?): Boolean =
+            other is VideoNote && uploadId == other.uploadId && token == other.token &&
+                durationMs == other.durationMs &&
+                ((thumbhash == null && other.thumbhash == null) ||
+                    (thumbhash != null && other.thumbhash != null && thumbhash.contentEquals(other.thumbhash)))
+
+        override fun hashCode(): Int =
+            ((uploadId.hashCode() * 31 + token.hashCode()) * 31 + (durationMs?.hashCode() ?: 0)) * 31 +
+                (thumbhash?.contentHashCode() ?: 0)
     }
 }
 
@@ -84,7 +122,27 @@ sealed interface Attachment {
         override val raw: Map<*, *>,
     ) : Attachment
 
-    /** Any other `_type` (STICKER, CONTROL, CONTACT, CALL, SHARE, INLINE_KEYBOARD, POLL, ...) or a malformed entry. */
+    /**
+     * PyMax `StickerAttachment`: `stickerId`, `url`, `width`, `height`, `stickerType`, `audio`,
+     * `time`, optional `setId` / `tags` / `lottieUrl` / `authorType`. Sending stickers and
+     * `STICKER_UPLOAD` 81 are not sourced in the references.
+     */
+    data class Sticker(
+        val stickerId: Long,
+        val url: String?,
+        val width: Int?,
+        val height: Int?,
+        val stickerType: String?,
+        val audio: Boolean?,
+        val time: Long?,
+        val setId: Long?,
+        val tags: List<String>?,
+        val lottieUrl: String?,
+        val authorType: String?,
+        override val raw: Map<*, *>,
+    ) : Attachment
+
+    /** Any other `_type` (CONTROL, CONTACT, CALL, SHARE, INLINE_KEYBOARD, POLL, ...) or a malformed entry. */
     data class Unknown(val type: String?, override val raw: Map<*, *>) : Attachment
 
     companion object {
@@ -99,6 +157,14 @@ sealed interface Attachment {
                 }
                 "FILE" -> m["fileId"].asLong()?.let { File(it, m["name"] as? String, m["size"].asLong(), m["token"] as? String, m) }
                 "AUDIO" -> Audio(m["audioId"].asLong(), m["duration"].asLong(), m["url"] as? String, m["token"] as? String, m["transcriptionStatus"] as? String, m)
+                "STICKER" -> m["stickerId"].asLong()?.let { id ->
+                    val tags = (m["tags"] as? List<*>)?.mapNotNull { it as? String }
+                    Sticker(
+                        id, m["url"] as? String, int("width"), int("height"), m["stickerType"] as? String,
+                        m["audio"] as? Boolean, m["time"].asLong(), m["setId"].asLong(), tags,
+                        m["lottieUrl"] as? String, m["authorType"] as? String, m,
+                    )
+                }
                 else -> null
             } ?: Unknown(type, m)
         }

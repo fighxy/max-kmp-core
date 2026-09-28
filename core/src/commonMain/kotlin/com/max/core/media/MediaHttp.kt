@@ -1,16 +1,32 @@
 package com.max.core.media
 
 /**
- * The HTTP part of uploads (CDN POSTs), kept behind an interface so common code is testable and
- * each platform can plug in its client. No implementation ships yet: the Ktor client engines are
- * declared only in the platform source sets (no `ktor-client-core` in commonMain), see
+ * The HTTP part of uploads (CDN requests), kept behind an interface so common code is testable
+ * and each platform can plug in its client. No implementation ships yet: the Ktor client engines
+ * are declared only in the platform source sets (no `ktor-client-core` in commonMain), see
  * docs/architecture.md.
  *
- * Implementations send exactly [headers] (in order) and [body], follow no redirects, and return
- * any status (non-2xx is not an exception). Throwing is reserved for I/O failures.
+ * Implementations send [method] with exactly [headers] (in order) and [body], follow no
+ * redirects, and return any status (non-2xx is not an exception). Throwing is reserved for I/O
+ * failures. While writing the body they should call [progress] with `(bytesSent, total)` like
+ * kolibri's HTTP client (`kolibri-net/src/media/http.rs`, `exchange`: after every 64 KiB write);
+ * [MediaApi] reports completion itself if they don't.
  */
 fun interface MediaHttp {
-    suspend fun post(url: String, headers: List<Pair<String, String>>, body: ByteArray): HttpResponse
+    suspend fun request(method: String, url: String, headers: List<Pair<String, String>>, body: ByteArray, progress: UploadProgress?): HttpResponse
+}
+
+/** POST through [MediaHttp.request]. */
+suspend fun MediaHttp.post(url: String, headers: List<Pair<String, String>>, body: ByteArray, progress: UploadProgress? = null): HttpResponse =
+    request("POST", url, headers, body, progress)
+
+/**
+ * Upload progress callback `(bytesSent, totalBytes)` (kolibri `media::ProgressFn`,
+ * `kolibri-net/src/media/mod.rs`). Called from the uploading coroutine(s); for a parallel video
+ * upload from several workers, with a monotonically growing `bytesSent`.
+ */
+fun interface UploadProgress {
+    fun onProgress(bytesSent: Long, totalBytes: Long)
 }
 
 /** An HTTP response: status and raw body. */
@@ -40,6 +56,22 @@ object UploadRequests {
         "Content-Range" to "bytes 0-${maxOf(size - 1, 0)}/$size",
         "Content-Length" to size.toString(),
     )
+
+    /**
+     * Headers of one request of the parallel video upload (kolibri `ok_cdn_request`, used by
+     * `upload_video` for the GET handshake and every chunk POST; `Host` is left to the client):
+     * `Content-Type`, `Content-Disposition: attachment; fileName="<name>"` (note the capital
+     * `N` and quotes), `Content-Length`, `X-Uploading-Mode: parallel`, `Connection: close`, then
+     * `Content-Range` for chunks. kolibri sends no User-Agent here.
+     */
+    fun parallelChunkHeaders(fileName: String, bodySize: Int, contentRange: String?): List<Pair<String, String>> = buildList {
+        add("Content-Type" to BINARY_CONTENT_TYPE)
+        add("Content-Disposition" to "attachment; fileName=\"$fileName\"")
+        add("Content-Length" to bodySize.toString())
+        add("X-Uploading-Mode" to "parallel")
+        add("Connection" to "close")
+        if (contentRange != null) add("Content-Range" to contentRange)
+    }
 
     /** Headers of a multipart photo upload (kolibri `upload_photo`). */
     fun multipartHeaders(boundary: String, bodySize: Int, userAgent: String): List<Pair<String, String>> = listOf(

@@ -60,6 +60,10 @@ class MediaApiTest {
         "getVideo" to "83a663686174496464a96d65737361676549640aa7766964656f496414",
         "getFile" to "83a663686174496464a96d65737361676549640aa666696c6549641e",
         "sendPhoto" to "83a663686174496464a76d65737361676583a3636964cf000001999287d701a8656c656d656e747390a861747461636865739182a55f74797065a550484f544faa70686f746f546f6b656ea870682d746f6b656ea66e6f74696679c3",
+        "uploadVideoNote" to "84a5636f756e7401a47479706501ac75706c6f616465725479706501a770726f66696c65c2",
+        "videoNote" to "85a55f74797065a5564944454fa5746f6b656ea8766e2d746f6b656ea9766964656f5479706501a97468756d6268617368c4020102a86475726174696f6ecd0dac",
+        "videoNoteNoThumb" to "84a55f74797065a5564944454fa5746f6b656ea8766e2d746f6b656ea9766964656f5479706501a86475726174696f6ecd0dac",
+        "videoNoteNoDuration" to "84a55f74797065a5564944454fa5746f6b656ea8766e2d746f6b656ea9766964656f5479706501a97468756d6268617368c4020102",
         "sendPhotoText" to "83a663686174496464a76d65737361676584a474657874a46c6f6f6ba3636964cf000001999287d701a8656c656d656e747390a861747461636865739282a55f74797065a550484f544faa70686f746f546f6b656ea870682d746f6b656e82a55f74797065a446494c45a666696c6549641ea66e6f74696679c3",
     )
 
@@ -88,16 +92,41 @@ class MediaApiTest {
         }
     }
 
-    private class Post(val url: String, val headers: List<Pair<String, String>>, val body: ByteArray)
+    private class Post(val method: String, val url: String, val headers: List<Pair<String, String>>, val body: ByteArray)
 
     private class FakeHttp(var status: Int = 200, var reply: String = "", var failure: Exception? = null) : MediaHttp {
         val posts = ArrayList<Post>()
         var onPost: suspend () -> Unit = {}
-        override suspend fun post(url: String, headers: List<Pair<String, String>>, body: ByteArray): HttpResponse {
-            posts += Post(url, headers, body)
+        var reportEvery: Int = 0
+        override suspend fun request(method: String, url: String, headers: List<Pair<String, String>>, body: ByteArray, progress: UploadProgress?): HttpResponse {
+            posts += Post(method, url, headers, body)
             failure?.let { throw it }
+            if (reportEvery > 0 && progress != null) {
+                var sent = 0
+                while (sent < body.size) { sent = minOf(sent + reportEvery, body.size); progress.onProgress(sent.toLong(), body.size.toLong()) }
+            }
             onPost()
             return HttpResponse(status, reply.encodeToByteArray())
+        }
+    }
+
+    /** Fake CDN for the parallel video upload: answers the GET with [resume], records chunks. */
+    private class ChunkCdn(val resume: String = "0", val handshakeStatus: Int = 200, val failRange: String? = null) : MediaHttp {
+        val requests = ArrayList<Post>()
+        val received = HashMap<String, ByteArray>()
+        var maxInFlight = 0
+        private var inFlight = 0
+        override suspend fun request(method: String, url: String, headers: List<Pair<String, String>>, body: ByteArray, progress: UploadProgress?): HttpResponse {
+            requests += Post(method, url, headers, body)
+            if (method == "GET") return HttpResponse(handshakeStatus, resume.encodeToByteArray())
+            val range = headers.toMap().getValue("Content-Range")
+            inFlight++
+            maxInFlight = maxOf(maxInFlight, inFlight)
+            kotlinx.coroutines.yield()
+            inFlight--
+            if (range == failRange) return HttpResponse(500, ByteArray(0))
+            received[range] = body
+            return HttpResponse(if (received.size % 2 == 0) 201 else 200, ByteArray(0))
         }
     }
 
@@ -346,14 +375,14 @@ class MediaApiTest {
         val video = mapOf("_type" to "VIDEO", "videoId" to 20, "token" to "vt", "width" to 1280, "height" to 720, "duration" to 5000, "videoType" to 0, "thumbnail" to "https://i/t")
         val file = mapOf("_type" to "FILE", "fileId" to 30, "name" to "a.pdf", "size" to 1024, "token" to "ft")
         val audio = mapOf("_type" to "AUDIO", "audioId" to 40, "duration" to 3500, "url" to "https://a/x", "transcriptionStatus" to "SUCCESS")
-        val sticker = mapOf("_type" to "STICKER", "stickerId" to 1)
+        val sticker = mapOf("_type" to "CONTACT", "contactId" to 1)
         val m = MaxMessage.from(mapOf("id" to 1, "chatId" to 100, "time" to 1, "type" to "USER", "attaches" to listOf(photo, video, file, audio, sticker, mapOf("_type" to "PHOTO"), 5)))!!
         val a = m.attachments
         assertEquals(Attachment.Photo(11, "pt", "https://i/p", 640, 480, photo), a[0])
         assertEquals(Attachment.Video(20, "vt", 1280, 720, 5000, 0, "https://i/t", video), a[1])
         assertEquals(Attachment.File(30, "a.pdf", 1024, "ft", file), a[2])
         assertEquals(Attachment.Audio(40, 3500, "https://a/x", null, "SUCCESS", audio), a[3])
-        assertEquals(Attachment.Unknown("STICKER", sticker), a[4])
+        assertEquals(Attachment.Unknown("CONTACT", sticker), a[4])
         assertEquals("PHOTO", assertIs<Attachment.Unknown>(a[5]).type)
         assertNull(assertIs<Attachment.Unknown>(a[6]).type)
     }
@@ -370,6 +399,206 @@ class MediaApiTest {
         assertEquals(mapOf("a" to listOf(1L, -2.5, true, null, "x\"\u00e9\n")), MiniJson.parse("""{ "a" : [1, -2.5, true, null, "x\"\u00e9\n"] }"""))
         assertFailsWith<IllegalArgumentException> { MiniJson.parse("{\"a\":1} x") }
         assertFailsWith<IllegalArgumentException> { MiniJson.parse("{\"a\":") }
+    }
+
+    // --- video notes ---
+
+    @Test
+    fun videoNotePayloadBytesMatchPyMax() {
+        assertEquals(pymax["uploadVideoNote"], bytes(MediaApi.uploadPayload(type = 1, uploaderType = 1)))
+        assertEquals(pymax["videoNote"], bytes(OutgoingAttachment.VideoNote(20, "vn-token", 3500, byteArrayOf(1, 2)).toPayload()))
+        assertEquals(pymax["videoNoteNoThumb"], bytes(OutgoingAttachment.VideoNote(20, "vn-token", 3500).toPayload()))
+        assertEquals(pymax["videoNoteNoDuration"], bytes(OutgoingAttachment.VideoNote(20, "vn-token", thumbhash = byteArrayOf(1, 2)).toPayload()))
+    }
+
+    @Test
+    fun videoNoteUploadReadsThumbhashAndDoesNotWait() = runTest {
+        val slot = mapOf("info" to listOf(mapOf("url" to "https://vu.test/n", "videoId" to 20, "token" to "vn-token")))
+        val sink = FakeSink(slot, slot, slot, slot)
+        // unpadded base64 "AQI" = 01 02 (PyMax pads with '=')
+        val http = FakeHttp(reply = """{"thumbhash":"AQI"}""")
+        val api = MediaApi(sink, http, ua, MutableSharedFlow(), clock)
+        val note = api.uploadVideoNote(byteArrayOf(5, 6, 7), "note.mp4", 3500)
+        assertEquals(OutgoingAttachment.VideoNote(20, "vn-token", 3500, byteArrayOf(1, 2)), note)
+        assertEquals(pymax["videoNote"], bytes(note.toPayload()))
+        assertEquals(Opcode.VIDEO_UPLOAD, sink.sent[0].first)
+        assertEquals(pymax["uploadVideoNote"], bytes(sink.sent[0].second))
+        assertEquals("bytes 0-2/3", http.posts.single().headers.toMap()["Content-Range"])
+
+        http.reply = "{}"
+        assertNull(api.uploadVideoNote(byteArrayOf(1), "n.mp4").thumbhash)
+        http.reply = "not json"
+        assertFailsWith<UploadException> { api.uploadVideoNote(byteArrayOf(1), "n.mp4") }
+        http.reply = """{"thumbhash":"***"}"""
+        assertFailsWith<UploadException> { api.uploadVideoNote(byteArrayOf(1), "n.mp4") }
+    }
+
+    @Test
+    fun voiceAndVideoNoteAreDistinct() = runTest {
+        val slot = mapOf("info" to listOf(mapOf("url" to "u", "videoId" to 20, "token" to "t")))
+        val sink = FakeSink(slot, mapOf("info" to listOf(mapOf("url" to "u", "videoId" to 20, "token" to "t"))))
+        val http = FakeHttp(reply = "{}")
+        val api = MediaApi(sink, http, ua)
+        val voice = api.uploadVoice(byteArrayOf(1), "v.ogg", 1000)
+        val note = api.uploadVideoNote(byteArrayOf(1), "n.mp4", 1000)
+        // same opcode, different slot type: voice type=2, note type=1
+        assertEquals(listOf(Opcode.VIDEO_UPLOAD, Opcode.VIDEO_UPLOAD), sink.sent.map { it.first })
+        assertEquals(pymax["uploadVoice"], bytes(sink.sent[0].second))
+        assertEquals(pymax["uploadVideoNote"], bytes(sink.sent[1].second))
+        assertEquals("AUDIO", voice.toPayload()["_type"])
+        assertEquals("VIDEO", note.toPayload()["_type"])
+        assertEquals(1, note.toPayload()["videoType"])
+    }
+
+    @Test
+    fun attachmentNotReadyWaitsForVideoNoteSignal() = runTest {
+        val events = MutableSharedFlow<MaxEvent>()
+        val note = OutgoingAttachment.VideoNote(20, "vn-token", 3500)
+        val sink = FakeSink(serverError(Opcode.MSG_SEND, "attachment.not.ready"), sentMessage(60))
+        sink.onRequest = {
+            if (sink.sent.size == 1) {
+                // an AUDIO signal with the same id must not count for a video note
+                events.emit(MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.AUDIO, 20, 136, null))
+                events.emit(frameEvent("readyVideo"))
+            }
+        }
+        assertEquals(60L, MediaApi(sink, FakeHttp(), ua, events, clock).sendMessage(100, listOf(note)).id)
+        assertEquals(bytes(sink.sent[0].second), bytes(sink.sent[1].second))
+
+        val sink2 = FakeSink(serverError(Opcode.MSG_SEND, "attachment.not.ready"))
+        sink2.onRequest = { events.emit(MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.AUDIO, 20, 136, null)) }
+        val waiting = async { runCatching { MediaApi(sink2, FakeHttp(), ua, events, clock).sendMessage(100, listOf(note)) } }
+        advanceTimeBy(61_000)
+        assertIs<UploadException>(waiting.await().exceptionOrNull())
+    }
+
+    // --- progress ---
+
+    @Test
+    fun progressIsReported() = runTest {
+        val seen = ArrayList<Pair<Long, Long>>()
+        val progress = UploadProgress { s, t -> seen += s to t }
+        // transport reports while writing: its values are passed through, no duplicate completion
+        val fileSlot = mapOf("info" to listOf(mapOf("url" to "u", "fileId" to 30, "token" to "t")))
+        val http = FakeHttp().apply { reportEvery = 2 }
+        MediaApi(FakeSink(fileSlot), http, ua).uploadFile(ByteArray(5), "f.bin", progress)
+        assertEquals(listOf(2L to 5L, 4L to 5L, 5L to 5L), seen)
+
+        // transport without progress: completion is reported after the 200
+        seen.clear()
+        val photoHttp = FakeHttp(reply = """{"photos":{"Xy=1":{"token":"t"}}}""")
+        MediaApi(FakeSink(mapOf("url" to photoUrl)), photoHttp, ua, boundary = { "b" }).uploadPhoto(byteArrayOf(1, 2, 3), progress = progress)
+        val size = photoHttp.posts.single().body.size.toLong()
+        assertEquals(listOf(size to size), seen)
+
+        // failed upload: no completion
+        seen.clear()
+        assertFailsWith<UploadException> { MediaApi(FakeSink(fileSlot), FakeHttp(status = 500), ua).uploadFile(ByteArray(3), "f", progress) }
+        assertTrue(seen.isEmpty())
+    }
+
+    // --- parallel chunked video ---
+
+    @Test
+    fun chunkedUploadFollowsKolibri() = runTest {
+        val cdn = ChunkCdn()
+        val seen = ArrayList<Pair<Long, Long>>()
+        val data = ByteArray(7) { (it + 1).toByte() }
+        val api = MediaApi(FakeSink(), cdn, ua)
+        assertEquals(0L, api.uploadChunked("https://vu.test/v", data, chunkSize = 2, concurrency = 2, progress = { s, t -> seen += s to t }, uploadName = "123"))
+
+        val get = cdn.requests.first()
+        assertEquals("GET", get.method)
+        assertEquals("https://vu.test/v", get.url)
+        assertEquals(
+            listOf(
+                "Content-Type" to "application/x-binary; charset=x-user-defined",
+                "Content-Disposition" to "attachment; fileName=\"123\"",
+                "Content-Length" to "0",
+                "X-Uploading-Mode" to "parallel",
+                "Connection" to "close",
+            ),
+            get.headers,
+        )
+        assertEquals(0, get.body.size)
+        val posts = cdn.requests.drop(1)
+        assertTrue(posts.all { it.method == "POST" })
+        assertEquals(
+            listOf(
+                "Content-Type" to "application/x-binary; charset=x-user-defined",
+                "Content-Disposition" to "attachment; fileName=\"123\"",
+                "Content-Length" to "2",
+                "X-Uploading-Mode" to "parallel",
+                "Connection" to "close",
+                "Content-Range" to "bytes 0-1/7",
+            ),
+            posts.first().headers,
+        )
+        assertEquals(setOf("bytes 0-1/7", "bytes 2-3/7", "bytes 4-5/7", "bytes 6-6/7"), cdn.received.keys)
+        assertEquals("0102", cdn.received.getValue("bytes 0-1/7").hex())
+        assertEquals("07", cdn.received.getValue("bytes 6-6/7").hex())
+        assertEquals(2, cdn.maxInFlight)
+        assertEquals(listOf(2L, 4L, 6L, 7L), seen.map { it.first })
+        assertTrue(seen.all { it.second == 7L })
+    }
+
+    @Test
+    fun chunkedUploadResumesAndFails() = runTest {
+        val data = ByteArray(7)
+        // resume offset from the GET body
+        val resumed = ChunkCdn(resume = " 4\n")
+        val seen = ArrayList<Long>()
+        assertEquals(4L, MediaApi(FakeSink(), resumed, ua).uploadChunked("u", data, 2, 4, { s, _ -> seen += s }, "n"))
+        assertEquals(setOf("bytes 4-5/7", "bytes 6-6/7"), resumed.received.keys)
+        assertEquals(listOf(6L, 7L), seen)
+        // offset beyond the size or not a number: from 0 (kolibri keeps 0)
+        assertEquals(4, ChunkCdn(resume = "99").also { MediaApi(FakeSink(), it, ua).uploadChunked("u", data, 2, 1, uploadName = "n") }.received.size)
+        assertEquals(4, ChunkCdn(resume = "ok").also { MediaApi(FakeSink(), it, ua).uploadChunked("u", data, 2, 1, uploadName = "n") }.received.size)
+        // everything already there: no chunks
+        val done = ChunkCdn(resume = "7")
+        assertEquals(7L, MediaApi(FakeSink(), done, ua).uploadChunked("u", data, 2, 1, uploadName = "n"))
+        assertEquals(1, done.requests.size)
+
+        assertEquals(403, assertFailsWith<UploadException> { MediaApi(FakeSink(), ChunkCdn(handshakeStatus = 403), ua).uploadChunked("u", data, 2) }.status)
+        assertEquals(500, assertFailsWith<UploadException> { MediaApi(FakeSink(), ChunkCdn(failRange = "bytes 2-3/7"), ua).uploadChunked("u", data, 2, 2) }.status)
+        assertFailsWith<UploadException> { MediaApi(FakeSink(), ChunkCdn(), ua).uploadChunked("u", ByteArray(0)) }
+        assertFailsWith<IllegalArgumentException> { MediaApi(FakeSink(), ChunkCdn(), ua).uploadChunked("u", data, 0) }
+    }
+
+    @Test
+    fun parallelVideoUploadUsesSlotAndWaitsForReadiness() = runTest {
+        val events = MutableSharedFlow<MaxEvent>()
+        val sink = FakeSink(mapOf("info" to listOf(mapOf("url" to "https://vu.test/p", "videoId" to 20, "token" to "video-token"))))
+        val cdn = ChunkCdn()
+        val http = MediaHttp { method, url, headers, body, progress ->
+            val r = cdn.request(method, url, headers, body, progress)
+            if (cdn.received.size == 3) events.emit(frameEvent("readyVideo"))
+            r
+        }
+        val api = MediaApi(sink, http, ua, events, clock)
+        assertEquals(OutgoingAttachment.Video(20, "video-token"), api.uploadVideoParallel(ByteArray(5), chunkSize = 2))
+        assertEquals(pymax["uploadDefault"], bytes(sink.sent.single().second))
+        // default upload name: kolibri now_micros() & 0x7FFFFFFF
+        assertEquals("attachment; fileName=\"1654642688\"", cdn.requests.first().headers.toMap()["Content-Disposition"])
+        assertTrue(cdn.requests.all { it.url == "https://vu.test/p" })
+    }
+
+    // --- stickers ---
+
+    @Test
+    fun incomingSticker() {
+        val raw = mapOf(
+            "_type" to "STICKER", "stickerId" to 777, "url" to "https://st/1.webp", "width" to 256, "height" to 256,
+            "stickerType" to "STATIC", "audio" to false, "time" to 1700000000, "setId" to 55, "tags" to listOf("hi", 1),
+            "lottieUrl" to "https://st/1.json", "authorType" to "SYSTEM",
+        )
+        assertEquals(
+            Attachment.Sticker(777, "https://st/1.webp", 256, 256, "STATIC", false, 1700000000, 55, listOf("hi"), "https://st/1.json", "SYSTEM", raw),
+            Attachment.from(raw),
+        )
+        val minimal = mapOf("_type" to "STICKER", "stickerId" to 1)
+        assertEquals(Attachment.Sticker(1, null, null, null, null, null, null, null, null, null, null, minimal), Attachment.from(minimal))
+        assertIs<Attachment.Unknown>(Attachment.from(mapOf("_type" to "STICKER")))
     }
 
     // --- over SessionMachine + TokenLogin ---
