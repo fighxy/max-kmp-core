@@ -13,6 +13,15 @@ package com.max.core.media
  */
 fun interface MediaHttp {
     suspend fun request(method: String, url: String, headers: List<Pair<String, String>>, body: ByteArray, progress: UploadProgress?): HttpResponse
+
+    /**
+     * Same as [request] with a streamed [body] ([UploadBody]: memory parts and [UploadSource]
+     * ranges). The default loads the body into memory and calls [request]; the platform clients
+     * stream it (OkHttp writes it in 64 KiB segments, `NSURLSession` uploads a whole file from
+     * disk). [MediaApi] sends everything through this method.
+     */
+    suspend fun upload(method: String, url: String, headers: List<Pair<String, String>>, body: UploadBody, progress: UploadProgress?): HttpResponse =
+        request(method, url, headers, body.toByteArray(), progress)
 }
 
 /** POST through [MediaHttp.request]. */
@@ -47,12 +56,16 @@ object UploadRequests {
      * keep-alive`, `User-Agent: <encoded>`, `Content-Range: bytes 0-<n-1>/<n>`, `Content-Length`.
      * The file name is percent-encoded like PyMax (`quote(file.name)`); kolibri sends it as is.
      */
-    fun singlePostHeaders(fileName: String, size: Int, userAgent: String): List<Pair<String, String>> = listOf(
+    fun singlePostHeaders(fileName: String, size: Int, userAgent: String): List<Pair<String, String>> =
+        singlePostHeaders(fileName, size.toLong(), userAgent)
+
+    /** [singlePostHeaders] for a streamed body of [size] bytes. */
+    fun singlePostHeaders(fileName: String, size: Long, userAgent: String): List<Pair<String, String>> = listOf(
         "Content-Type" to BINARY_CONTENT_TYPE,
         "Content-Disposition" to "attachment; filename=${percentEncode(fileName)}",
         "Connection" to "keep-alive",
         "User-Agent" to percentEncode(userAgent),
-        "Content-Range" to "bytes 0-${maxOf(size - 1, 0)}/$size",
+        "Content-Range" to "bytes 0-${maxOf(size - 1, 0L)}/$size",
         "Content-Length" to size.toString(),
     )
 
@@ -73,7 +86,11 @@ object UploadRequests {
     }
 
     /** Headers of a multipart photo upload (kolibri `upload_photo`). */
-    fun multipartHeaders(boundary: String, bodySize: Int, userAgent: String): List<Pair<String, String>> = listOf(
+    fun multipartHeaders(boundary: String, bodySize: Int, userAgent: String): List<Pair<String, String>> =
+        multipartHeaders(boundary, bodySize.toLong(), userAgent)
+
+    /** [multipartHeaders] for a streamed body of [bodySize] bytes. */
+    fun multipartHeaders(boundary: String, bodySize: Long, userAgent: String): List<Pair<String, String>> = listOf(
         "Content-Type" to "multipart/form-data; boundary=$boundary",
         "Content-Length" to bodySize.toString(),
         "Connection" to "keep-alive",
@@ -81,11 +98,22 @@ object UploadRequests {
     )
 
     /** One `file` part (kolibri `upload_photo`; PyMax `FormData.add_field(name="file", ...)`). */
-    fun multipartBody(boundary: String, fileName: String, contentType: String, data: ByteArray): ByteArray {
-        val preamble = "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\nContent-Type: $contentType\r\n\r\n"
-        val epilogue = "\r\n--$boundary--\r\n"
-        return preamble.encodeToByteArray() + data + epilogue.encodeToByteArray()
-    }
+    fun multipartBody(boundary: String, fileName: String, contentType: String, data: ByteArray): ByteArray =
+        multipartPreamble(boundary, fileName, contentType) + data + multipartEpilogue(boundary)
+
+    /** [multipartBody] with the file part streamed from [source]. */
+    fun multipartBody(boundary: String, fileName: String, contentType: String, source: UploadSource): UploadBody = UploadBody(
+        listOf(
+            UploadBody.Part.Bytes(multipartPreamble(boundary, fileName, contentType)),
+            UploadBody.Part.Range(source, 0, source.size),
+            UploadBody.Part.Bytes(multipartEpilogue(boundary)),
+        ),
+    )
+
+    private fun multipartPreamble(boundary: String, fileName: String, contentType: String): ByteArray =
+        "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\nContent-Type: $contentType\r\n\r\n".encodeToByteArray()
+
+    private fun multipartEpilogue(boundary: String): ByteArray = "\r\n--$boundary--\r\n".encodeToByteArray()
 
     /**
      * Image content type by extension (kolibri `content_type_for_filename`; PyMax uses

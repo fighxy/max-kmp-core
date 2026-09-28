@@ -109,6 +109,10 @@ class MediaApi(
         )
 
     // ---- uploads ------------------------------------------------------------------------------
+    //
+    // Every upload has a ByteArray overload and an UploadSource overload (bodies are streamed from
+    // the source; see [UploadSource] and [fileUploadSource]) and a path overload that opens and
+    // closes the file.
 
     /**
      * Uploads a photo: slot → multipart POST (`file` part, [fileName], content type by extension)
@@ -121,37 +125,65 @@ class MediaApi(
         fileName: String = "image.jpg",
         profile: Boolean = false,
         progress: UploadProgress? = null,
+    ): OutgoingAttachment.Photo = uploadPhoto(ByteArrayUploadSource(bytes), fileName, profile, progress)
+
+    /** [uploadPhoto] with the image streamed from [source]. */
+    suspend fun uploadPhoto(
+        source: UploadSource,
+        fileName: String = "image.jpg",
+        profile: Boolean = false,
+        progress: UploadProgress? = null,
     ): OutgoingAttachment.Photo {
         val slot = requestPhotoUpload(profile)
         val b = boundary()
-        val body = UploadRequests.multipartBody(b, fileName, UploadRequests.imageContentType(fileName), bytes)
-        val response = post(slot.url, UploadRequests.multipartHeaders(b, body.size, userAgent), body, "photo", progress)
+        val body = UploadRequests.multipartBody(b, fileName, UploadRequests.imageContentType(fileName), source)
+        val response = post(slot.url, UploadRequests.multipartHeaders(b, body.contentLength, userAgent), body, "photo", progress)
         val token = ((jsonReply(response, "photo")["photos"] as? Map<*, *>)?.get(slot.photoId) as? Map<*, *>)?.get("token") as? String
             ?: throw UploadException("photo upload reply has no token for photoId=${slot.photoId}", response.status)
         return OutgoingAttachment.Photo(token)
     }
 
+    /** [uploadPhoto] from the file at [path] (part name = the file name). */
+    suspend fun uploadPhoto(path: String, profile: Boolean = false, progress: UploadProgress? = null): OutgoingAttachment.Photo =
+        fileUploadSource(path).use { uploadPhoto(it, fileNameOf(path), profile, progress) }
+
     /** Uploads a file: slot → single POST → waits for `NOTIF_ATTACH {fileId}` → [OutgoingAttachment.File]. */
-    suspend fun uploadFile(bytes: ByteArray, fileName: String, progress: UploadProgress? = null): OutgoingAttachment.File {
+    suspend fun uploadFile(bytes: ByteArray, fileName: String, progress: UploadProgress? = null): OutgoingAttachment.File =
+        uploadFile(ByteArrayUploadSource(bytes), fileName, progress)
+
+    /** [uploadFile] streamed from [source]. */
+    suspend fun uploadFile(source: UploadSource, fileName: String, progress: UploadProgress? = null): OutgoingAttachment.File {
         val slot = requestFileUpload()
         awaitReady(slot.id, MaxEvent.AttachmentReady.Kind.FILE, "file") {
-            post(slot.url, UploadRequests.singlePostHeaders(fileName, bytes.size, userAgent), bytes, "file", progress)
+            post(slot.url, UploadRequests.singlePostHeaders(fileName, source.size, userAgent), UploadBody.of(source), "file", progress)
         }
         return OutgoingAttachment.File(slot.id)
     }
+
+    /** [uploadFile] from the file at [path], streamed from disk. */
+    suspend fun uploadFile(path: String, progress: UploadProgress? = null): OutgoingAttachment.File =
+        fileUploadSource(path).use { uploadFile(it, fileNameOf(path), progress) }
 
     /**
      * Uploads a video in one POST (PyMax `upload_video`): slot → single POST → waits for
      * `NOTIF_ATTACH {videoId}` → [OutgoingAttachment.Video]. See [uploadVideoParallel] for the
      * chunked, resumable variant.
      */
-    suspend fun uploadVideo(bytes: ByteArray, fileName: String, progress: UploadProgress? = null): OutgoingAttachment.Video {
+    suspend fun uploadVideo(bytes: ByteArray, fileName: String, progress: UploadProgress? = null): OutgoingAttachment.Video =
+        uploadVideo(ByteArrayUploadSource(bytes), fileName, progress)
+
+    /** [uploadVideo] streamed from [source]. */
+    suspend fun uploadVideo(source: UploadSource, fileName: String, progress: UploadProgress? = null): OutgoingAttachment.Video {
         val slot = requestVideoUpload()
         awaitReady(slot.id, MaxEvent.AttachmentReady.Kind.VIDEO, "video") {
-            post(slot.url, UploadRequests.singlePostHeaders(fileName, bytes.size, userAgent), bytes, "video", progress)
+            post(slot.url, UploadRequests.singlePostHeaders(fileName, source.size, userAgent), UploadBody.of(source), "video", progress)
         }
         return OutgoingAttachment.Video(slot.id, slot.token)
     }
+
+    /** [uploadVideo] from the file at [path], streamed from disk. */
+    suspend fun uploadVideo(path: String, progress: UploadProgress? = null): OutgoingAttachment.Video =
+        fileUploadSource(path).use { uploadVideo(it, fileNameOf(path), progress) }
 
     /**
      * Uploads a video in parallel chunks with resume: `VIDEO_UPLOAD` slot (PyMax) → kolibri
@@ -166,13 +198,39 @@ class MediaApi(
         chunkSize: Int = DEFAULT_CHUNK_SIZE,
         concurrency: Int = DEFAULT_CONCURRENCY,
         progress: UploadProgress? = null,
+    ): OutgoingAttachment.Video = uploadVideoParallel(ByteArrayUploadSource(bytes), chunkSize, concurrency, progress)
+
+    /** [uploadVideoParallel] reading each chunk from [source] (at most `concurrency × chunkSize` in memory). */
+    suspend fun uploadVideoParallel(
+        source: UploadSource,
+        chunkSize: Int = DEFAULT_CHUNK_SIZE,
+        concurrency: Int = DEFAULT_CONCURRENCY,
+        progress: UploadProgress? = null,
     ): OutgoingAttachment.Video {
         val slot = requestVideoUpload()
         awaitReady(slot.id, MaxEvent.AttachmentReady.Kind.VIDEO, "video") {
-            uploadChunked(slot.url, bytes, chunkSize, concurrency, progress)
+            uploadChunked(slot.url, source, chunkSize, concurrency, progress)
         }
         return OutgoingAttachment.Video(slot.id, slot.token)
     }
+
+    /** [uploadVideoParallel] from the file at [path]. */
+    suspend fun uploadVideoParallel(
+        path: String,
+        chunkSize: Int = DEFAULT_CHUNK_SIZE,
+        concurrency: Int = DEFAULT_CONCURRENCY,
+        progress: UploadProgress? = null,
+    ): OutgoingAttachment.Video = fileUploadSource(path).use { uploadVideoParallel(it, chunkSize, concurrency, progress) }
+
+    /** [uploadChunked] over an in-memory array. */
+    suspend fun uploadChunked(
+        url: String,
+        bytes: ByteArray,
+        chunkSize: Int = DEFAULT_CHUNK_SIZE,
+        concurrency: Int = DEFAULT_CONCURRENCY,
+        progress: UploadProgress? = null,
+        uploadName: String = defaultUploadName(),
+    ): Long = uploadChunked(url, ByteArrayUploadSource(bytes), chunkSize, concurrency, progress, uploadName)
 
     /**
      * Parallel resumable chunk upload to [url] (kolibri `kolibri-net/src/media/upload.rs`
@@ -180,7 +238,8 @@ class MediaApi(
      * 1. `GET` with [UploadRequests.parallelChunkHeaders] (empty body, no range); status must be
      *    200, the trimmed body parsed as a number is the resume offset (used when `<= size`).
      * 2. The rest is split into [chunkSize] ranges; up to [concurrency] workers `POST` them with
-     *    `Content-Range: bytes <start>-<end-1>/<size>`; 200 and 201 are accepted.
+     *    `Content-Range: bytes <start>-<end-1>/<size>`; 200 and 201 are accepted. Each chunk body
+     *    is streamed from [source].
      * 3. [progress] gets `(offset + bytes done, size)` after every chunk, in increasing order
      *    (kolibri reports from each worker without ordering).
      *
@@ -191,22 +250,22 @@ class MediaApi(
      */
     suspend fun uploadChunked(
         url: String,
-        bytes: ByteArray,
+        source: UploadSource,
         chunkSize: Int = DEFAULT_CHUNK_SIZE,
         concurrency: Int = DEFAULT_CONCURRENCY,
         progress: UploadProgress? = null,
         uploadName: String = defaultUploadName(),
     ): Long {
         require(chunkSize > 0) { "chunkSize must be positive" }
-        val total = bytes.size
-        if (total == 0) throw UploadException("nothing to upload")
-        val handshake = send("GET", url, UploadRequests.parallelChunkHeaders(uploadName, 0, null), ByteArray(0), null, "video")
+        val total = source.size
+        if (total == 0L) throw UploadException("nothing to upload")
+        val handshake = send("GET", url, UploadRequests.parallelChunkHeaders(uploadName, 0, null), UploadBody.EMPTY, null, "video")
         if (handshake.status != 200) throw UploadException("video upload handshake failed with status ${handshake.status}", handshake.status)
-        val resumed = handshake.text.trim().toLongOrNull()?.takeIf { it in 0..total.toLong() } ?: 0L
-        val ranges = ArrayList<Pair<Int, Int>>()
-        var o = resumed.toInt()
+        val resumed = handshake.text.trim().toLongOrNull()?.takeIf { it in 0..total } ?: 0L
+        val ranges = ArrayList<Pair<Long, Long>>()
+        var o = resumed
         while (o < total) {
-            val end = minOf(o.toLong() + chunkSize, total.toLong()).toInt()
+            val end = minOf(o + chunkSize, total)
             ranges += o to end
             o = end
         }
@@ -222,15 +281,16 @@ class MediaApi(
                         if (i >= ranges.size) break
                         val (start, end) = ranges[i]
                         val range = "bytes $start-${end - 1}/$total"
-                        val chunk = bytes.copyOfRange(start, end)
-                        val resp = send("POST", url, UploadRequests.parallelChunkHeaders(uploadName, chunk.size, range), chunk, null, "video")
+                        val length = (end - start).toInt()
+                        val body = UploadBody.range(source, start, length.toLong())
+                        val resp = send("POST", url, UploadRequests.parallelChunkHeaders(uploadName, length, range), body, null, "video")
                         if (resp.status != 200 && resp.status != 201) {
                             throw UploadException("video chunk $range failed with status ${resp.status}", resp.status)
                         }
                         // reported under the lock so values arrive in increasing order across workers
                         lock.withLock {
-                            sent += chunk.size
-                            progress?.onProgress(sent, total.toLong())
+                            sent += length
+                            progress?.onProgress(sent, total)
                         }
                     }
                 }
@@ -245,9 +305,13 @@ class MediaApi(
      * `attachment.not.ready`). [durationMs] in milliseconds. This is the only audio path in the
      * references (`AUDIO_PLAY` 301 is declared but unused in both).
      */
-    suspend fun uploadVoice(bytes: ByteArray, fileName: String, durationMs: Long, progress: UploadProgress? = null): OutgoingAttachment.Voice {
+    suspend fun uploadVoice(bytes: ByteArray, fileName: String, durationMs: Long, progress: UploadProgress? = null): OutgoingAttachment.Voice =
+        uploadVoice(ByteArrayUploadSource(bytes), fileName, durationMs, progress)
+
+    /** [uploadVoice] streamed from [source]. */
+    suspend fun uploadVoice(source: UploadSource, fileName: String, durationMs: Long, progress: UploadProgress? = null): OutgoingAttachment.Voice {
         val slot = requestVoiceUpload()
-        post(slot.url, UploadRequests.singlePostHeaders(fileName, bytes.size, userAgent), bytes, "voice", progress)
+        post(slot.url, UploadRequests.singlePostHeaders(fileName, source.size, userAgent), UploadBody.of(source), "voice", progress)
         return OutgoingAttachment.Voice(slot.id, slot.token, durationMs)
     }
 
@@ -263,9 +327,17 @@ class MediaApi(
         fileName: String,
         durationMs: Long? = null,
         progress: UploadProgress? = null,
+    ): OutgoingAttachment.VideoNote = uploadVideoNote(ByteArrayUploadSource(bytes), fileName, durationMs, progress)
+
+    /** [uploadVideoNote] streamed from [source]. */
+    suspend fun uploadVideoNote(
+        source: UploadSource,
+        fileName: String,
+        durationMs: Long? = null,
+        progress: UploadProgress? = null,
     ): OutgoingAttachment.VideoNote {
         val slot = requestVideoNoteUpload()
-        val response = post(slot.url, UploadRequests.singlePostHeaders(fileName, bytes.size, userAgent), bytes, "video note", progress)
+        val response = post(slot.url, UploadRequests.singlePostHeaders(fileName, source.size, userAgent), UploadBody.of(source), "video note", progress)
         val thumb = jsonReply(response, "video note")["thumbhash"]
         val thumbhash = when (thumb) {
             null -> null
@@ -338,11 +410,11 @@ class MediaApi(
         method: String,
         url: String,
         headers: List<Pair<String, String>>,
-        body: ByteArray,
+        body: UploadBody,
         progress: UploadProgress?,
         what: String,
     ): HttpResponse = try {
-        http.request(method, url, headers, body, progress)
+        http.upload(method, url, headers, body, progress)
     } catch (e: CancellationException) {
         throw e
     } catch (e: UploadException) {
@@ -355,12 +427,12 @@ class MediaApi(
      * Single POST that must answer 200 (PyMax `HTTPStatus.OK`). [progress] is handed to [http];
      * if it never reported the full size, `(size, size)` is reported after the 200.
      */
-    private suspend fun post(url: String, headers: List<Pair<String, String>>, body: ByteArray, what: String, progress: UploadProgress?): HttpResponse {
+    private suspend fun post(url: String, headers: List<Pair<String, String>>, body: UploadBody, what: String, progress: UploadProgress?): HttpResponse {
         var last = -1L
         val tracking = progress?.let { p -> UploadProgress { sent, total -> last = sent; p.onProgress(sent, total) } }
         val response = send("POST", url, headers, body, tracking, what)
         if (response.status != 200) throw UploadException("$what upload failed with status ${response.status}", response.status)
-        if (progress != null && last < body.size) progress.onProgress(body.size.toLong(), body.size.toLong())
+        if (progress != null && last < body.contentLength) progress.onProgress(body.contentLength, body.contentLength)
         return response
     }
 
@@ -396,6 +468,8 @@ class MediaApi(
             }
         }
     }
+
+    private fun fileNameOf(path: String): String = path.substringAfterLast('/').substringAfterLast('\\').ifEmpty { "file" }
 
     /** kolibri `now_micros()`: current microseconds `& 0x7FFFFFFF`, as a decimal string. */
     private fun defaultUploadName(): String = ((clock() * 1000) and 0x7FFF_FFFFL).toString()

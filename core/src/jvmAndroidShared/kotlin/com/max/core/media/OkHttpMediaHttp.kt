@@ -35,6 +35,8 @@ import kotlin.coroutines.resumeWithException
  *   gzip replies are decoded transparently). A caller `Connection: close` is honored (the
  *   connection is not reused). `User-Agent` is the caller's (OkHttp adds its own only when absent).
  * - `GET` is sent without a body (the `Content-Length: 0` header of the kolibri handshake stays).
+ * - Bodies are streamed ([upload] with an [UploadBody]): file ranges are read from their
+ *   [UploadSource] segment by segment while writing, so a large file is never held in memory.
  * - Progress: the body is written in 64 KiB segments (like kolibri `http.rs`) and
  *   [UploadProgress] gets `(bytesWritten, total)` after each; if OkHttp rewrites the body on a
  *   retry, only values above the previous maximum are reported.
@@ -53,11 +55,20 @@ class OkHttpMediaHttp(val client: OkHttpClient) : MediaHttp {
         headers: List<Pair<String, String>>,
         body: ByteArray,
         progress: UploadProgress?,
+    ): HttpResponse = upload(method, url, headers, UploadBody.of(body), progress)
+
+    /** Streams [body] (files are read in 64 KiB segments on OkHttp's thread, never fully loaded). */
+    override suspend fun upload(
+        method: String,
+        url: String,
+        headers: List<Pair<String, String>>,
+        body: UploadBody,
+        progress: UploadProgress?,
     ): HttpResponse {
         val hb = Headers.Builder()
         for ((name, value) in headers) hb.addUnsafeNonAscii(name, value)
         val requestBody = if (method == "GET" || method == "HEAD") {
-            require(body.isEmpty()) { "$method with a body" }
+            require(body.contentLength == 0L) { "$method with a body" }
             null
         } else {
             ProgressBody(body, progress)
@@ -85,22 +96,23 @@ class OkHttpMediaHttp(val client: OkHttpClient) : MediaHttp {
     }
 
     /** Fixed-length body that reports progress per written segment. */
-    private class ProgressBody(private val bytes: ByteArray, private val progress: UploadProgress?) : RequestBody() {
+    private class ProgressBody(private val body: UploadBody, private val progress: UploadProgress?) : RequestBody() {
         @Volatile private var reported = -1L
 
         override fun contentType(): MediaType? = null
 
-        override fun contentLength(): Long = bytes.size.toLong()
+        override fun contentLength(): Long = body.contentLength
 
         override fun writeTo(sink: BufferedSink) {
-            val total = bytes.size.toLong()
-            var offset = 0
-            while (offset < bytes.size) {
-                val n = minOf(SEGMENT, bytes.size - offset)
-                sink.write(bytes, offset, n)
-                sink.flush()
-                offset += n
-                report(offset.toLong(), total)
+            val total = body.contentLength
+            try {
+                body.writeTo(SEGMENT, written = { report(it, total) }) { b, off, n ->
+                    sink.write(b, off, n)
+                    sink.flush()
+                }
+            } catch (e: UploadException) {
+                // OkHttp only routes IOExceptions to onFailure (others escape the dispatcher thread)
+                throw IOException(e.message, e)
             }
         }
 

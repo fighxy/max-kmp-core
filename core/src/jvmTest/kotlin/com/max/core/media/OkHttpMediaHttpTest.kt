@@ -265,6 +265,84 @@ class OkHttpMediaHttpTest {
         withTimeout(2_000) { while (http.client.dispatcher.runningCallsCount() != 0) kotlinx.coroutines.delay(10) }
     }
 
+    /** Wraps a source and records the largest single read, to prove bodies are streamed. */
+    private class Recording(val inner: UploadSource) : UploadSource by inner {
+        val maxRead = AtomicInteger()
+        val readBytes = java.util.concurrent.atomic.AtomicLong()
+        override fun read(position: Long, buffer: ByteArray, offset: Int, length: Int): Int {
+            maxRead.accumulateAndGet(length) { a, b -> maxOf(a, b) }
+            return inner.read(position, buffer, offset, length).also { if (it > 0) readBytes.addAndGet(it.toLong()) }
+        }
+    }
+
+    private fun tempFile(bytes: ByteArray, name: String = "clip one.bin"): java.io.File {
+        val dir = java.nio.file.Files.createTempDirectory("max-upload").toFile()
+        dir.deleteOnExit()
+        return java.io.File(dir, name).apply { writeBytes(bytes); deleteOnExit() }
+    }
+
+    @Test
+    fun fileSourceReadsPositionally() {
+        val data = Random(7).nextBytes(10_000)
+        fileUploadSource(tempFile(data).path).use { src ->
+            assertEquals(10_000L, src.size)
+            assertTrue(src.filePath!!.endsWith("clip one.bin"))
+            assertContentEquals(data.copyOfRange(9_000, 9_500), src.readFully(9_000, 500))
+            assertEquals(-1, src.read(10_000, ByteArray(4), 0, 4))
+            assertFailsWith<UploadException> { src.readFully(9_990, 20) }
+        }
+        assertFailsWith<java.io.FileNotFoundException> { fileUploadSource("/nonexistent/max-upload") }
+    }
+
+    @Test
+    fun fileUploadFromPathIsStreamed() = run {
+        val data = Random(8).nextBytes(3_000_000)
+        val file = tempFile(data)
+        val sink = FakeSink(slot("/file", "fileId", 30))
+        val api = MediaApi(sink, OkHttpMediaHttp(), ua, events)
+        val seen = Collections.synchronizedList(ArrayList<Pair<Long, Long>>())
+        val src = Recording(fileUploadSource(file.path))
+        src.use { assertEquals(OutgoingAttachment.File(30), api.uploadFile(it, file.name) { s, t -> seen += s to t }) }
+        val req = requests.single()
+        assertContentEquals(data, req.body)
+        assertEquals("attachment; filename=clip%20one.bin", req.headers["content-disposition"])
+        assertEquals("bytes 0-2999999/3000000", req.headers["content-range"])
+        assertEquals("3000000", req.headers["content-length"])
+        assertTrue(src.maxRead.get() <= UploadBody.SEGMENT, "read in segments, max ${src.maxRead.get()}")
+        assertEquals(3_000_000L, src.readBytes.get())
+        assertMonotonicTo(seen, 3_000_000)
+        // path overload: file name taken from the path
+        requests.clear()
+        val api2 = MediaApi(FakeSink(slot("/file", "fileId", 30)), OkHttpMediaHttp(), ua, events)
+        assertEquals(OutgoingAttachment.File(30), api2.uploadFile(file.path))
+        assertContentEquals(data, requests.single().body)
+        assertEquals("attachment; filename=clip%20one.bin", requests.single().headers["content-disposition"])
+    }
+
+    @Test
+    fun photoFromPathIsMultipartStreamed() = run {
+        val image = Random(9).nextBytes(200_000)
+        val file = tempFile(image, "pic.png")
+        val api = MediaApi(FakeSink(mapOf("url" to "$base/photo?photoIds=7")), OkHttpMediaHttp(), ua, boundary = { "----B" })
+        val photo = api.uploadPhoto(file.path)
+        val req = requests.single()
+        assertContentEquals(UploadRequests.multipartBody("----B", "pic.png", "image/png", image), req.body)
+        assertEquals("tok-${req.body.size}", photo.photoToken)
+    }
+
+    @Test
+    fun parallelVideoFromFileReadsOnlyChunks() = run {
+        videoData = Random(10).nextBytes(1_000_003)
+        val file = tempFile(videoData, "v.mp4")
+        val api = MediaApi(FakeSink(slot("/video", "videoId", 20, "video-token")), OkHttpMediaHttp(), ua, events)
+        val src = Recording(fileUploadSource(file.path))
+        val video = src.use { api.uploadVideoParallel(it, chunkSize = 100_000, concurrency = 3) }
+        assertEquals(OutgoingAttachment.Video(20, "video-token"), video)
+        assertContentEquals(videoData, reassemble())
+        assertEquals(1_000_003L, src.readBytes.get())
+        assertTrue(src.maxRead.get() <= UploadBody.SEGMENT)
+    }
+
     private fun assertMonotonicTo(seen: List<Pair<Long, Long>>, total: Long) {
         val list = synchronized(seen) { seen.toList() }
         assertTrue(list.isNotEmpty())

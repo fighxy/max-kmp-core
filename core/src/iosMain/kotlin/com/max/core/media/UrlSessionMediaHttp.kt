@@ -47,8 +47,8 @@ class UrlSessionException(message: String, val code: Long) : Exception(message)
  * [MediaHttp] on `NSURLSession` (iOS).
  *
  * - One ephemeral session per request (no cookies, no cache), with a delegate; the session is
- *   invalidated when its task finishes. `POST` bodies go through `uploadTaskWithRequest:fromData:`,
- *   `GET` through `dataTaskWithRequest:`.
+ *   invalidated when its task finishes. `POST` bodies go through `uploadTaskWithRequest:fromData:`
+ *   (or `fromFile:` for a whole file, see [upload]), `GET` through `dataTaskWithRequest:`.
  * - Headers: set with `setValue:forHTTPHeaderField:` in order. `NSURLSession` owns `Content-Length`
  *   (it computes the same value from the body), `Connection` and `Host` — Apple documents that
  *   setting them has no reliable effect, so kolibri's `Connection: close` for video chunks is a
@@ -80,6 +80,41 @@ class UrlSessionMediaHttp(private val config: MediaHttpConfig = MediaHttpConfig(
         headers: List<Pair<String, String>>,
         body: ByteArray,
         progress: UploadProgress?,
+    ): HttpResponse = perform(method, url, headers, body.size.toLong(), progress) { session, request ->
+        if (method == "GET" || method == "HEAD") {
+            require(body.isEmpty()) { "$method with a body" }
+            session.dataTaskWithRequest(request)
+        } else {
+            session.uploadTaskWithRequest(request, fromData = body.toNSData())
+        }
+    }
+
+    /**
+     * A body that is exactly one whole file ([UploadBody.wholeFilePath], e.g. `MediaApi.uploadFile(path)`)
+     * goes through `uploadTaskWithRequest:fromFile:`, so the OS streams it from disk. Other bodies
+     * (multipart photos, parallel video chunks of at most the chunk size) are built in memory.
+     */
+    override suspend fun upload(
+        method: String,
+        url: String,
+        headers: List<Pair<String, String>>,
+        body: UploadBody,
+        progress: UploadProgress?,
+    ): HttpResponse {
+        val path = body.wholeFilePath
+        if (path == null || method == "GET" || method == "HEAD") return request(method, url, headers, body.toByteArray(), progress)
+        return perform(method, url, headers, body.contentLength, progress) { session, request ->
+            session.uploadTaskWithRequest(request, fromFile = NSURL.fileURLWithPath(path))
+        }
+    }
+
+    private suspend fun perform(
+        method: String,
+        url: String,
+        headers: List<Pair<String, String>>,
+        bodySize: Long,
+        progress: UploadProgress?,
+        makeTask: (NSURLSession, NSMutableURLRequest) -> NSURLSessionTask,
     ): HttpResponse {
         val nsUrl = NSURL.URLWithString(url)
             ?.takeIf { (it.scheme?.lowercase() == "http" || it.scheme?.lowercase() == "https") && !it.host.isNullOrEmpty() }
@@ -96,18 +131,13 @@ class UrlSessionMediaHttp(private val config: MediaHttpConfig = MediaHttpConfig(
         sessionConfig.URLCache = null
 
         return suspendCancellableCoroutine { cont ->
-            val delegate = TaskDelegate(config, body.size.toLong(), progress) { result ->
+            val delegate = TaskDelegate(config, bodySize, progress) { result ->
                 if (cont.isActive) {
                     result.fold({ cont.resume(it) }, { cont.resumeWithException(it) })
                 }
             }
             val session = NSURLSession.sessionWithConfiguration(sessionConfig, delegate, null)
-            val task = if (method == "GET" || method == "HEAD") {
-                require(body.isEmpty()) { "$method with a body" }
-                session.dataTaskWithRequest(request)
-            } else {
-                session.uploadTaskWithRequest(request, fromData = body.toNSData())
-            }
+            val task = makeTask(session, request)
             cont.invokeOnCancellation { task.cancel() }
             task.resume()
             session.finishTasksAndInvalidate()
