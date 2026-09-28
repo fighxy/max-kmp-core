@@ -8,7 +8,7 @@ import com.max.core.session.SessionMachine
  * Request/response API over a logged-in connection: [messages] and [chats].
  *
  * Use it with a `SessionMachine` that logs in through `TokenLogin.hook` (the requests need an
- * authenticated session), or with any [RequestSink]. Events/notifications, media, calls and push
+ * authenticated session), or with any [RequestSink]. Events (see `com.max.core.events`), media, calls and push
  * are outside this package.
  *
  * @param clock wall-clock milliseconds, used for `cid`, `from`, `mark`, `marker` defaults.

@@ -52,7 +52,7 @@ flowchart LR
 | | `HandshakeConfig.kt` / `UserAgent` (новый) | P0 | поля `userAgent` (§C.2) |
 | | `PingScheduler.kt` (новый) | P0 | PING 1, 30 s, `interactive` (§C.3) |
 | | `ReconnectPolicy.kt` (новый) | P0 | backoff 2/4/8/15 s (§C.4) |
-| `com.max.core.events` | `EventBus.kt` (новый): `SharedFlow<Packet>` + типизированные `CoreEvent` | P0 | pushes 128 `NOTIF_MESSAGE`, 129, 130, 137… (§E) |
+| `com.max.core.events` | `MaxEvent.kt`: sealed `MaxEvent`; `EventParser.kt`: `EventParser`; `MaxEvents.kt`: `MaxEvents` (`Flow<MaxEvent>` поверх `SessionMachine.pushes` / `MaxTransport.pushes`) | P0 | маппинг как в PyMax `dispatch/mapping.py`: 128/67 → `NewMessage` / `MessageEdited` / `MessagesDeleted` (по `status`), 142 → `MessagesDeleted`, 135 → `ChatUpdated`, 129 → `Typing`, 130 → `MessageRead`, 132 → `Presence`, 155 → `ReactionsChanged`; остальное (в т.ч. 136 upload-сигналы, `cmd != 0`) → `Unknown`; ack не отправляется (в references его нет) (§E) |
 | `com.max.core.auth` | `Auth.kt`: `AuthApi`, `RequestSink`, `CodeRequest`, `VerifyResult`, `SyncState`, `LoginResult`, `InvalidTokenException`; `TokenLogin.kt`; `Fingerprint.kt`: `ApkFingerprint`; `Sha256.kt` | P0 | `AUTH_REQUEST` (17) → `AUTH` (18) → `LOGIN` (19) по PyMax/kolibri; `TokenLogin.hook` логинится после каждого handshake; fingerprint = 3×SHA-256(digest‖callsSeed(int64 BE)‖deviceId); 2FA (115) и регистрация (23) пока только распознаются (`PasswordRequired`, `RegistrationRequired`) (§C.5, §D.1–D.2) |
 | | `Auth.kt`: `AuthApi.approveQrLogin`, `QrApproval` | P0 | подтверждение web-входа по QR с залогиненного Android-устройства: `AUTH_QR_APPROVE` (290) `{qrLink}` (PyMax `ApproveQrLoginPayload`); сам вход по QR (288/289/291) в references есть только у web-клиента PyMax — не реализован (§D.3) |
 | | `TokenStore` (interface, actual: Keychain / EncryptedSharedPreferences) | P0 | хранение login token |
@@ -90,7 +90,7 @@ ios/src/
 
 ## 6. Порядок работ
 
-1. **P0 iOS:** protocol → transport(+Dispatcher) → session(+Ping/Reconnect) → auth(SMS, пароль) → api(chats/messages) → EventBus → shared/ios export → Swift-клиент ([ios-plan.md](ios-plan.md)).
+1. **P0 iOS:** protocol → transport(+Dispatcher) → session(+Ping/Reconnect) → auth(SMS, пароль) → api(chats/messages) → events (MaxEvents) → shared/ios export → Swift-клиент ([ios-plan.md](ios-plan.md)).
 2. **P0 Android:** те же `commonMain`, `androidMain` actual'ы, Android UI.
 3. **P1:** QR, MediaUploader (photo/file), LOGIN2, push-регистрация (после эксперимента §K). Proxy, Минцифры CA и iOS TLS (Network.framework) уже в P0-транспорте.
 4. **P2:** video parallel upload, CallSignaling, stories (EXPERIMENTAL), desktop.
@@ -143,7 +143,7 @@ max-kmp-core/
 │       │   │   ├── Sha256.kt                    # SHA-256 для fingerprint                 P0
 │       │   │   └── (QR)                         # 290 approve в Auth.kt; 288/289/291 — web  P1
 │       │   ├── api/                             # MaxApi, MessagesApi, ChatsApi, модели   P0
-│       │   ├── events/                          # EventBus (SharedFlow)         (план)    P0
+│       │   ├── events/                          # MaxEvent, EventParser, MaxEvents        P0
 │       │   ├── media/
 │       │   │   └── MediaUploader.kt             # фото/файлы P1, параллельное видео P2 (план)
 │       │   ├── calls/
@@ -206,7 +206,7 @@ max-kmp-core/
                                     ▼
                          api2.oneme.ru  (TLS TCP, MessagePack)
 
- Входящие события идут обратно вверх: protocol → EventBus → Flow → (Swift: AsyncStream)
+ Входящие события идут обратно вверх: protocol → MaxTransport.pushes → MaxEvents → Flow → (Swift: AsyncStream)
 ```
 
 Порядок работ: сначала iOS, потом Android, потом Desktop (см. §6 и [ios-plan.md](ios-plan.md)).
