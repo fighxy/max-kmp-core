@@ -1,6 +1,9 @@
 package com.max.core.media
 
 import com.max.core.api.MaxMessage
+import com.max.core.api.PollAnswer
+import com.max.core.api.PollFlag
+import com.max.core.api.PollState
 import com.max.core.api.asLong
 
 /**
@@ -85,6 +88,26 @@ sealed interface OutgoingAttachment {
             ((uploadId.hashCode() * 31 + token.hashCode()) * 31 + (durationMs?.hashCode() ?: 0)) * 31 +
                 (thumbhash?.contentHashCode() ?: 0)
     }
+
+    /**
+     * A poll (PyMax `Poll`): `{title, answers: [{text, answerId?}], settings: <PollFlag bits>,
+     * _type: "POLL"}`; no upload needed.
+     */
+    data class Poll(val title: String, val answers: List<PollAnswer>, val flags: Set<PollFlag> = emptySet()) : OutgoingAttachment {
+        init {
+            require(title.isNotEmpty()) { "poll title must not be empty" }
+            require(answers.size >= 2) { "a poll needs at least two answers" }
+        }
+
+        override fun toPayload(): Map<String, Any?> = linkedMapOf(
+            "title" to title,
+            "answers" to answers.map { a ->
+                linkedMapOf<String, Any?>("text" to a.text).apply { if (a.answerId != null) put("answerId", a.answerId) }
+            },
+            "settings" to PollFlag.mask(flags),
+            "_type" to "POLL",
+        )
+    }
 }
 
 /**
@@ -142,7 +165,18 @@ sealed interface Attachment {
         override val raw: Map<*, *>,
     ) : Attachment
 
-    /** Any other `_type` (CONTROL, CONTACT, CALL, SHARE, INLINE_KEYBOARD, POLL, ...) or a malformed entry. */
+    /** PyMax `PollAttachment`: `pollId`, `version`, `state`, `title`, `answers`, `settings` bits. */
+    data class Poll(
+        val pollId: Long,
+        val version: Int?,
+        val title: String?,
+        val answers: List<PollAnswer>,
+        val flags: Set<PollFlag>,
+        val state: PollState?,
+        override val raw: Map<*, *>,
+    ) : Attachment
+
+    /** Any other `_type` (CONTROL, CONTACT, CALL, SHARE, INLINE_KEYBOARD, ...) or a malformed entry. */
     data class Unknown(val type: String?, override val raw: Map<*, *>) : Attachment
 
     companion object {
@@ -164,6 +198,13 @@ sealed interface Attachment {
                         m["audio"] as? Boolean, m["time"].asLong(), m["setId"].asLong(), tags,
                         m["lottieUrl"] as? String, m["authorType"] as? String, m,
                     )
+                }
+                "POLL" -> m["pollId"].asLong()?.let { id ->
+                    val answers = (m["answers"] as? List<*>).orEmpty().mapNotNull { a ->
+                        val am = a as? Map<*, *> ?: return@mapNotNull null
+                        PollAnswer(am["text"] as? String ?: return@mapNotNull null, am["answerId"].asLong())
+                    }
+                    Poll(id, int("version"), m["title"] as? String, answers, PollFlag.of(int("settings") ?: 0), PollState.from(m["state"]), m)
                 }
                 else -> null
             } ?: Unknown(type, m)

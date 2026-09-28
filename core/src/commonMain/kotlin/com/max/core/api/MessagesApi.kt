@@ -32,8 +32,9 @@ enum class HistoryItemType { REGULAR, DELAYED }
  *
  * Text is sent as given, with optional raw formatting [elements][sendMessage]; PyMax instead
  * parses Markdown in the text (`Formatter.format_markdown`) into the plain text plus
- * `elements`. Attachments are sent through `com.max.core.media.MediaApi.sendMessage`; delayed
- * sending and comments (channel posts) are not covered.
+ * `elements`. Attachments are sent through `com.max.core.media.MediaApi.sendMessage`. Delayed
+ * sending ([scheduleMessage]), polls ([sendPoll], [votePoll]) and channel-post comments
+ * ([sendComment] and the other `*Comment*` methods) follow the same service.
  *
  * Errors: ERROR replies throw `ServerErrorException`; an OK reply without the required fields
  * throws [MalformedReplyException]; invalid arguments throw `IllegalArgumentException`.
@@ -193,6 +194,108 @@ class MessagesApi(
         return reactions.entries.mapNotNull { (k, v) -> ReactionInfo.from(v)?.let { k.toString() to it } }.toMap()
     }
 
+    // ---- delayed sending and polls ------------------------------------------------------------
+
+    /**
+     * Schedules a message (PyMax `send_message(send_at=...)`): `MSG_SEND` with
+     * `message.delayedAttributes {timeToFire, notifySender}` ([sendAt] in epoch milliseconds,
+     * `notifySender` = [notify] as PyMax). Scheduled messages are listed with
+     * [getChatHistory]`(itemType = DELAYED)`.
+     */
+    suspend fun scheduleMessage(chatId: Long, text: String, sendAt: Long, notify: Boolean = true, elements: List<Map<String, Any?>> = emptyList()): MaxMessage {
+        require(text.isNotEmpty()) { "text must not be empty" }
+        val payload = sendMessagePayload(chatId, text, cids.next(), null, notify, elements, delayed = DelayedSend(sendAt, notify))
+        return requireMessage(sink.request(Opcode.MSG_SEND, payload), Opcode.MSG_SEND, chatId)
+    }
+
+    /** Sends a poll (`MSG_SEND` with one PyMax `Poll` attach, no text). */
+    suspend fun sendPoll(chatId: Long, poll: com.max.core.media.OutgoingAttachment.Poll, notify: Boolean = true): MaxMessage {
+        val payload = sendMessagePayload(chatId, null, cids.next(), null, notify, attaches = listOf(poll.toPayload()))
+        return requireMessage(sink.request(Opcode.MSG_SEND, payload), Opcode.MSG_SEND, chatId)
+    }
+
+    /** Votes (`SEND_VOTE` 304, PyMax `vote_poll`): `{chatId, messageId, pollId, answersIds}`; reply `state` (required). */
+    suspend fun votePoll(chatId: Long, messageId: Long, pollId: Long, answerIds: List<Long>): PollState {
+        require(answerIds.isNotEmpty()) { "answerIds must not be empty" }
+        val payload = linkedMapOf<String, Any?>("chatId" to chatId, "messageId" to messageId, "pollId" to pollId, "answersIds" to answerIds)
+        val map = replyMap(sink.request(Opcode.SEND_VOTE, payload), Opcode.SEND_VOTE)
+        return PollState.from(map["state"]) ?: throw MalformedReplyException(Opcode.SEND_VOTE, "no poll state", map)
+    }
+
+    // ---- comments on channel posts (PyMax *_comment*) ------------------------------------------
+
+    /** Comments on post [postId] (`MSG_SEND` + `postId`, PyMax `SendCommentPayload`). */
+    suspend fun sendComment(chatId: Long, postId: Long, text: String, replyTo: Long? = null, notify: Boolean = true, elements: List<Map<String, Any?>> = emptyList()): MaxMessage {
+        require(text.isNotEmpty()) { "text must not be empty" }
+        val payload = sendMessagePayload(chatId, text, cids.next(), replyTo, notify, elements, postId = postId)
+        return requireMessage(sink.request(Opcode.MSG_SEND, payload), Opcode.MSG_SEND, chatId)
+    }
+
+    /** Comments by id (`MSG_GET` 71, `{chatId, messageIds, postId}`). */
+    suspend fun getComments(chatId: Long, postId: Long, messageIds: List<Long>): List<MaxMessage> {
+        val reply = sink.request(Opcode.MSG_GET, linkedMapOf("chatId" to chatId, "messageIds" to messageIds, "postId" to postId))
+        return messageList(reply, Opcode.MSG_GET, chatId)
+    }
+
+    /**
+     * Comment history (`CHAT_HISTORY` 49, PyMax `fetch_comments` / `CommentsHistoryPayload`): the
+     * history fields with `backward = 30`, `from = -1` (newest) by default, then `postId`.
+     */
+    suspend fun getCommentHistory(chatId: Long, postId: Long, from: Long = -1, backward: Int = 30, forward: Int = 0, getMessages: Boolean = true): List<MaxMessage> {
+        val payload = linkedMapOf<String, Any?>(
+            "chatId" to chatId, "forward" to forward, "backward" to backward, "backwardTime" to 0, "forwardTime" to 0,
+            "getChat" to false, "from" to from, "itemType" to HistoryItemType.REGULAR.name, "getMessages" to getMessages,
+            "interactive" to false, "postId" to postId,
+        )
+        return messageList(sink.request(Opcode.CHAT_HISTORY, payload), Opcode.CHAT_HISTORY, chatId)
+    }
+
+    /** Edits a comment (`MSG_EDIT` 67, `{chatId, messageId, text, elements, attachments: [], postId}`). */
+    suspend fun editComment(chatId: Long, postId: Long, messageId: Long, text: String, elements: List<Map<String, Any?>> = emptyList()): MaxMessage {
+        require(text.isNotEmpty()) { "text must not be empty" }
+        val payload = linkedMapOf<String, Any?>(
+            "chatId" to chatId, "messageId" to messageId, "text" to text, "elements" to elements, "attachments" to emptyList<Any?>(), "postId" to postId,
+        )
+        val map = replyMap(sink.request(Opcode.MSG_EDIT, payload), Opcode.MSG_EDIT)
+        return MaxMessage.from(map["message"], chatId) ?: throw MalformedReplyException(Opcode.MSG_EDIT, "no valid message", map)
+    }
+
+    /** Deletes comments (`MSG_DELETE` 66, `{chatId, messageIds, forMe, postId}`); reply raw. */
+    suspend fun deleteComments(chatId: Long, postId: Long, messageIds: List<Long>, forMe: Boolean = false): Map<*, *> {
+        require(messageIds.isNotEmpty()) { "messageIds must not be empty" }
+        return rawMap(sink.request(Opcode.MSG_DELETE, linkedMapOf("chatId" to chatId, "messageIds" to messageIds, "forMe" to forMe, "postId" to postId)))
+    }
+
+    /** Reacts to a comment (`MSG_REACTION` 178, reaction payload + `postId`). */
+    suspend fun addCommentReaction(chatId: Long, postId: Long, messageId: Long, reaction: String): ReactionInfo? {
+        require(reaction.isNotEmpty()) { "reaction must not be empty" }
+        val payload = linkedMapOf<String, Any?>(
+            "chatId" to chatId, "messageId" to messageId, "reaction" to linkedMapOf("reactionType" to "EMOJI", "id" to reaction), "postId" to postId,
+        )
+        return ReactionInfo.from(rawMap(sink.request(Opcode.MSG_REACTION, payload))["reactionInfo"])
+    }
+
+    /** Removes own comment reaction (`MSG_CANCEL_REACTION` 179, `{chatId, messageId, postId}`). */
+    suspend fun removeCommentReaction(chatId: Long, postId: Long, messageId: Long): ReactionInfo? = ReactionInfo.from(
+        rawMap(sink.request(Opcode.MSG_CANCEL_REACTION, linkedMapOf("chatId" to chatId, "messageId" to messageId, "postId" to postId)))["reactionInfo"],
+    )
+
+    /** (Un)subscribes from a post's comments (`CHAT_SUBSCRIBE` 75, `{chatId, postId, subscribe}`). */
+    suspend fun subscribeComments(chatId: Long, postId: Long, subscribe: Boolean = true) {
+        sink.request(Opcode.CHAT_SUBSCRIBE, linkedMapOf("chatId" to chatId, "postId" to postId, "subscribe" to subscribe))
+    }
+
+    /** Comment counters (`MSG_GET_COMMENTS_INFO` 91, `{chatId, postIds}`); reply `commentsInfoUpdates`. */
+    suspend fun getCommentsInfo(chatId: Long, postIds: List<Long>): List<CommentsInfo> {
+        val map = rawMap(sink.request(Opcode.MSG_GET_COMMENTS_INFO, linkedMapOf("chatId" to chatId, "postIds" to postIds)))
+        return (map["commentsInfoUpdates"] as? List<*>).orEmpty().mapNotNull { CommentsInfo.from(it) }
+    }
+
+    /** Deletes all comments of [userId] under a post (`MSG_DELETE_USER_COMMENTS` 94, `{chatId, postId, userId, messageId}`). */
+    suspend fun deleteUserComments(chatId: Long, postId: Long, userId: Long, messageId: Long) {
+        sink.request(Opcode.MSG_DELETE_USER_COMMENTS, linkedMapOf("chatId" to chatId, "postId" to postId, "userId" to userId, "messageId" to messageId))
+    }
+
     /**
      * `MSG_SEND` body (PyMax `SendMessagePayload` / `SendMessagePayloadMessage`): `text` is left
      * out when `null` (attachments only), `attaches` holds attachment payloads such as
@@ -206,6 +309,8 @@ class MessagesApi(
         notify: Boolean,
         elements: List<Map<String, Any?>> = emptyList(),
         attaches: List<Map<String, Any?>> = emptyList(),
+        delayed: DelayedSend? = null,
+        postId: Long? = null,
     ): Map<String, Any?> {
         val message = linkedMapOf<String, Any?>()
         if (text != null) message["text"] = text
@@ -213,7 +318,11 @@ class MessagesApi(
         message["elements"] = elements
         message["attaches"] = attaches
         if (replyTo != null) message["link"] = linkedMapOf("type" to "REPLY", "messageId" to replyTo)
-        return linkedMapOf("chatId" to chatId, "message" to message, "notify" to notify)
+        if (delayed != null) message["delayedAttributes"] = delayed.toPayload()
+        val payload = linkedMapOf<String, Any?>("chatId" to chatId, "message" to message, "notify" to notify)
+        // PyMax SendCommentPayload: subclass field after the inherited ones
+        if (postId != null) payload["postId"] = postId
+        return payload
     }
 
     /**
