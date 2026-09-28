@@ -109,7 +109,7 @@ class NetworkFrameworkConnectionFactoryTest {
 
     @Ignore
     @Test
-    fun integrationInsecureModeConnects() = runBlocking {
+    fun integrationInsecureModeConnects() = runBlocking<Unit> {
         val conn = withTimeout(20.seconds) {
             NetworkFrameworkConnectionFactory().open("api.oneme.ru", 443, TlsOptions(insecure = true), null)
         }
