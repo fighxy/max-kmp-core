@@ -68,11 +68,19 @@ sealed interface SessionState {
      * Stopped by an error: connect / TLS failure, `ConnectTimeoutException`, the handshake
      * rejected by the server ([com.max.core.transport.ServerErrorException] /
      * [com.max.core.transport.NotFoundException]), a handshake `RequestTimeoutException`, a failing
-     * `afterHandshake` hook, or a drop with auto-reconnect disabled
+     * `afterHandshake` hook (on the first connect, or a [FatalSessionError] such as a revoked
+     * login token on any connect), or a drop with auto-reconnect disabled
      * ([ConnectionClosedException]).
      */
     data class Failed(val cause: Throwable) : SessionState
 }
+
+/**
+ * Marker for errors after which retrying cannot help (e.g. a revoked login token thrown by the
+ * `afterHandshake` hook). Thrown during a reconnect, it ends the session in
+ * [SessionState.Failed] instead of another [SessionState.Reconnecting] round.
+ */
+interface FatalSessionError
 
 /** [SessionMachine.connect] was interrupted by [SessionMachine.disconnect]. */
 class SessionClosedException(message: String = "session closed") : ConnectionClosedException(message)
@@ -85,9 +93,10 @@ class SessionClosedException(message: String = "session closed") : ConnectionClo
  * The handshake runs as the transport's `onConnected` hook, so it is the first request on every
  * connection, before any other traffic and before the transport reports `Connected`.
  *
- * Authentication is out of scope. PyMax goes on from the handshake to the stored-token `LOGIN`
- * (opcode 19, with a device fingerprint derived from `callsSeed`); kolibri's session stops at the
- * handshake. [afterHandshake] is the hook for such a step: it runs after every successful
+ * Authentication lives in `com.max.core.auth`. PyMax goes on from the handshake to the
+ * stored-token `LOGIN` (opcode 19, with a device fingerprint derived from `callsSeed`); kolibri's
+ * session stops at the handshake. [afterHandshake] is the hook for such a step (see
+ * `com.max.core.auth.TokenLogin.hook`): it runs after every successful
  * handshake (first connect and each reconnect) with the transport and the reply, and the state
  * becomes [SessionState.Online] only once it returns. If it throws, the attempt fails like a
  * rejected handshake.
@@ -168,6 +177,8 @@ class SessionMachine(
     /** Must hold [lock]. */
     private fun startAttempt(): CompletableDeferred<HandshakeInfo> {
         val gen = ++generation
+        watchJob?.cancel()
+        watchJob = null
         val result = CompletableDeferred<HandshakeInfo>()
         attempt = result
         _state.value = SessionState.Connecting
@@ -224,13 +235,25 @@ class SessionMachine(
                 _state.value = SessionState.Online(info)
             }
         } catch (e: Throwable) {
-            // during a reconnect the transport drops the connection and retries after the next delay
-            lock.withLock {
+            // during a reconnect the transport drops the connection and retries after the next delay,
+            // unless the error is fatal: then the session fails and the transport is closed
+            val closeTransport = lock.withLock {
                 val s = _state.value
-                if (gen == generation && s == SessionState.Handshaking && watchJob?.isActive == true) {
-                    _state.value = SessionState.Reconnecting(reconnectAttempts, e)
+                val reconnecting = gen == generation && s == SessionState.Handshaking && watchJob?.isActive == true
+                when {
+                    !reconnecting -> false
+                    e is FatalSessionError -> {
+                        _state.value = SessionState.Failed(e)
+                        true
+                    }
+                    else -> {
+                        _state.value = SessionState.Reconnecting(reconnectAttempts, e)
+                        false
+                    }
                 }
             }
+            // not inline: this hook runs inside the transport's reconnect loop, which close() joins
+            if (closeTransport) scope.launch { transport.close() }
             throw e
         }
     }

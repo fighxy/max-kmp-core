@@ -28,7 +28,7 @@ import kotlin.random.Random
 object HandshakePayload {
     fun build(device: DeviceInfo, random: Random = Random.Default): Map<String, Any?> {
         val ua = device.userAgent
-        if (ua.deviceType.equals("WEB", ignoreCase = true)) {
+        if (isWeb(ua)) {
             val web = linkedMapOf<String, Any?>(
                 "deviceType" to ua.deviceType,
                 "locale" to ua.locale,
@@ -44,6 +44,22 @@ object HandshakePayload {
             return linkedMapOf("userAgent" to web, "deviceId" to device.deviceId)
         }
 
+        val userAgent = mobileUserAgent(ua)
+
+        val root = linkedMapOf<String, Any?>()
+        if (device.instanceId.isNotEmpty()) root["mt_instanceid"] = device.instanceId
+        root["userAgent"] = userAgent
+        val clientSessionId = device.clientSessionId ?: random.nextLong(1, 71)
+        if (clientSessionId != 0L) root["clientSessionId"] = clientSessionId
+        root["deviceId"] = device.deviceId
+        return root
+    }
+
+    /**
+     * The mobile `userAgent` map (also sent inside the stored-token `LOGIN`, PyMax
+     * `SyncPayload.user_agent`): PyMax field order, `null` / empty / zero optional fields omitted.
+     */
+    fun mobileUserAgent(ua: UserAgentInfo): LinkedHashMap<String, Any?> {
         val userAgent = linkedMapOf<String, Any?>(
             "deviceType" to ua.deviceType,
             "appVersion" to ua.appVersion,
@@ -60,15 +76,11 @@ object HandshakePayload {
         ua.release?.let { userAgent["release"] = it }
         ua.headerUserAgent?.let { userAgent["headerUserAgent"] = it }
         ua.isPwa?.let { userAgent["isPwa"] = it }
-
-        val root = linkedMapOf<String, Any?>()
-        if (device.instanceId.isNotEmpty()) root["mt_instanceid"] = device.instanceId
-        root["userAgent"] = userAgent
-        val clientSessionId = device.clientSessionId ?: random.nextLong(1, 71)
-        if (clientSessionId != 0L) root["clientSessionId"] = clientSessionId
-        root["deviceId"] = device.deviceId
-        return root
+        return userAgent
     }
+
+    /** `true` for PyMax's web device type, which switches handshake and login to the web shapes. */
+    fun isWeb(ua: UserAgentInfo): Boolean = ua.deviceType.equals("WEB", ignoreCase = true)
 }
 
 /**
