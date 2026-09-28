@@ -81,7 +81,9 @@ class UrlSessionMediaHttp(private val config: MediaHttpConfig = MediaHttpConfig(
         body: ByteArray,
         progress: UploadProgress?,
     ): HttpResponse {
-        val nsUrl = NSURL.URLWithString(url) ?: throw IllegalArgumentException("invalid url: $url")
+        val nsUrl = NSURL.URLWithString(url)
+            ?.takeIf { (it.scheme?.lowercase() == "http" || it.scheme?.lowercase() == "https") && !it.host.isNullOrEmpty() }
+            ?: throw IllegalArgumentException("invalid url: $url")
         val timeout = config.requestTimeout.inWholeMilliseconds / 1000.0
         val request = NSMutableURLRequest(nsUrl, NSURLRequestReloadIgnoringLocalCacheData, timeout)
         request.setHTTPMethod(method)
