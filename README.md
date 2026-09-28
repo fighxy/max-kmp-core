@@ -48,6 +48,11 @@
 4. Собрать auth-flow (SMS / token) поверх `request`.
 5. Подключить Android / iOS / desktop потребители.
 
+
+## Документация
+
+- [docs/protocol.md](docs/protocol.md) — архитектура протокола Max (референс kolibri / PyMax).
+
 ## Лицензия
 
 MIT — см. [LICENSE](LICENSE).
