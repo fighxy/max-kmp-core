@@ -21,7 +21,7 @@ class MaxApi(sink: RequestSink, clock: () -> Long = ::epochMillis) {
         this(RequestSink { opcode, payload -> session.request(opcode, payload) }, clock)
 
     val messages: MessagesApi = MessagesApi(sink, clock)
-    val chats: ChatsApi = ChatsApi(sink, clock)
+    val chats: ChatsApi = ChatsApi(sink, clock, messages)
     val users: UsersApi = UsersApi(sink)
     val account: AccountApi = AccountApi(sink)
     val twoFactor: TwoFactorApi = TwoFactorApi(sink)
