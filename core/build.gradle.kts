@@ -25,6 +25,9 @@ kotlin {
             implementation(libs.kotlinx.serialization.json)
             // TODO: MessagePack codec for KMP
         }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
         }
