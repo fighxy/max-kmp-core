@@ -20,7 +20,7 @@
 - Kotlin Multiplatform
 - kotlinx-coroutines
 - Ktor (`ktor-client-core`, TLS / sockets — по таргетам)
-- kotlinx-serialization (JSON-хелперы; **MessagePack — TODO**)
+- kotlinx-serialization (JSON-хелперы); MessagePack — собственный кодек на чистом Kotlin (`DefaultMessagePackCodec`)
 
 ## Модули
 

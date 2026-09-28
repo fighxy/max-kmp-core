@@ -17,7 +17,7 @@ ktor-network-tls = { module = "io.ktor:ktor-network-tls", version.ref = "ktor" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-core = { module = "org.jetbrains.kotlinx:kotlinx-serialization-core", version.ref = "serialization" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
-# TODO: MessagePack — pick a KMP-capable codec (e.g. kotlinx-serialization + custom format, or a MessagePack port)
+# MessagePack: no library; pure-Kotlin codec in core/src/commonMain/kotlin/com/max/core/protocol/MessagePack.kt
 
 [plugins]
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }

@@ -205,7 +205,7 @@ max-kmp-core/
 
 | Слой | Технологии |
 |------|------------|
-| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Ktor (сеть/TLS), Kotlin Serialization + MessagePack-библиотека (выбор открыт, TODO в `libs.versions.toml`), LZ4/Zstd |
+| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Ktor (сеть/TLS), Kotlin Serialization, собственный MessagePack-кодек на чистом Kotlin без зависимостей (`core/…/protocol/MessagePack.kt`), LZ4/Zstd |
 | iOS | SwiftUI, async/await, `AsyncStream`, XCFramework из Kotlin/Native |
 | Android | Kotlin, Jetpack Compose |
 | Desktop | Compose Multiplatform (рендер через Skia) |

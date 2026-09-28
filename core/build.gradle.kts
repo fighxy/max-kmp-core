@@ -23,7 +23,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.core)
             implementation(libs.kotlinx.serialization.json)
-            // TODO: MessagePack codec for KMP
+            // MessagePack: pure-Kotlin codec in protocol/MessagePack.kt, no dependency
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
