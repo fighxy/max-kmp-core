@@ -48,7 +48,7 @@ flowchart LR
 | | `PendingRequests` / `SeqCounter` / `PacketReassembler` | P0 | seq→pending, `cmd 1/2/3` = ответ, `cmd 0` = push (§B.7) |
 | | `ProxyConfig` / `ProxyHandshake` | P0 | HTTP CONNECT / SOCKS5 / SOCKS5h (§B.8) |
 | | `MincifryCa` (embedded PEM) | P0 | Root+Sub CA Минцифры; `trustMincifryCa=true` по умолчанию (§B.6) |
-| `com.max.core.session` | `SessionMachine.kt`: `SessionMachine`, `SessionState` | P0 | handshake 6, состояния (§C.1–C.2) |
+| `com.max.core.session` | `SessionMachine.kt`: `SessionMachine`, `SessionState`; `SessionConfig.kt`: `SessionConfig`, `DeviceInfo`, `UserAgentInfo`; `HandshakePayload.kt`: `HandshakePayload`, `HandshakeInfo` | P0 | handshake `SESSION_INIT` (6) поверх `MaxTransport` (hook `onConnected`, повторяется после каждого reconnect); `StateFlow` состояний `Disconnected → Connecting → Handshaking → Online`, `Reconnecting`, `Closed`, `Failed(cause)`; hook `afterHandshake` для будущего token-login (opcode 19), сам auth — вне session (§C.1–C.2) |
 | | `HandshakeConfig.kt` / `UserAgent` (новый) | P0 | поля `userAgent` (§C.2) |
 | | `PingScheduler.kt` (новый) | P0 | PING 1, 30 s, `interactive` (§C.3) |
 | | `ReconnectPolicy.kt` (новый) | P0 | backoff 2/4/8/15 s (§C.4) |
@@ -132,10 +132,10 @@ max-kmp-core/
 │       │   │   ├── ProxyConfig.kt / ProxyHandshake.kt  # HTTP CONNECT / SOCKS5            P0
 │       │   │   └── MincifryCa.kt                # embedded PEM Root+Sub CA                P0
 │       │   ├── session/
-│       │   │   ├── SessionMachine.kt            # состояния соединения                    P0
-│       │   │   ├── Handshake.kt                 # опкод 6, userAgent            (план)    P0
-│       │   │   ├── Ping.kt                      # PING 1 каждые 30 с            (план)    P0
-│       │   │   └── Reconnect.kt                 # backoff 2/4/8/15 с            (план)    P0
+│       │   │   ├── SessionMachine.kt            # состояния, handshake 6, re-handshake    P0
+│       │   │   ├── SessionConfig.kt             # TransportConfig + device/userAgent      P0
+│       │   │   └── HandshakePayload.kt          # payload opcode 6, HandshakeInfo         P0
+│       │   │       (PING каждые 30 с и backoff 2/4/8/15 с — в transport/MaxTransport.kt)
 │       │   ├── auth/
 │       │   │   ├── Auth.kt                      # AuthService: SMS 17→18→19, 2FA 115      P0
 │       │   │   └── QrAuth.kt                    # 288/289/290/291               (план)    P1

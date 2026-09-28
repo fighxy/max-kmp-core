@@ -4,7 +4,7 @@ package com.max.core.transport
 open class TransportException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /** Not connected, closed by [TlsTransport.close], or the connection dropped while waiting. */
-class ConnectionClosedException(message: String = "connection closed", cause: Throwable? = null) :
+open class ConnectionClosedException(message: String = "connection closed", cause: Throwable? = null) :
     TransportException(message, cause)
 
 /** TCP + proxy handshake + TLS did not finish within `connectTimeout`. */
