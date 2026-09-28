@@ -19,7 +19,8 @@ package com.max.core.protocol
  *
  * The compression flag is a whole byte, not a single bit: kolibri sends `(rawLen / compLen) + 1`
  * for LZ4-block bodies, and PyMax treats `0x01..0x7F` as LZ4 block and `0xFF` as Zstd. Zero means
- * "not compressed". Compression itself is not implemented here.
+ * "not compressed". Compression itself lives in Compression.kt; [decodePacketBody] and
+ * [encodePacketCompressed] call [Compression] for the body.
  */
 
 /** Size of the fixed wire header in bytes. */
@@ -27,12 +28,6 @@ const val HEADER_SIZE: Int = 10
 
 /** `ver` byte used by the binary TCP transport (the WebSocket JSON variant uses 11). */
 const val PROTOCOL_VERSION: Byte = 10
-
-/**
- * Bodies shorter than this many bytes are sent uncompressed (kolibri `COMPRESSION_THRESHOLD`).
- * PyMax never compresses outgoing bodies.
- */
-const val COMPRESSION_THRESHOLD: Int = 32
 
 /** Largest body length that fits in the 24-bit length part of `packedLen`. */
 const val MAX_BODY_LENGTH: Int = 0x00FF_FFFF
@@ -80,6 +75,9 @@ data class PacketHeader(
 
     /** [cmd] as an unsigned value `0..255`. */
     val cmdValue: Int get() = cmd.toInt() and 0xFF
+
+    /** Body compression format from [compressionFlag], or `null` for an unknown flag value. */
+    val compressionFormat: CompressionFormat? get() = CompressionFormat.fromFlag(compressionFlag)
 }
 
 /**
@@ -190,6 +188,55 @@ fun decodePacket(bytes: ByteArray): Pair<PacketHeader, ByteArray> {
         "packet size ${bytes.size} does not match header (expected $expected = $HEADER_SIZE + ${header.length})"
     }
     return header to bytes.copyOfRange(HEADER_SIZE, expected)
+}
+
+/**
+ * Splits one complete packet like [decodePacket] and decompresses the body with [Compression]
+ * according to the header flag.
+ *
+ * @throws IllegalArgumentException on a malformed packet or an unknown compression flag.
+ * @throws UnsupportedOperationException while the codec for the flagged format is a stub.
+ */
+fun decodePacketBody(bytes: ByteArray): Pair<PacketHeader, ByteArray> {
+    val (header, body) = decodePacket(bytes)
+    val format = requireNotNull(header.compressionFormat) {
+        "unknown compression flag 0x${header.compressionFlag.toString(16)}"
+    }
+    return header to Compression.decompress(body, format)
+}
+
+/**
+ * Builds a packet from an uncompressed [rawBody]: compresses it with [format] through
+ * [Compression] when the body reaches [COMPRESSION_THRESHOLD] (otherwise sends it as is), then
+ * fills in `length` and the compression flag.
+ *
+ * @throws IllegalArgumentException if [format] has no known wire flag (LZ4 frame).
+ * @throws UnsupportedOperationException while the codec for [format] is a stub.
+ */
+fun encodePacketCompressed(
+    version: Byte,
+    cmd: Byte,
+    seq: Int,
+    opcode: Short,
+    rawBody: ByteArray,
+    format: CompressionFormat = CompressionFormat.LZ4_BLOCK,
+): ByteArray {
+    val effective = if (Compression.shouldCompress(rawBody.size)) format else CompressionFormat.NONE
+    val body = Compression.compress(rawBody, effective)
+    val ratio = if (body.isEmpty()) 1 else rawBody.size / body.size + 1
+    val flag = requireNotNull(CompressionFormat.toFlag(effective, ratio)) {
+        "$effective has no known wire flag"
+    }
+    val header = PacketHeader(
+        version = version,
+        cmd = cmd,
+        seq = seq,
+        opcode = opcode,
+        length = body.size,
+        compressed = flag != 0,
+        compressionFlag = flag,
+    )
+    return encodePacket(header, body)
 }
 
 /**
