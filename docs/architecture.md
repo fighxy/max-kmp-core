@@ -94,3 +94,128 @@ ios/src/
 4. **P2:** video parallel upload, CallSignaling, stories (EXPERIMENTAL), desktop.
 
 Открытые протокольные вопросы, влияющие на ядро (cmd=2, исходящее сжатие, поля handshake, 158) — [protocol.md §K](protocol.md#k-открытые-вопросы).
+
+## 7. Конвенция пакетов
+
+- Корневой пакет — **`com.max`**. Не `ru.max` и не голый `max`. Это по аналогии с `ru.kolibri` в `kolibri-kotlin`: у библиотеки один явный корень с доменным префиксом.
+- Пакет модуля задаётся как `com.max.<модуль>[.<слой>]`: `com.max.core.protocol`, `com.max.core.transport`, `com.max.shared`, `com.max.android`, `com.max.ios`, `com.max.desktop`.
+- Путь к исходникам повторяет пакет: `<модуль>/src/<sourceSet>/kotlin/com/max/<модуль>/…`.
+- Gradle: `group = "com.max.kmp"`. `namespace` у Android-модулей совпадает с корнем модуля (`com.max.core`, `com.max.shared`, `com.max.android`). Пакет cinterop — `com.max.ios.cinterop`.
+- Экспорт на iOS: в XCFramework попадают только `com.max.shared` и `com.max.ios` (см. §5).
+
+## 8. Целевая архитектура (план, не текущее состояние)
+
+> Это структура, к которой мы идём. Файлы с пометкой «план» пока не существуют и появляются по мере работ (§6). Текущий скелет — в §1 и §4.
+
+### 8.1. Дерево репозитория
+
+```text
+max-kmp-core/
+├── core/                                        # KMP-ядро: протокол, сеть, сессия
+│   ├── build.gradle.kts
+│   └── src/
+│       ├── commonMain/kotlin/com/max/core/
+│       │   ├── protocol/
+│       │   │   ├── Framing.kt                   # 10-байтный заголовок, сборка пакетов   P0
+│       │   │   ├── Opcodes.kt                   # таблица опкодов (kolibri ∪ PyMax)       P0
+│       │   │   ├── MessagePack.kt               # MessagePackCodec, MsgValue              P0
+│       │   │   └── Compression.kt               # LZ4-block / LZ4-frame / Zstd  (план)    P0
+│       │   ├── transport/
+│       │   │   ├── TlsTransport.kt              # TLS TCP к api2.oneme.ru                 P0
+│       │   │   ├── Dispatcher.kt                # seq → ответ, push → EventBus  (план)    P0
+│       │   │   └── ProxySupport.kt              # HTTP CONNECT / SOCKS5         (план)    P1
+│       │   ├── session/
+│       │   │   ├── SessionMachine.kt            # состояния соединения                    P0
+│       │   │   ├── Handshake.kt                 # опкод 6, userAgent            (план)    P0
+│       │   │   ├── Ping.kt                      # PING 1 каждые 30 с            (план)    P0
+│       │   │   └── Reconnect.kt                 # backoff 2/4/8/15 с            (план)    P0
+│       │   ├── auth/
+│       │   │   ├── Auth.kt                      # AuthService: SMS 17→18→19, 2FA 115      P0
+│       │   │   └── QrAuth.kt                    # 288/289/290/291               (план)    P1
+│       │   ├── api/                             # ChatsApi, MessagesApi         (план)    P0
+│       │   ├── events/                          # EventBus (SharedFlow)         (план)    P0
+│       │   ├── media/
+│       │   │   └── MediaUploader.kt             # фото/файлы P1, параллельное видео P2 (план)
+│       │   ├── calls/
+│       │   │   └── CallSignaling.kt             # vcp → ws2 → WebRTC            (план)    P2
+│       │   ├── push/
+│       │   │   └── PushToken.kt                 # регистрация токена, опкод неизвестен (план) P1
+│       │   └── Platform.kt
+│       ├── androidMain/kotlin/com/max/core/     # actual: сокет/TLS, TokenStore, TrustStore
+│       ├── iosMain/kotlin/com/max/core/         # actual: Ktor Darwin / Network.framework, Keychain
+│       └── jvmMain/kotlin/com/max/core/         # actual: JVM-сокеты, тесты
+├── shared/                                      # узкий публичный API
+│   ├── build.gradle.kts
+│   └── src/
+│       ├── commonMain/kotlin/com/max/shared/    # Session.kt, MaxClient (план), DTO
+│       └── {androidMain,iosMain,jvmMain}/kotlin/com/max/shared/PlatformSession.kt
+├── android/                                     # Android-обёртки и приложение
+│   ├── build.gradle.kts
+│   └── src/main/
+│       ├── AndroidManifest.xml
+│       ├── jniLibs/                             # только для нативных .so (WebRTC и т. п.)
+│       └── kotlin/com/max/android/NativeBridge.kt
+├── ios/                                         # iOS-мост → XCFramework для Swift
+│   ├── build.gradle.kts
+│   └── src/
+│       ├── iosMain/kotlin/com/max/ios/IosBridge.kt
+│       └── nativeInterop/cinterop/maxc.def      # пакет com.max.ios.cinterop, опционально
+├── iosApp/                                      # (план) Xcode-проект на SwiftUI, см. ios-plan.md
+├── desktop/                                     # Compose Multiplatform (JVM)             P2
+│   ├── build.gradle.kts
+│   └── src/jvmMain/kotlin/com/max/desktop/Main.kt
+├── docs/
+│   ├── protocol.md
+│   ├── architecture.md
+│   └── ios-plan.md
+├── gradle/libs.versions.toml
+├── build.gradle.kts · settings.gradle.kts · gradle.properties
+└── README.md · LICENSE · .gitignore
+```
+
+### 8.2. Таргеты и направление вызовов
+
+```text
+ iOS                            Android                         Desktop
+ SwiftUI-клиент (iosApp)        Kotlin-клиент (android)         Compose Multiplatform (desktop)
+        │                              │                                │
+        ▼                              ▼                                ▼
+ XCFramework: com.max.ios       прямой вызов Kotlin             JVM
+ (Obj-C/C-интерфейс)            (JNI — только для нативных .so)
+        │                              │                                │
+        └───────────────┬──────────────┴────────────────┬───────────────┘
+                        ▼                               ▼
+                   com.max.shared  (MaxClient, Session, DTO)
+                        │
+                        ▼
+                   com.max.core:  auth · api · media · calls · push
+                        │
+                        ▼
+                   session ──▶ transport ──▶ protocol
+                                    │
+                                    ▼
+                         api2.oneme.ru  (TLS TCP, MessagePack)
+
+ Входящие события идут обратно вверх: protocol → EventBus → Flow → (Swift: AsyncStream)
+```
+
+Порядок работ: сначала iOS, потом Android, потом Desktop (см. §6 и [ios-plan.md](ios-plan.md)).
+
+### 8.3. Стек
+
+| Слой | Технологии |
+|------|------------|
+| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Ktor (сеть/TLS), Kotlin Serialization + MessagePack-библиотека (выбор открыт, TODO в `libs.versions.toml`), LZ4/Zstd |
+| iOS | SwiftUI, async/await, `AsyncStream`, XCFramework из Kotlin/Native |
+| Android | Kotlin, Jetpack Compose |
+| Desktop | Compose Multiplatform (рендер через Skia) |
+| Звонки | WebRTC (нативные SDK), сигналинг ws2 в `CallSignaling` |
+
+### 8.4. Внешние референсы
+
+| Репозиторий | Что сверяем | Лицензия |
+|-------------|-------------|----------|
+| [KometTeam/kolibri](https://github.com/KometTeam/kolibri) | wire-формат, фрейминг, сессия, reconnect, звонки (vcp/ws2), загрузка медиа | MIT / Apache-2.0 |
+| [MaxApiTeam/PyMax](https://github.com/MaxApiTeam/PyMax) | payload-схемы, доменные модели, авторизация SMS/QR/2FA, опкоды | MIT |
+
+Код из этих репозиториев напрямую не копируется. Мы изучаем поведение, а факты с ссылками на файлы и строки собраны в [protocol.md](protocol.md).
