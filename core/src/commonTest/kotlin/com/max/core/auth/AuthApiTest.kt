@@ -350,4 +350,74 @@ class AuthApiTest {
         assertEquals(2, factory.openCount)
         assertIs<SessionState.Failed>(m.state.value)
     }
+
+    // --- QR login approval (290) ---
+
+    private val qrLink = "https://max.ru/:auth/qr?t=abc123"
+
+    /** `msgpack.packb(ApproveQrLoginPayload(qr_link=qrLink).to_payload())` from PyMax. */
+    private val qrApproveBytes = "81a671724c696e6bd92068747470733a2f2f6d61782e72752f3a617574682f71723f743d616263313233"
+
+    @Test
+    fun approveQrLoginSendsPyMaxPayload() = runTest {
+        val sink = FakeSink(null, mapOf("ok" to true))
+        val r = api(sink).approveQrLogin(qrLink)
+        assertEquals(QrApproval(qrLink, emptyMap<Any?, Any?>()), r)
+        val (op, payload) = sink.sent.single()
+        assertEquals(Opcode.AUTH_QR_APPROVE, op)
+        assertEquals(290, op.value)
+        assertEquals(qrApproveBytes, encode(payload).hex())
+        assertEquals(qrApproveBytes, encode(api(sink).approveQrLoginPayload(qrLink)).hex())
+        // an undocumented reply map is kept raw
+        assertEquals(mapOf("ok" to true), api(sink).approveQrLogin(qrLink).raw)
+        // no device data in the payload, also for other identities
+        assertEquals(listOf("qrLink"), AuthApi(FakeSink(), webDevice, { null }).approveQrLoginPayload(qrLink).keys.toList())
+    }
+
+    @Test
+    fun approveQrLoginErrors() = runTest {
+        for (blank in listOf("", "   ")) {
+            val sink = FakeSink()
+            assertFailsWith<AuthException> { api(sink).approveQrLogin(blank) }
+            assertTrue(sink.sent.isEmpty())
+        }
+        val expired = serverError(Opcode.AUTH_QR_APPROVE, "qr.expired", "QR expired")
+        val e = assertFailsWith<ServerErrorException> { api(FakeSink(expired)).approveQrLogin(qrLink) }
+        assertSame(expired, e)
+        assertEquals("qr.expired", e.errorKey)
+        val revoked = serverError(Opcode.AUTH_QR_APPROVE, "login.token", "FAIL_LOGIN_TOKEN")
+        assertSame(revoked, assertFailsWith<InvalidTokenException> { api(FakeSink(revoked)).approveQrLogin(qrLink) }.serverError)
+    }
+
+    @Test
+    fun approveQrLoginAfterAndroidTokenLogin() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val login = AuthApi.tokenLoginHook("stored-token", device)
+        val m = SessionMachine(SessionConfig(quiet, device), factory, scope = backgroundScope, afterHandshake = login.hook)
+        val connecting = async { m.connect() }
+        runCurrent()
+        val conn = factory.lastConnection!!
+        conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        val loginPayload = conn.answer(Opcode.LOGIN, mapOf("profile" to mapOf("contact" to mapOf("id" to 5)))) as Map<*, *>
+        connecting.await()
+        // LOGIN 19 carried the default Android identity and the APK fingerprint of callsSeed
+        val ua = loginPayload["userAgent"] as Map<*, *>
+        assertEquals("ANDROID", ua["deviceType"])
+        assertEquals("Pixel 8", ua["deviceName"])
+        assertEquals("Android 14", ua["osVersion"])
+        assertEquals("26.25.0", ua["appVersion"])
+        assertEquals(6790L, (ua["buildNumber"] as Number).toLong())
+        assertEquals("arm64-v8a", ua["arch"])
+        assertEquals(f1, (loginPayload["chatCacheFingerprint"] as ByteArray).hex())
+        assertEquals(5L, login.result.value!!.userId)
+
+        // then 290 goes over the same logged-in session with exactly PyMax's payload
+        val approving = async { AuthApi(m).approveQrLogin(qrLink) }
+        runCurrent()
+        val approvePayload = conn.answer(Opcode.AUTH_QR_APPROVE, null)
+        assertEquals(qrApproveBytes, encode(approvePayload).hex())
+        assertEquals(QrApproval(qrLink, emptyMap<Any?, Any?>()), approving.await())
+        m.disconnect()
+    }
 }

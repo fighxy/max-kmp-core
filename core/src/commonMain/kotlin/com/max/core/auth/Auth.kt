@@ -30,6 +30,9 @@ import com.max.core.transport.TransportPacket
  *   An ERROR reply with `FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL` (PyMax
  *   `_is_invalid_login_token_error`; kolibri maps `FAIL_LOGIN_TOKEN` to `SessionExpired`) becomes
  *   [InvalidTokenException].
+ * - `AUTH_QR_APPROVE` (290): `{qrLink}` — PyMax `ApproveQrLoginPayload` /
+ *   `AuthService.authorize_qr_login`; kolibri only defines the opcode constant. See
+ *   [AuthApi.approveQrLogin].
  *
  * Not implemented, only surfaced: the 2FA password check (`AUTH_LOGIN_CHECK_PASSWORD` 115) and
  * registration (`AUTH_CONFIRM` 23) — see [VerifyResult]; `LOGIN2` (opcode 8 in PyMax, `CONTACTS_GET` in Opcodes.kt; requested via
@@ -83,6 +86,12 @@ sealed interface VerifyResult {
     /** Unknown number: `tokenAttrs.REGISTER.token` for `AUTH_CONFIRM` (23, not implemented). */
     data class RegistrationRequired(val registerToken: String, override val raw: Map<*, *>) : VerifyResult
 }
+
+/**
+ * Accepted `AUTH_QR_APPROVE` (290) request. The OK reply has no documented fields (PyMax only
+ * checks that it is not an error), so [raw] keeps whatever the server sent (empty for no payload).
+ */
+data class QrApproval(val qrLink: String, val raw: Map<*, *>)
 
 /** Default PyMax `configHash` (no cached config). */
 const val DEFAULT_CONFIG_HASH: String =
@@ -239,6 +248,45 @@ class AuthApi(
         }
         return LoginResult.from(reply.payload)
     }
+
+    /**
+     * Approves a web/desktop QR login from this signed-in session (`AUTH_QR_APPROVE`, 290).
+     *
+     * The whole QR scheme (PyMax `auth/qr.py` `QrAuthFlow`, `api/auth/service.py`):
+     * 1. the web client (`WebClient`, deviceType WEB) sends `GET_QR` (288) `{}` and gets
+     *    `{expiresAt, pollingInterval, qrLink, trackId, ttl}` (`RequestQrResponse`), then shows
+     *    `qrLink` as a QR code;
+     * 2. a signed-in phone scans it and sends `AUTH_QR_APPROVE` (290) `{qrLink}` — this call
+     *    (`authorize_qr_login`, payload `ApproveQrLoginPayload(qr_link)`);
+     * 3. the web client polls `GET_QR_STATUS` (289) `{trackId}` until
+     *    `status.loginAvailable` (`CheckQrResponse`);
+     * 4. the web client sends `LOGIN_BY_QR` (291) `{trackId}` and takes its login token from
+     *    `tokenAttrs.LOGIN.token` (`CheckCodeResponse`, as for `AUTH` 18).
+     *
+     * Only step 2 runs on this (mobile) side. It must go over a session that is already logged
+     * in, e.g. a `SessionMachine` whose [TokenLogin.hook] has sent `LOGIN` (19) with the Android
+     * user agent and fingerprint; the 290 payload itself carries no device data (PyMax). kolibri
+     * only defines the opcode constant (`kolibri-net/src/protocol/opcodes.rs`), with no payload.
+     * The reply shape is undocumented (PyMax ignores it), so it is kept raw in [QrApproval].
+     *
+     * @throws AuthException if [qrLink] is blank.
+     * @throws InvalidTokenException if the server reports the session's token as invalid
+     *   (`FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL`, as for [login]).
+     * @throws ServerErrorException for other ERROR replies (e.g. an expired QR).
+     */
+    suspend fun approveQrLogin(qrLink: String): QrApproval {
+        if (qrLink.isBlank()) throw AuthException("qrLink is blank")
+        val reply = try {
+            sink.request(Opcode.AUTH_QR_APPROVE, approveQrLoginPayload(qrLink))
+        } catch (e: ServerErrorException) {
+            if (isInvalidToken(e)) throw InvalidTokenException(e)
+            throw e
+        }
+        return QrApproval(qrLink, reply.payload as? Map<*, *> ?: emptyMap<Any?, Any?>())
+    }
+
+    /** `AUTH_QR_APPROVE` body: `{qrLink}` (PyMax `ApproveQrLoginPayload`). */
+    fun approveQrLoginPayload(qrLink: String): Map<String, Any?> = linkedMapOf("qrLink" to qrLink)
 
     /** `AUTH_REQUEST` body: `phone, type, language?, mode?` (mode only for non-web devices). */
     fun requestCodePayload(phone: String, type: CodeRequestType, language: String?, handshake: HandshakeInfo?): Map<String, Any?> {
