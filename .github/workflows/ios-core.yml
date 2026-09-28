@@ -1,4 +1,4 @@
-# Compiles and tests :core for iOS Simulator arm64 (and JVM) on macOS. The Linux agent that authors
+# Compiles and tests :core and :shared for iOS Simulator arm64 (and JVM, Android compile) on macOS. The Linux agent that authors
 # the Network.framework code cannot run Kotlin/Native for iOS; this workflow is the compile check.
 name: iOS core
 
@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - 'core/**'
+      - 'shared/**'
       - 'gradle/**'
       - 'gradlew'
       - 'gradlew.bat'
@@ -19,6 +20,7 @@ on:
     branches: [main]
     paths:
       - 'core/**'
+      - 'shared/**'
       - 'gradle/**'
       - 'gradlew'
       - 'gradlew.bat'
@@ -52,11 +54,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: JVM tests
-        run: ./gradlew :core:jvmTest --no-daemon --stacktrace
+        run: ./gradlew :core:jvmTest :shared:jvmTest --no-daemon --stacktrace
 
       - name: Compile Kotlin/Native iOS Simulator
-        run: ./gradlew :core:compileKotlinIosSimulatorArm64 --no-daemon --stacktrace
+        run: ./gradlew :core:compileKotlinIosSimulatorArm64 :shared:compileKotlinIosSimulatorArm64 --no-daemon --stacktrace
 
       - name: iOS Simulator tests
         # Offline tests run; @Ignore integration tests need the Max servers (see NetworkFrameworkConnectionFactoryTest).
-        run: ./gradlew :core:iosSimulatorArm64Test --no-daemon --stacktrace
+        run: ./gradlew :core:iosSimulatorArm64Test :shared:iosSimulatorArm64Test --no-daemon --stacktrace
+
+      - name: Compile Android (core + shared)
+        # androidMain code (SharedPreferencesStore, OkHttp media) is not compiled anywhere else.
+        run: ./gradlew :core:compileDebugKotlinAndroid :shared:compileDebugKotlinAndroid --no-daemon --stacktrace
