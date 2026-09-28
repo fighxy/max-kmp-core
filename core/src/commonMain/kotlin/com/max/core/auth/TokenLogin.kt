@@ -47,6 +47,16 @@ class TokenLogin(
     var sync: SyncState = sync
         private set
 
+    /** Replaces [token], e.g. with the one `SESSIONS_CLOSE` (97) returns; used from the next `LOGIN`. */
+    fun replaceToken(newToken: String) {
+        token = newToken
+    }
+
+    /** Replaces [sync], e.g. with a new `configHash` returned by `CONFIG` (22). */
+    fun updateSync(transform: (SyncState) -> SyncState) {
+        sync = transform(sync)
+    }
+
     private val _result = MutableStateFlow<LoginResult?>(null)
 
     /** The last successful `LOGIN` reply (profile, chats, ...), `null` before the first. */

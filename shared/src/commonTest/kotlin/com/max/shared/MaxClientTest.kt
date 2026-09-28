@@ -190,6 +190,46 @@ class MaxClientTest {
     }
 
     @Test
+    fun accountChangesUpdateStoredCredentials() = runTest {
+        val kv = InMemoryKeyValueStore()
+        val factory = ScriptedConnectionFactory()
+        val c = smsLogin(kv, factory)
+        val conn = factory.lastConnection!!
+        val closing = async { c.closeOtherSessions() }
+        runCurrent()
+        conn.answer(Opcode.SESSIONS_CLOSE, mapOf("token" to "login-3"))
+        assertTrue(closing.await())
+        assertEquals("login-3", CredentialStore(kv, "max.default").load()!!.token)
+
+        val privacy = async { c.updatePrivacy(com.max.core.api.PrivacySettings(hideOnlineStatus = true)) }
+        runCurrent()
+        conn.answer(Opcode.CONFIG, mapOf("hash" to "cfg-2"))
+        assertEquals("cfg-2", privacy.await())
+        val saved = CredentialStore(kv, "max.default").load()!!
+        assertEquals("cfg-2", saved.sync.configHash)
+        assertEquals("login-3", saved.token)
+        assertEquals(5L, saved.userId)
+
+        val profile = async { c.updateProfile("New") }
+        runCurrent()
+        conn.answer(Opcode.PROFILE, mapOf("profile" to mapOf("contact" to mapOf("id" to 5, "names" to listOf(mapOf("name" to "New"))))))
+        profile.await()
+        assertEquals("New", c.store.state.value.users.getValue(5).displayName)
+
+        // the next reconnect logs in with the new token and config hash
+        c.disconnect()
+        val again = async { c.start() }
+        runCurrent()
+        val conn2 = factory.lastConnection!!
+        conn2.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        val login = conn2.answer(Opcode.LOGIN, loginReply(null))!!
+        assertEquals("login-3", login["token"])
+        assertEquals("cfg-2", login["configHash"])
+        assertEquals(ClientState.Ready(5), again.await())
+    }
+
+    @Test
     fun clientStateErrorsAreClassified() {
         val rejected = ClientState.TokenRejected(
             com.max.core.auth.InvalidTokenException(

@@ -6,6 +6,8 @@ import com.max.core.api.ChatHistory
 import com.max.core.api.MaxApi
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
+import com.max.core.api.PrivacySettings
+import com.max.core.api.Profile
 import com.max.core.toMaxError
 import com.max.core.auth.ApkFingerprint
 import com.max.core.auth.AuthApi
@@ -362,6 +364,47 @@ class MaxClient(
 
     /** Users by id (`CONTACT_INFO`) into [store]. */
     suspend fun loadUsers(userIds: List<Long>): List<MaxUser> = api.users.getUsers(userIds).also(store::putUsers)
+
+    /**
+     * Closes every other session (`SESSIONS_CLOSE` 97). The server issues a new token for this
+     * session; it replaces the stored one and is used for the next reconnects (PyMax
+     * `close_all_sessions`). Returns `false` if the reply carried no token.
+     */
+    suspend fun closeOtherSessions(): Boolean {
+        val token = api.account.closeOtherSessions() ?: return false
+        lifecycle.withLock {
+            tokenLogin.value?.replaceToken(token)
+            saveCredentials(token = token)
+        }
+        return true
+    }
+
+    /**
+     * Changes privacy settings (`CONFIG` 22) and stores the returned config hash in the sync
+     * markers sent with the next `LOGIN` (PyMax `change_profile_settings`).
+     */
+    suspend fun updatePrivacy(settings: PrivacySettings): String? {
+        val hash = api.account.updatePrivacy(settings) ?: return null
+        lifecycle.withLock {
+            val login = tokenLogin.value
+            login?.updateSync { it.copy(configHash = hash) }
+            saveCredentials(sync = login?.sync ?: (credentials.load() ?: stored).sync.copy(configHash = hash))
+        }
+        return hash
+    }
+
+    /** Changes the own profile (`PROFILE` 16) and updates the own user in [store]. */
+    suspend fun updateProfile(firstName: String, lastName: String? = null, description: String? = null, photoToken: String? = null): Profile =
+        api.account.updateProfile(firstName, lastName, description, photoToken).also { store.putUsers(listOf(it.contact)) }
+
+    private fun saveCredentials(token: String? = null, sync: com.max.core.auth.SyncState? = null) {
+        val current = credentials.load() ?: stored
+        credentials.save(
+            StoredCredentials(
+                device.deviceId, device.instanceId, token ?: current.token, loggedIn.value ?: current.userId, sync ?: current.sync,
+            ),
+        )
+    }
 
     /** Sends a text message and adds the server's copy to [store] (own messages are not pushed back). */
     suspend fun sendText(chatId: Long, text: String, replyTo: Long? = null): MaxMessage =
