@@ -56,7 +56,7 @@ flowchart LR
 | `com.max.core.auth` | `Auth.kt`: `AuthApi`, `RequestSink`, `CodeRequest`, `VerifyResult`, `SyncState`, `LoginResult`, `InvalidTokenException`; `TokenLogin.kt`; `Fingerprint.kt`: `ApkFingerprint`; `Sha256.kt` | P0 | `AUTH_REQUEST` (17) → `AUTH` (18) → `LOGIN` (19) по PyMax/kolibri; `TokenLogin.hook` логинится после каждого handshake; fingerprint = 3×SHA-256(digest‖callsSeed(int64 BE)‖deviceId); 2FA (115) и регистрация (23) пока только распознаются (`PasswordRequired`, `RegistrationRequired`) (§C.5, §D.1–D.2) |
 | | `Auth.kt`: `AuthApi.approveQrLogin`, `QrApproval` | P0 | подтверждение web-входа по QR с залогиненного Android-устройства: `AUTH_QR_APPROVE` (290) `{qrLink}` (PyMax `ApproveQrLoginPayload`); сам вход по QR (288/289/291) в references есть только у web-клиента PyMax — не реализован (§D.3) |
 | | `TokenStore` (interface, actual: Keychain / EncryptedSharedPreferences) | P0 | хранение login token |
-| `com.max.core.api` | `ChatsApi`, `MessagesApi` (новые) | P0 | `CHATS_LIST` 53, `CHAT_HISTORY` 49, `MSG_SEND` 64 |
+| `com.max.core.api` | `MaxApi.kt`: `MaxApi` (фасад); `MessagesApi.kt`: `MessagesApi`, `ClientIdGenerator`; `ChatsApi.kt`: `ChatsApi`; `ApiModels.kt`: `MaxMessage`, `Chat`, `ChatHistory`, `ReadState`, `ReactionInfo`, `ChatMember(sPage)`, `MalformedReplyException` | P0 | только request/response поверх `RequestSink` (залогиненный `SessionMachine`): `MSG_SEND` 64 (текст, reply, forward), `MSG_GET` 71, `MSG_EDIT` 67, `MSG_DELETE` 66, `CHAT_HISTORY` 49, `CHAT_MARK` 50, pin через `CHAT_UPDATE` 55, реакции 178/179/180; `CHAT_INFO` 48, `CHATS_LIST` 53, `CHAT_MEMBERS` 59, `CHAT_LEAVE` 58, `CHAT_DELETE` 52 — payload-ы как в PyMax `api/messages`, `api/chats`; без markdown, вложений, отложенных сообщений, комментариев и управления группами |
 | `com.max.core.media` | `MediaUploader.kt` (новый) | P1 (video parallel — P2) | §G |
 | `com.max.core.calls` | `CallSignaling.kt`, `Vcp` (новые) | P2 | §H |
 | `com.max.shared` | `Session.kt` (фасад), `MaxClient` (новый) | P0 | единая точка для Swift/Android |
@@ -142,7 +142,7 @@ max-kmp-core/
 │       │   │   ├── Fingerprint.kt               # ApkFingerprint (chatCacheFingerprint)   P0
 │       │   │   ├── Sha256.kt                    # SHA-256 для fingerprint                 P0
 │       │   │   └── (QR)                         # 290 approve в Auth.kt; 288/289/291 — web  P1
-│       │   ├── api/                             # ChatsApi, MessagesApi         (план)    P0
+│       │   ├── api/                             # MaxApi, MessagesApi, ChatsApi, модели   P0
 │       │   ├── events/                          # EventBus (SharedFlow)         (план)    P0
 │       │   ├── media/
 │       │   │   └── MediaUploader.kt             # фото/файлы P1, параллельное видео P2 (план)

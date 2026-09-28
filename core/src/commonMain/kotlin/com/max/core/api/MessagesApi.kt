@@ -1,0 +1,239 @@
+package com.max.core.api
+
+import com.max.core.auth.RequestSink
+import com.max.core.epochMillis
+import com.max.core.protocol.Opcode
+import com.max.core.transport.TransportPacket
+
+/**
+ * Client message ids (`cid`) as PyMax `MessageService._next_cid`: the current time in ms, but
+ * always greater than the previous id (starts from the clock at construction).
+ */
+class ClientIdGenerator(private val clock: () -> Long = ::epochMillis) {
+    private var prev = clock()
+
+    fun next(): Long {
+        val id = maxOf(clock(), prev + 1)
+        prev = id
+        return id
+    }
+}
+
+/** `itemType` of `CHAT_HISTORY` (PyMax `ItemType`). */
+enum class HistoryItemType { REGULAR, DELAYED }
+
+/**
+ * Message requests over a [RequestSink] (a logged-in `SessionMachine` or `MaxTransport`).
+ *
+ * Opcodes, payloads and reply fields follow PyMax `src/pymax/api/messages/service.py`
+ * (`MessageService`) and `payloads.py`; kolibri has no message methods, only the same opcode
+ * numbers (`kolibri-net/src/protocol/opcodes.rs`). Payloads are sent in PyMax's key order with
+ * `None` fields left out (`CamelModel.to_payload`, `exclude_none`).
+ *
+ * Text is sent as given, with optional raw formatting [elements][sendMessage]; PyMax instead
+ * parses Markdown in the text (`Formatter.format_markdown`) into the plain text plus
+ * `elements`. Attachments, delayed sending and comments (channel posts) are not covered.
+ *
+ * Errors: ERROR replies throw `ServerErrorException`; an OK reply without the required fields
+ * throws [MalformedReplyException]; invalid arguments throw `IllegalArgumentException`.
+ */
+class MessagesApi(
+    private val sink: RequestSink,
+    private val clock: () -> Long = ::epochMillis,
+    private val cids: ClientIdGenerator = ClientIdGenerator(clock),
+) {
+    /**
+     * Sends a text message (`MSG_SEND`, 64; PyMax `send_message`, `SendMessagePayload`):
+     * `{chatId, message: {text, cid, elements, attaches: [], link?: {type: "REPLY", messageId}},
+     * notify}`. The reply is the message envelope `{chatId, message, ...}`.
+     *
+     * @param replyTo id of the message to reply to (`link`).
+     * @param notify PyMax's `send_message` default is `true`.
+     * @param elements formatting elements `{type, from, length, attributes?}` (PyMax `Element`).
+     */
+    suspend fun sendMessage(
+        chatId: Long,
+        text: String,
+        replyTo: Long? = null,
+        notify: Boolean = true,
+        elements: List<Map<String, Any?>> = emptyList(),
+    ): MaxMessage {
+        require(text.isNotEmpty()) { "text must not be empty" }
+        val reply = sink.request(Opcode.MSG_SEND, sendMessagePayload(chatId, text, cids.next(), replyTo, notify, elements))
+        return requireMessage(reply, Opcode.MSG_SEND, chatId)
+    }
+
+    /**
+     * Forwards [messageId] from [sourceChatId] to [chatId] (`MSG_SEND`, 64; PyMax
+     * `forward_message`, `ForwardMessagePayload`): `{chatId, message: {cid: -cid, link: {type:
+     * "FORWARD", messageId: "<id as string>", chatId: source}, attaches: []}, notify}`.
+     */
+    suspend fun forwardMessage(chatId: Long, messageId: Long, sourceChatId: Long = chatId, notify: Boolean = true): MaxMessage {
+        val reply = sink.request(Opcode.MSG_SEND, forwardMessagePayload(chatId, messageId, sourceChatId, -cids.next(), notify))
+        return requireMessage(reply, Opcode.MSG_SEND, chatId)
+    }
+
+    /**
+     * Loads messages by id (`MSG_GET`, 71; PyMax `get_messages`, `GetMessagesPayload`):
+     * `{chatId, messageIds}`. Reply: `messages` (missing = empty).
+     */
+    suspend fun getMessages(chatId: Long, messageIds: List<Long>): List<MaxMessage> {
+        val reply = sink.request(Opcode.MSG_GET, linkedMapOf("chatId" to chatId, "messageIds" to messageIds))
+        return messageList(reply, Opcode.MSG_GET, chatId)
+    }
+
+    /**
+     * Edits a message's text (`MSG_EDIT`, 67; PyMax `edit_message`, `EditMessagePayload`):
+     * `{chatId, messageId, text, elements, attachments: []}`. Reply: `message` (required).
+     */
+    suspend fun editMessage(chatId: Long, messageId: Long, text: String, elements: List<Map<String, Any?>> = emptyList()): MaxMessage {
+        require(text.isNotEmpty()) { "text must not be empty" }
+        val payload = linkedMapOf<String, Any?>(
+            "chatId" to chatId, "messageId" to messageId, "text" to text, "elements" to elements, "attachments" to emptyList<Any?>(),
+        )
+        val map = replyMap(sink.request(Opcode.MSG_EDIT, payload), Opcode.MSG_EDIT)
+        return MaxMessage.from(map["message"], chatId) ?: throw MalformedReplyException(Opcode.MSG_EDIT, "no valid message", map)
+    }
+
+    /**
+     * Deletes messages (`MSG_DELETE`, 66; PyMax `delete_message`, `DeleteMessagePayload`):
+     * `{chatId, messageIds, forMe}`. PyMax ignores the reply; it is returned raw.
+     */
+    suspend fun deleteMessages(chatId: Long, messageIds: List<Long>, forMe: Boolean = false): Map<*, *> {
+        require(messageIds.isNotEmpty()) { "messageIds must not be empty" }
+        val reply = sink.request(Opcode.MSG_DELETE, linkedMapOf("chatId" to chatId, "messageIds" to messageIds, "forMe" to forMe))
+        return rawMap(reply)
+    }
+
+    /**
+     * Loads chat history (`CHAT_HISTORY`, 49; PyMax `fetch_history`, `ChatHistoryPayload`):
+     * `{chatId, forward, backward, backwardTime, forwardTime, getChat, from, itemType,
+     * getMessages, interactive}` with PyMax's defaults (`backward = 40`, `from` = now).
+     * Reply: `messages` (missing = empty), plus `chat` when [getChat].
+     */
+    suspend fun getChatHistory(
+        chatId: Long,
+        from: Long? = null,
+        forward: Int = 0,
+        backward: Int = 40,
+        backwardTime: Long = 0,
+        forwardTime: Long = 0,
+        getChat: Boolean = false,
+        getMessages: Boolean = true,
+        interactive: Boolean = false,
+        itemType: HistoryItemType = HistoryItemType.REGULAR,
+    ): ChatHistory {
+        val payload = linkedMapOf<String, Any?>(
+            "chatId" to chatId,
+            "forward" to forward,
+            "backward" to backward,
+            "backwardTime" to backwardTime,
+            "forwardTime" to forwardTime,
+            "getChat" to getChat,
+            "from" to (from ?: clock()),
+            "itemType" to itemType.name,
+            "getMessages" to getMessages,
+            "interactive" to interactive,
+        )
+        val reply = sink.request(Opcode.CHAT_HISTORY, payload)
+        val map = replyMap(reply, Opcode.CHAT_HISTORY)
+        return ChatHistory(messageList(reply, Opcode.CHAT_HISTORY, chatId), Chat.from(map["chat"]), map)
+    }
+
+    /**
+     * Marks messages up to [messageId] as read (`CHAT_MARK`, 50; PyMax `read_message`,
+     * `ReadMessagesPayload`): `{type: "READ_MESSAGE", chatId, messageId, mark}` with `mark` = now.
+     * Reply: `{unread, mark}` (required).
+     */
+    suspend fun markRead(chatId: Long, messageId: Long, mark: Long? = null): ReadState {
+        val payload = linkedMapOf<String, Any?>("type" to "READ_MESSAGE", "chatId" to chatId, "messageId" to messageId, "mark" to (mark ?: clock()))
+        val map = replyMap(sink.request(Opcode.CHAT_MARK, payload), Opcode.CHAT_MARK)
+        val unread = map["unread"].asLong() ?: throw MalformedReplyException(Opcode.CHAT_MARK, "no unread", map)
+        val newMark = map["mark"].asLong() ?: throw MalformedReplyException(Opcode.CHAT_MARK, "no mark", map)
+        return ReadState(unread.toInt(), newMark, map)
+    }
+
+    /**
+     * Pins a message (`CHAT_UPDATE`, 55; PyMax `pin_message`, `PinMessagePayload`):
+     * `{chatId, notifyPin, pinMessageId}`. PyMax ignores the reply; it is returned raw.
+     */
+    suspend fun pinMessage(chatId: Long, messageId: Long, notifyPin: Boolean = true): Map<*, *> {
+        val reply = sink.request(Opcode.CHAT_UPDATE, linkedMapOf("chatId" to chatId, "notifyPin" to notifyPin, "pinMessageId" to messageId))
+        return rawMap(reply)
+    }
+
+    /**
+     * Sets an emoji reaction (`MSG_REACTION`, 178; PyMax `add_reaction`, `AddReactionPayload`):
+     * `{chatId, messageId, reaction: {reactionType: "EMOJI", id}}`. Reply: `reactionInfo` (optional).
+     */
+    suspend fun addReaction(chatId: Long, messageId: Long, reaction: String): ReactionInfo? {
+        require(reaction.isNotEmpty()) { "reaction must not be empty" }
+        val payload = linkedMapOf<String, Any?>(
+            "chatId" to chatId, "messageId" to messageId, "reaction" to linkedMapOf("reactionType" to "EMOJI", "id" to reaction),
+        )
+        return ReactionInfo.from(rawMap(sink.request(Opcode.MSG_REACTION, payload))["reactionInfo"])
+    }
+
+    /**
+     * Removes own reaction (`MSG_CANCEL_REACTION`, 179; PyMax `remove_reaction`,
+     * `RemoveReactionPayload`): `{chatId, messageId}`. Reply: `reactionInfo` (optional).
+     */
+    suspend fun removeReaction(chatId: Long, messageId: Long): ReactionInfo? =
+        ReactionInfo.from(rawMap(sink.request(Opcode.MSG_CANCEL_REACTION, linkedMapOf("chatId" to chatId, "messageId" to messageId)))["reactionInfo"])
+
+    /**
+     * Reactions of several messages (`MSG_GET_REACTIONS`, 180; PyMax `get_reactions`,
+     * `GetReactionsPayload`): `{chatId, messageIds}`. Reply: `messagesReactions`, keyed by the
+     * message id as a string; `null` when absent (as in PyMax).
+     */
+    suspend fun getReactions(chatId: Long, messageIds: List<Long>): Map<String, ReactionInfo>? {
+        val map = rawMap(sink.request(Opcode.MSG_GET_REACTIONS, linkedMapOf("chatId" to chatId, "messageIds" to messageIds)))
+        val reactions = map["messagesReactions"] as? Map<*, *> ?: return null
+        return reactions.entries.mapNotNull { (k, v) -> ReactionInfo.from(v)?.let { k.toString() to it } }.toMap()
+    }
+
+    /** `MSG_SEND` body for a text message (PyMax `SendMessagePayload`). */
+    fun sendMessagePayload(
+        chatId: Long,
+        text: String,
+        cid: Long,
+        replyTo: Long?,
+        notify: Boolean,
+        elements: List<Map<String, Any?>> = emptyList(),
+    ): Map<String, Any?> {
+        val message = linkedMapOf<String, Any?>("text" to text, "cid" to cid, "elements" to elements, "attaches" to emptyList<Any?>())
+        if (replyTo != null) message["link"] = linkedMapOf("type" to "REPLY", "messageId" to replyTo)
+        return linkedMapOf("chatId" to chatId, "message" to message, "notify" to notify)
+    }
+
+    /** `MSG_SEND` body for a forward (PyMax `ForwardMessagePayload`); [cid] is negative in PyMax. */
+    fun forwardMessagePayload(chatId: Long, messageId: Long, sourceChatId: Long, cid: Long, notify: Boolean): Map<String, Any?> =
+        linkedMapOf(
+            "chatId" to chatId,
+            "message" to linkedMapOf(
+                "cid" to cid,
+                "link" to linkedMapOf("type" to "FORWARD", "messageId" to messageId.toString(), "chatId" to sourceChatId),
+                "attaches" to emptyList<Any?>(),
+            ),
+            "notify" to notify,
+        )
+}
+
+internal fun rawMap(reply: TransportPacket): Map<*, *> = reply.payload as? Map<*, *> ?: emptyMap<Any?, Any?>()
+
+/** The reply map; a non-map payload (including none) is malformed. */
+internal fun replyMap(reply: TransportPacket, opcode: Opcode): Map<*, *> =
+    reply.payload as? Map<*, *> ?: throw MalformedReplyException(opcode, "payload is not a map", reply.payload)
+
+private fun requireMessage(reply: TransportPacket, opcode: Opcode, chatId: Long): MaxMessage {
+    val map = replyMap(reply, opcode)
+    if (map.isEmpty()) throw MalformedReplyException(opcode, "empty payload", map)
+    return MaxMessage.from(map, chatId) ?: throw MalformedReplyException(opcode, "no valid message", map)
+}
+
+private fun messageList(reply: TransportPacket, opcode: Opcode, chatId: Long): List<MaxMessage> {
+    val map = replyMap(reply, opcode)
+    val items = map["messages"] ?: return emptyList()
+    val list = items as? List<*> ?: throw MalformedReplyException(opcode, "messages is not a list", map)
+    return list.map { MaxMessage.from(it, chatId) ?: throw MalformedReplyException(opcode, "invalid message in messages", map) }
+}
