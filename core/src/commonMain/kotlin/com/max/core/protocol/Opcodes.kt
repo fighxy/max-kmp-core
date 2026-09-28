@@ -203,8 +203,9 @@ enum class Opcode(val value: Int) {
     TRANSCRIPTION_RESULT(293), // TODO: payload unknown
 
     // ── Misc ────────────────────────────────────────────────────────
-    // PyMax: CALLS_TOKEN. No call sites in either source (protocol.md K12)
-    OK_TOKEN(158), // TODO: payload unknown
+    // PyMax: CALLS_TOKEN. No call sites in either source (protocol.md K12); CallsApi.requestCallsToken
+    // sends `{}` (observed-not-ref, semantics unconfirmed)
+    OK_TOKEN(158),
     WEB_APP_INIT_DATA(160),
     COMPLAIN(161),
     COMPLAIN_REASONS_GET(162),
