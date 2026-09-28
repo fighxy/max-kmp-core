@@ -27,8 +27,9 @@ enum class Opcode(val value: Int) {
     RECONNECT(3),
     LOG(5),
     SESSION_INIT(6),
-    // CONFLICT: kolibri CONTACTS_GET vs PyMax LOGIN2 (PyMax sends Login2Payload here); semantics unresolved, see protocol.md K11
-    CONTACTS_GET(8), // TODO: payload unknown
+    // CONFLICT: kolibri CONTACTS_GET vs PyMax LOGIN2 (PyMax sends Login2Payload here); semantics unresolved, see protocol.md K11.
+    // Sent as PyMax LOGIN2 by AuthApi.login2 / TokenLogin (single source: PyMax).
+    CONTACTS_GET(8),
 
     // ── Profile / Auth ──────────────────────────────────────────────
     PROFILE(16),
@@ -41,7 +42,8 @@ enum class Opcode(val value: Int) {
     AUTH_CONFIRM(23),
 
     // ── Auth: 2FA / password ────────────────────────────────────────
-    // TODO: payload unknown (2FA: no payload builders in kolibri; PyMax-only schemas, unverified) — applies to every opcode in this group
+    // 2FA: no payload builders in kolibri; PyMax-only schemas. 115 is implemented (AuthApi.checkPassword);
+    // TODO: payload unknown for the rest unless noted
     AUTH_LOGIN_RESTORE_PASSWORD(101), // TODO: payload unknown
     AUTH_2FA_DETAILS(104), // TODO: payload unknown
     EXTERNAL_CALLBACK(105), // TODO: payload unknown
@@ -52,7 +54,7 @@ enum class Opcode(val value: Int) {
     AUTH_SET_2FA(111), // TODO: payload unknown
     AUTH_CREATE_TRACK(112), // TODO: payload unknown
     AUTH_CHECK_PASSWORD(113), // TODO: payload unknown
-    AUTH_LOGIN_CHECK_PASSWORD(115), // TODO: payload unknown
+    AUTH_LOGIN_CHECK_PASSWORD(115), // PyMax CheckPasswordChallengePayload
     AUTH_LOGIN_PROFILE_DELETE(116), // TODO: payload unknown
 
     // ── Assets ─────────────────────────────────────────────────────

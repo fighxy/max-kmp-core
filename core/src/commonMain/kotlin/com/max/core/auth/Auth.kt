@@ -34,9 +34,16 @@ import com.max.core.transport.TransportPacket
  *   `AuthService.authorize_qr_login`; kolibri only defines the opcode constant. See
  *   [AuthApi.approveQrLogin].
  *
- * Not implemented, only surfaced: the 2FA password check (`AUTH_LOGIN_CHECK_PASSWORD` 115) and
- * registration (`AUTH_CONFIRM` 23) — see [VerifyResult]; `LOGIN2` (opcode 8 in PyMax, `CONTACTS_GET` in Opcodes.kt; requested via
- * `login2Flags`) — the flags are kept in [LoginResult.login2Flags].
+ * - `AUTH_LOGIN_CHECK_PASSWORD` (115): `{trackId, password}` — PyMax
+ *   `CheckPasswordChallengePayload` / `check_password`; reply `tokenAttrs.LOGIN.token` or `error`
+ *   (PyMax `CheckPasswordResponse`). See [AuthApi.checkPassword].
+ * - `AUTH_CONFIRM` (23): `{firstName, lastName?, token, tokenType = REGISTER}` — PyMax
+ *   `ConfirmRegistrationPayload`; reply `{token, profile, tokenType, userToken}`. See
+ *   [AuthApi.confirmRegistration].
+ * - `LOGOUT` (20): `{}` (PyMax `SelfService.logout`), see [AuthApi.logout].
+ * - opcode 8 (PyMax `LOGIN2`, kolibri `CONTACTS_GET`, protocol.md K11): `{needProfile,
+ *   contactsSync, configHash}` (PyMax `Login2Payload`), sent by PyMax right after `LOGIN` when
+ *   `login2Flags` has any flag set. See [AuthApi.login2]; kolibri has no call site.
  */
 
 /** Minimal request interface [AuthApi] needs; [SessionMachine] and `MaxTransport` both fit. */
@@ -80,11 +87,50 @@ sealed interface VerifyResult {
     /** Code accepted: [loginToken] is `tokenAttrs.LOGIN.token`; profile and user id if the reply has them. */
     data class LoggedIn(val loginToken: String, val userId: Long?, val profile: Map<*, *>?, override val raw: Map<*, *>) : VerifyResult
 
-    /** A 2FA password is set (`passwordChallenge`); continue with opcode 115 (not implemented). */
+    /** A 2FA password is set (`passwordChallenge`); continue with [AuthApi.checkPassword] (opcode 115). */
     data class PasswordRequired(val trackId: String, val hint: String?, override val raw: Map<*, *>) : VerifyResult
 
-    /** Unknown number: `tokenAttrs.REGISTER.token` for `AUTH_CONFIRM` (23, not implemented). */
+    /** Unknown number: `tokenAttrs.REGISTER.token` for [AuthApi.confirmRegistration] (`AUTH_CONFIRM` 23). */
     data class RegistrationRequired(val registerToken: String, override val raw: Map<*, *>) : VerifyResult
+}
+
+/** The 2FA password was rejected: the `error` of an OK `AUTH_LOGIN_CHECK_PASSWORD` (115) reply. */
+class WrongPasswordException(val error: String, val raw: Map<*, *>) : AuthException("password rejected: $error")
+
+/** Parsed `AUTH_CONFIRM` (23) reply (PyMax `ConfirmRegistrationResponse`). [token] is the login token. */
+data class Registration(val token: String, val userId: Long?, val profile: Map<*, *>?, val raw: Map<*, *>)
+
+/**
+ * `login2Flags` of a `LOGIN` reply (PyMax `Login2Flags`: `configEnabled`, `contactEnabled`,
+ * `profileEnabled`, all default `false`).
+ */
+data class Login2Flags(val configEnabled: Boolean, val contactEnabled: Boolean, val profileEnabled: Boolean) {
+    /** PyMax `Login2Flags.enabled`: any flag set. */
+    val enabled: Boolean get() = configEnabled || contactEnabled || profileEnabled
+
+    companion object {
+        fun from(value: Any?): Login2Flags? {
+            val m = value as? Map<*, *> ?: return null
+            return Login2Flags(m["configEnabled"] == true, m["contactEnabled"] == true, m["profileEnabled"] == true)
+        }
+    }
+}
+
+/**
+ * Parsed opcode-8 (`LOGIN2`) reply (PyMax `Login2Response`): `profile`, `contactInfos`, `config`.
+ */
+data class Login2Result(val profile: Map<*, *>?, val contacts: List<Any?>, val configHash: Any?, val raw: Map<*, *>) {
+    companion object {
+        fun from(payload: Any?): Login2Result {
+            val map = payload as? Map<*, *> ?: emptyMap<Any?, Any?>()
+            return Login2Result(
+                profile = map["profile"] as? Map<*, *>,
+                contacts = map["contactInfos"] as? List<Any?> ?: emptyList(),
+                configHash = configHashOf(map),
+                raw = map,
+            )
+        }
+    }
 }
 
 /**
@@ -119,6 +165,9 @@ data class SyncState(
             configHash = result.configHash ?: configHash,
         )
     }
+
+    /** Markers after `LOGIN2` (PyMax `Login2Response.update_sync_state`): only the config hash changes. */
+    fun updatedBy(result: Login2Result): SyncState = copy(configHash = result.configHash ?: configHash)
 }
 
 /**
@@ -137,6 +186,9 @@ data class LoginResult(
     val login2Flags: Map<*, *>?,
     val raw: Map<*, *>,
 ) {
+    /** [login2Flags] parsed; `null` when the reply has none. */
+    val login2: Login2Flags? get() = Login2Flags.from(login2Flags)
+
     companion object {
         fun from(payload: Any?): LoginResult {
             val map = payload as? Map<*, *> ?: emptyMap<Any?, Any?>()
@@ -147,13 +199,16 @@ data class LoginResult(
                 chats = map["chats"] as? List<Any?> ?: emptyList(),
                 token = map["token"] as? String,
                 time = (map["time"] as? Number)?.toLong(),
-                configHash = (map["config"] as? Map<*, *>)?.get("hash")?.let { if (it is Number) it.toLong() else it as? String },
+                configHash = configHashOf(map),
                 login2Flags = map["login2Flags"] as? Map<*, *>,
                 raw = map,
             )
         }
     }
 }
+
+/** `config.hash` of a login reply: a string or an integer (PyMax `ConfigHash`). */
+private fun configHashOf(map: Map<*, *>): Any? = (map["config"] as? Map<*, *>)?.get("hash")?.let { if (it is Number) it.toLong() else it as? String }
 
 /** `profile.contact.id` (PyMax `Profile.contact: User`). */
 private fun userIdOf(profile: Map<*, *>?): Long? = ((profile?.get("contact") as? Map<*, *>)?.get("id") as? Number)?.toLong()
@@ -248,6 +303,76 @@ class AuthApi(
         }
         return LoginResult.from(reply.payload)
     }
+
+    /**
+     * Answers a 2FA password challenge (`AUTH_LOGIN_CHECK_PASSWORD`, 115) with the `trackId` of
+     * [VerifyResult.PasswordRequired] (PyMax `check_password`).
+     *
+     * @return [VerifyResult.LoggedIn] with `tokenAttrs.LOGIN.token`.
+     * @throws WrongPasswordException if the OK reply carries an `error` instead of a token.
+     * @throws ServerErrorException for an ERROR reply.
+     * @throws AuthException if the reply has neither a token nor an error.
+     */
+    suspend fun checkPassword(trackId: String, password: String): VerifyResult.LoggedIn {
+        require(trackId.isNotEmpty()) { "trackId must not be empty" }
+        val reply = sink.request(Opcode.AUTH_LOGIN_CHECK_PASSWORD, checkPasswordPayload(trackId, password))
+        val map = reply.payload as? Map<*, *> ?: throw AuthException("AUTH_LOGIN_CHECK_PASSWORD reply is not a map")
+        val token = ((map["tokenAttrs"] as? Map<*, *>)?.get("LOGIN") as? Map<*, *>)?.get("token") as? String
+        if (token != null) {
+            val profile = map["profile"] as? Map<*, *>
+            return VerifyResult.LoggedIn(token, userIdOf(profile), profile, map)
+        }
+        (map["error"] as? String)?.let { throw WrongPasswordException(it, map) }
+        throw AuthException("AUTH_LOGIN_CHECK_PASSWORD reply has neither tokenAttrs.LOGIN nor error")
+    }
+
+    /**
+     * Registers a new account for an unknown number (`AUTH_CONFIRM`, 23) with the token of
+     * [VerifyResult.RegistrationRequired] (PyMax `confirm_registration`). The returned
+     * [Registration.token] is the login token (PyMax's SMS flow logs in with it).
+     */
+    suspend fun confirmRegistration(registerToken: String, firstName: String, lastName: String? = null): Registration {
+        require(firstName.isNotBlank()) { "firstName must not be blank" }
+        val reply = sink.request(Opcode.AUTH_CONFIRM, confirmRegistrationPayload(registerToken, firstName, lastName))
+        val map = reply.payload as? Map<*, *> ?: throw AuthException("AUTH_CONFIRM reply is not a map")
+        val token = map["token"] as? String ?: throw AuthException("AUTH_CONFIRM reply has no token")
+        val profile = map["profile"] as? Map<*, *>
+        return Registration(token, userIdOf(profile), profile, map)
+    }
+
+    /**
+     * Ends this session on the server (`LOGOUT`, 20, `{}`; PyMax `SelfService.logout`). The login
+     * token is invalid afterwards; the reply is kept raw.
+     */
+    suspend fun logout(): Map<*, *> = sink.request(Opcode.LOGOUT, emptyMap<String, Any?>()).payload as? Map<*, *> ?: emptyMap<Any?, Any?>()
+
+    /**
+     * Opcode 8 as PyMax's `LOGIN2` (`mobile_login2`): `{needProfile = flags.profileEnabled,
+     * contactsSync = sync.contactsSync if flags.contactEnabled else -1, configHash}`. PyMax sends it
+     * right after `LOGIN` when [LoginResult.login2Flags] has any flag set; kolibri names the code
+     * `CONTACTS_GET` and never sends it (protocol.md K11).
+     */
+    suspend fun login2(flags: Login2Flags, sync: SyncState): Login2Result =
+        Login2Result.from(sink.request(Opcode.CONTACTS_GET, login2Payload(flags, sync)).payload)
+
+    /** `AUTH_LOGIN_CHECK_PASSWORD` body (PyMax `CheckPasswordChallengePayload`). */
+    fun checkPasswordPayload(trackId: String, password: String): Map<String, Any?> = linkedMapOf("trackId" to trackId, "password" to password)
+
+    /** `AUTH_CONFIRM` body (PyMax `ConfirmRegistrationPayload`, `lastName` omitted when `null`). */
+    fun confirmRegistrationPayload(registerToken: String, firstName: String, lastName: String?): Map<String, Any?> {
+        val payload = linkedMapOf<String, Any?>("firstName" to firstName)
+        if (lastName != null) payload["lastName"] = lastName
+        payload["token"] = registerToken
+        payload["tokenType"] = "REGISTER"
+        return payload
+    }
+
+    /** Opcode-8 body (PyMax `Login2Payload.from_sync_state`). */
+    fun login2Payload(flags: Login2Flags, sync: SyncState): Map<String, Any?> = linkedMapOf(
+        "needProfile" to flags.profileEnabled,
+        "contactsSync" to (if (flags.contactEnabled) sync.contactsSync else -1L),
+        "configHash" to sync.configHash,
+    )
 
     /**
      * Approves a web/desktop QR login from this signed-in session (`AUTH_QR_APPROVE`, 290).

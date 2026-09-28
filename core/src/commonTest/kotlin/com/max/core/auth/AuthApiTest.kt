@@ -29,6 +29,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -419,5 +420,97 @@ class AuthApiTest {
         assertEquals(qrApproveBytes, encode(approvePayload).hex())
         assertEquals(QrApproval(qrLink, emptyMap<Any?, Any?>()), approving.await())
         m.disconnect()
+    }
+
+    // ---- 115 / 23 / 20 / 8 -----------------------------------------------------------------------
+    // expected bytes: PyMax payload models (`pymax.api.auth.payloads`) `.to_payload()` + msgpack-python
+
+    @Test
+    fun checkPasswordPayloadAndReplies() = runTest {
+        val sink = FakeSink(mapOf("tokenAttrs" to mapOf("LOGIN" to mapOf("token" to "pw-login")), "profile" to mapOf("contact" to mapOf("id" to 9))))
+        val r = api(sink).checkPassword("track-1", "secret")
+        assertEquals("pw-login", r.loginToken)
+        assertEquals(9L, r.userId)
+        assertEquals(Opcode.AUTH_LOGIN_CHECK_PASSWORD, sink.sent.single().first)
+        assertEquals("82a7747261636b4964a7747261636b2d31a870617373776f7264a6736563726574", encode(sink.sent.single().second).hex())
+        val wrong = assertFailsWith<WrongPasswordException> { api(FakeSink(mapOf("error" to "password.invalid"))).checkPassword("t", "x") }
+        assertEquals("password.invalid", wrong.error)
+        assertFailsWith<AuthException> { api(FakeSink(emptyMap<String, Any>())).checkPassword("t", "x") }
+        assertFailsWith<IllegalArgumentException> { api(FakeSink()).checkPassword("", "x") }
+    }
+
+    @Test
+    fun confirmRegistrationPayloadAndReply() = runTest {
+        val sink = FakeSink(mapOf("token" to "new-login", "tokenType" to "LOGIN", "userToken" to 1, "profile" to mapOf("contact" to mapOf("id" to 77))))
+        val r = api(sink).confirmRegistration("reg-token", "Ivan", "K")
+        assertEquals(Registration("new-login", 77L, mapOf("contact" to mapOf("id" to 77)), r.raw), r)
+        assertEquals(Opcode.AUTH_CONFIRM, sink.sent.single().first)
+        assertEquals(
+            "84a966697273744e616d65a44976616ea86c6173744e616d65a14ba5746f6b656ea97265672d746f6b656ea9746f6b656e54797065a85245474953544552",
+            encode(sink.sent.single().second).hex(),
+        )
+        assertEquals(
+            "83a966697273744e616d65a44976616ea5746f6b656ea97265672d746f6b656ea9746f6b656e54797065a85245474953544552",
+            encode(api(FakeSink()).confirmRegistrationPayload("reg-token", "Ivan", null)).hex(),
+        )
+        assertFailsWith<AuthException> { api(FakeSink(mapOf("profile" to emptyMap<String, Any>()))).confirmRegistration("r", "Ivan") }
+    }
+
+    @Test
+    fun logoutAndLogin2() = runTest {
+        val sink = FakeSink(null, mapOf("profile" to mapOf("contact" to mapOf("id" to 1)), "contactInfos" to listOf(mapOf("id" to 2)), "config" to mapOf("hash" to "h2")))
+        assertEquals(emptyMap<Any?, Any?>(), api(sink).logout())
+        assertEquals(Opcode.LOGOUT to emptyMap<String, Any?>(), sink.sent[0])
+        val flags = Login2Flags(configEnabled = false, contactEnabled = true, profileEnabled = true)
+        val r2 = api(sink).login2(flags, SyncState(contactsSync = 1700, configHash = "abc"))
+        assertEquals(Opcode.CONTACTS_GET, sink.sent[1].first)
+        assertEquals("83ab6e65656450726f66696c65c3ac636f6e746163747353796e63cd06a4aa636f6e66696748617368a3616263", encode(sink.sent[1].second).hex())
+        assertEquals(1, r2.contacts.size)
+        assertEquals("h2", r2.configHash)
+        assertEquals(
+            "83ab6e65656450726f66696c65c2ac636f6e746163747353796e63ffaa636f6e6669674861736805",
+            encode(api(FakeSink()).login2Payload(Login2Flags(false, false, false), SyncState(contactsSync = 1700, configHash = 5L))).hex(),
+        )
+        assertEquals(SyncState(configHash = "h2"), SyncState().updatedBy(r2))
+        assertEquals(Login2Flags(true, false, false), LoginResult.from(mapOf("login2Flags" to mapOf("configEnabled" to true))).login2)
+        assertFalse(Login2Flags(false, false, false).enabled)
+    }
+
+    @Test
+    fun tokenLoginFollowsLogin2WhenFlagged() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val login = AuthApi.tokenLoginHook("stored-token", device)
+        val m = SessionMachine(SessionConfig(quiet, device), factory, scope = backgroundScope, afterHandshake = login.hook)
+        val connecting = async { m.connect() }
+        runCurrent()
+        val conn = factory.lastConnection!!
+        conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        conn.answer(Opcode.LOGIN, mapOf("time" to 1700L, "config" to mapOf("hash" to "h1"), "login2Flags" to mapOf("contactEnabled" to true)))
+        runCurrent()
+        val payload8 = conn.answer(Opcode.CONTACTS_GET, mapOf("contactInfos" to emptyList<Any>(), "config" to mapOf("hash" to "h2"))) as Map<*, *>
+        connecting.await()
+        assertEquals(1700L, (payload8["contactsSync"] as Number).toLong())
+        assertEquals(false, payload8["needProfile"])
+        assertEquals("h2", login.sync.configHash)
+        assertEquals("h2", login.login2Result.value!!.configHash)
+        m.disconnect()
+
+        // a failing LOGIN2 does not fail the login
+        val f2 = ScriptedConnectionFactory()
+        val login2 = AuthApi.tokenLoginHook("stored-token", device)
+        val m2 = SessionMachine(SessionConfig(quiet, device), f2, scope = backgroundScope, afterHandshake = login2.hook)
+        val c2 = async { m2.connect() }
+        runCurrent()
+        val conn2 = f2.lastConnection!!
+        conn2.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        conn2.answer(Opcode.LOGIN, mapOf("login2Flags" to mapOf("profileEnabled" to true)))
+        runCurrent()
+        conn2.fail(Opcode.CONTACTS_GET, mapOf("error" to "proto.state", "message" to "nope"))
+        c2.await()
+        assertTrue(login2.login2Error is ServerErrorException)
+        assertNull(login2.login2Result.value)
+        m2.disconnect()
     }
 }
