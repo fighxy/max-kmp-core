@@ -901,6 +901,33 @@ fun interface MediaHttp {
 | **P1** | MediaUploader (photo/file), proxy, Минцифры CA opt-in, хранение токена/sync markers, `LOGIN2` при `login2Flags` |
 | **P2** | video parallel upload, CallSignaling (vcp + ws2), QR, folders/stories/polls, iOS/desktop |
 
+### J.4 Итоговое состояние API и фасада
+
+Эскиз `Session` из J.2 остался только как низкоуровневый интерфейс; основной вход — `MaxClient`
+в `:shared` (`com.max.shared`):
+
+```kotlin
+class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStore = PlatformSession.defaultStore(...), ...) {
+    val state: StateFlow<ClientState>        // Idle / Connecting / AwaitingAuth / Ready(userId) / Reconnecting / TokenRejected / Failed
+    val session: SessionMachine; val auth: AuthApi; val api: MaxApi; val media: MediaApi
+    val events: MaxEvents; val router: EventRouter; val store: MaxStore
+    suspend fun start(); suspend fun requestCode(phone); suspend fun verifyCode(token, code)
+    suspend fun checkPassword(trackId, password); suspend fun register(token, firstName)
+    suspend fun loginWithToken(token); suspend fun logout(); suspend fun disconnect()
+    suspend fun fillGaps(); suspend fun loadChats(); suspend fun loadHistory(chatId); suspend fun sendText(chatId, text)
+    suspend fun closeOtherSessions()         // 97: новый токен сохраняется
+    suspend fun updatePrivacy(settings)      // 22: новый configHash идёт в следующий LOGIN
+}
+```
+
+- `MaxApi`: `messages`, `chats`, `users` (32/34/46/21/96), `account` (16/22/97/272/274/276),
+  `twoFactor` (107–113), `bots` (118/160), `calls` (158). Схемы — PyMax, векторы в тестах.
+- События: `MaxEvents.all` → `EventRouter` (применяет к `MaxStore`, затем обработчики `on<T>`).
+- Reconnect: `SessionMachine` повторяет handshake и `LOGIN` с sync-маркерами; `MaxClient` после
+  re-login догружает `CHAT_HISTORY` для чатов из `MaxState.historyGaps()`.
+- Ошибки: `Throwable.toMaxError()` (`com.max.core.MaxError`) — вид и признак повтора.
+- Не реализовано из-за неизвестного payload — список в [opcodes.md](opcodes.md#блокеры-нужен-снятый-трафик).
+
 ## K. Открытые вопросы
 
 Вопросы возникают из расхождений между кодовыми базами или из их молчания. Ответы нужно получить экспериментом против `api.oneme.ru` / `api2.oneme.ru` (при подготовке документа к серверам **не подключались**).

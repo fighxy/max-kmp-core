@@ -42,23 +42,47 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 
 Сторонние заметки (не референс) иногда переименовывают `78` в `CALL_START` и вводят коды вроде `69 CALL_EDIT` / `83 CALL_LEAVE`. Эти имена и схемы **не** из kolibri/PyMax; в ядро они не переносятся. `83` в таблице ядра — `VIDEO_PLAY` (медиа), не leave.
 
-## `TODO: payload unknown`
+## Реализовано в API (итог)
 
-Группы, у которых в kolibri и PyMax нет builder'а (или он есть только у одной стороны и не сверен):
+Источник payload — PyMax (`payloads.py` / mixins) или kolibri; каждый метод покрыт тестом с вектором.
 
-- `8` `CONTACTS_GET` (K11)
-- 2FA / password: `101`, `104`, `105`, `107`, `108`, `109`, `110`, `111`, `112`, `113`, `115`, `116`
-- `166` `VIDEO_CHAT_JOIN_BY_LINK` (K13)
-- транскрипция: `202` `AUDIO_TRANSCRIPTION`, `293` `TRANSCRIPTION_RESULT` — call sites нет ни в одном референсе
-- stories: `208`–`218`, `220`
+| область | опкоды | слой |
+|---------|--------|------|
+| сессия | `1`, `6`, `8` (как PyMax `LOGIN2`) | `SessionMachine`, `TokenLogin` |
+| вход | `17`, `18`, `19`, `20`, `23`, `115`, `290` | `AuthApi`, `TokenLogin` |
+| 2FA | `107`–`113` | `TwoFactorApi` (`MaxApi.twoFactor`) |
+| пользователи | `32`, `34`, `46`, `21`, `96` | `UsersApi` (`MaxApi.users`) |
+| аккаунт | `16`, `22`, `97`, `272`, `274`, `276` | `AccountApi` (`MaxApi.account`); `MaxClient` сохраняет новый токен (97) и `configHash` (22) |
+| чаты | `48`, `49`, `50`, `52`, `53`, `55`, `57`, `58`, `59`, `75`, `77`, `89` | `ChatsApi` (группы, ссылки, заявки, админы) |
+| сообщения | `64` (текст, вложения, отложенная отправка, опросы, комментарии), `66`, `67`, `71`, `91`, `94`, `178`, `179`, `180`, `304` | `MessagesApi` |
+| медиа | `80`, `82`, `83`, `87`, `88` | `MediaApi` (потоковая загрузка с диска через `UploadSource`) |
+| боты | `118`, `160` | `BotsApi` (`MaxApi.bots`) |
+| звонки | `137` (push), `158` | `MaxEvent.CallStart`, `CallsApi` |
+| push | `128`, `129`, `130`, `132`, `135`, `136`, `137`, `142`, `155` и др. | `EventParser` → `MaxEvents` → `EventRouter` → `MaxStore` |
 
-`158` больше не «payload unknown» для **request** (пустой map). Reply по-прежнему observed-not-ref.
+## Блокеры: нужен снятый трафик
+
+Не реализованы, потому что payload не подтверждён ни kolibri, ни PyMax. Для каждого нужен дамп
+запроса/ответа реального Android-клиента (Pixel 8 профиль):
+
+- `81` `STICKER_UPLOAD` / отправка стикера — схема вложения-стикера в `MSG_SEND` не подтверждена
+- `65` `MSG_TYPING` (исходящий «печатает») — builder'а нет; входящий `129` уже разбирается
+- поиск: `37` `CONTACT_SEARCH`, `60` `PUBLIC_SEARCH`, `68` `CHAT_SEARCH`, `73` `MSG_SEARCH`
+- `193` `STICKER_CREATE`, `194` `STICKER_SUGGEST`, `301` `AUDIO_PLAY`
+- звонки: `76`, `78`, `79`, `84`, `103`, `164`, `166` (K13), `195`; семантика ответа `158` (K12)
+- 2FA/пароль: `101`, `104`, `105`, `116`
+- транскрипция `202`/`293`, stories `208`–`218`, `220`
+- `LOG` (`5`) — телеметрия, намеренно не отправляется
+
+QR-вход на стороне нового устройства (`288`/`289`/`291`) у PyMax требует `deviceType = WEB`; это
+противоречит правилу «клиент всегда Android», поэтому не реализован. Подтверждение QR с телефона
+(`290`) есть.
 
 ## Только в одном источнике
 
-Присутствуют в `Opcodes.kt` как union-таблица, без отдельного API, пока нет второго подтверждения или вектора:
+Присутствуют в `Opcodes.kt` как union-таблица; API — только там, где есть вектор:
 
-**Только PyMax:** `31` `SEARCH_FEEDBACK`, `62` `CHAT_LIVESTREAM_INFO`, `91` `MSG_GET_COMMENTS_INFO`, `94` `MSG_DELETE_USER_COMMENTS`, `125` `LOCATION_SEND`, `126` `LOCATION_REQUEST`, `256` `ORG_INFO`, `288` `GET_QR`, `289` `GET_QR_STATUS`, `291` `LOGIN_BY_QR`, `302` `BANNERS_GET`, `303` `MSG_DELIVERY`.
+**Только PyMax:** `31` `SEARCH_FEEDBACK`, `62` `CHAT_LIVESTREAM_INFO`, `91` `MSG_GET_COMMENTS_INFO` и `94` `MSG_DELETE_USER_COMMENTS` (оба в API по вектору PyMax), `125` `LOCATION_SEND`, `126` `LOCATION_REQUEST`, `256` `ORG_INFO`, `288` `GET_QR`, `289` `GET_QR_STATUS`, `291` `LOGIN_BY_QR`, `302` `BANNERS_GET`, `303` `MSG_DELIVERY`.
 
 **Только kolibri:** `164` `VIDEO_CHAT_DELETE_HISTORY`.
 
