@@ -858,27 +858,42 @@ interface Session {
 }
 ```
 
-### J.3 P1/P2 — TODO-заглушки (только в документе)
+### J.3 P1/P2 — что реализовано вместо эскизов
+
+Эскизы `MediaUploader` и `CallSignaling` из ранней версии документа устарели; фактический код:
 
 ```kotlin
-// P1 — com/max/core/media/MediaUploader.kt
-class MediaUploader(private val session: SessionMachine, private val userAgent: String) {
-    suspend fun uploadPhoto(bytes: ByteArray, filename: String): String   // TODO: PHOTO_UPLOAD(80) -> URL -> multipart "file" -> photoToken
-    suspend fun uploadFile(path: String, filename: String): Long          // TODO: FILE_UPLOAD(87) -> URL -> POST Content-Range
-    suspend fun uploadVideo(path: String, chunkSize: Int, concurrency: Int): Boolean // TODO P2: GET resume + parallel POST
+// com/max/core/media/MediaApi.kt — control plane (PyMax UploadService) + CDN (kolibri upload.rs)
+class MediaApi(sink: RequestSink, http: MediaHttp = defaultMediaHttp(), userAgent: String, events: Flow<MaxEvent>?, ...) {
+    // каждый upload есть в трёх вариантах: ByteArray, UploadSource (потоково), path (открыть файл с диска)
+    suspend fun uploadPhoto(source: UploadSource, fileName: String = "image.jpg", profile: Boolean = false, progress: UploadProgress? = null): OutgoingAttachment.Photo
+    suspend fun uploadFile(path: String, progress: UploadProgress? = null): OutgoingAttachment.File        // 87 → POST → ждёт NOTIF_ATTACH {fileId}
+    suspend fun uploadVideo(source: UploadSource, fileName: String, progress: UploadProgress? = null): OutgoingAttachment.Video
+    suspend fun uploadVideoParallel(source: UploadSource, chunkSize: Int = 2 MiB, concurrency: Int = 4, ...): OutgoingAttachment.Video // GET resume + параллельные POST
+    suspend fun uploadVoice(...); suspend fun uploadVideoNote(...)
+    suspend fun getVideoLink(chatId, messageId, videoId); suspend fun getFileLink(chatId, messageId, fileId)  // 83 / 88
+    suspend fun sendMessage(chatId, attachments, text, ...)   // 64 + повтор на attachment.not.ready
 }
 
-// P2 — com/max/core/calls/CallSignaling.kt
-class CallSignaling {
-    companion object { fun decodeVcp(vcp: String): ConversationParams? = TODO() } // "<rawLen>:<base64(LZ4-block(JSON))>"
-    suspend fun connect(ws2Url: String, userAgent: String?): Unit = TODO()
-    suspend fun acceptCall(): Unit = TODO()
-    suspend fun transmitSdp(participantId: Long, type: String, sdp: String): Unit = TODO()
-    suspend fun transmitCandidate(participantId: Long, candidate: String, sdpMid: String, mline: Int): Unit = TODO()
-    suspend fun hangup(reason: String): Unit = TODO()
-    val events: Flow<CallEvent> get() = TODO()
+// com/max/core/media/UploadSource.kt — потоковые тела без загрузки файла в память
+interface UploadSource : AutoCloseable { val size: Long; val filePath: String?; fun read(position: Long, buffer: ByteArray, offset: Int, length: Int): Int }
+expect fun fileUploadSource(path: String): UploadSource  // JVM/Android: FileChannel (позиционное чтение); iOS: POSIX pread
+class UploadBody(parts: List<Part>)                      // Bytes | Range(source, start, length); writeTo сегментами по 64 KiB
+
+// com/max/core/media/MediaHttp.kt — CDN-клиент платформы
+fun interface MediaHttp {
+    suspend fun request(method, url, headers, body: ByteArray, progress): HttpResponse
+    suspend fun upload(method, url, headers, body: UploadBody, progress): HttpResponse  // по умолчанию → request(body.toByteArray())
 }
+// OkHttpMediaHttp (JVM/Android): RequestBody читает источник сегментами на потоке OkHttp.
+// UrlSessionMediaHttp (iOS): целый файл → uploadTaskWithRequest:fromFile: (ОС читает с диска);
+//   multipart фото и чанки видео (≤ chunkSize) собираются в NSData.
+
+// com/max/core/calls — decodeVcp (kolibri vcp.rs), CallsApi.requestCallsToken (158), NOTIF_CALL_START (137).
+// ws2-сигналинг и WebRTC остаются на стороне приложения (см. opcodes.md).
 ```
+
+Не реализовано (нет схемы ни в одном референсе): `STICKER_UPLOAD` 81, 193/194, `AUDIO_PLAY` 301 — см. [opcodes.md](opcodes.md).
 
 | Приоритет | Состав |
 |-----------|--------|
