@@ -2,9 +2,8 @@ package com.max.core.media
 
 /**
  * The HTTP part of uploads (CDN requests), kept behind an interface so common code is testable
- * and each platform can plug in its client. No implementation ships yet: the Ktor client engines
- * are declared only in the platform source sets (no `ktor-client-core` in commonMain), see
- * docs/architecture.md.
+ * and each platform plugs in its client: [defaultMediaHttp] is `OkHttpMediaHttp` on JVM / Android
+ * and `UrlSessionMediaHttp` on iOS (commonMain stays free of HTTP dependencies).
  *
  * Implementations send [method] with exactly [headers] (in order) and [body], follow no
  * redirects, and return any status (non-2xx is not an exception). Throwing is reserved for I/O

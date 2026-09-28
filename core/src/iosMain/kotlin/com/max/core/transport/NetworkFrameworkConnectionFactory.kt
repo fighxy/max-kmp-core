@@ -63,6 +63,7 @@ import platform.Network.nw_tls_copy_sec_protocol_options
 import platform.Security.SecCertificateCreateWithData
 import platform.Security.SecPolicyCreateSSL
 import platform.Security.SecTrustEvaluateWithError
+import platform.Security.SecTrustRef
 import platform.Security.SecTrustSetAnchorCertificates
 import platform.Security.SecTrustSetAnchorCertificatesOnly
 import platform.Security.SecTrustSetPolicies
@@ -221,22 +222,30 @@ class NetworkFrameworkConnectionFactory : ConnectionFactory {
         internal fun evaluateWithMincifry(trust: sec_trust_t, host: String): Boolean {
             val secTrust = sec_trust_copy_ref(trust) ?: return false // +1, released below
             try {
-                val cfHost = CFStringCreateWithCString(null, host, kCFStringEncodingUTF8)
-                val policy = SecPolicyCreateSSL(true, cfHost)
-                try {
-                    if (policy != null && SecTrustSetPolicies(secTrust, policy) != 0) return false
-                } finally {
-                    if (policy != null) CFRelease(policy)
-                    if (cfHost != null) CFRelease(cfHost)
-                }
-                val anchors = mincifryAnchors ?: return false
-                if (SecTrustSetAnchorCertificates(secTrust, anchors) != 0) return false
-                // false = the custom anchors are added to, not substituted for, the system roots
-                if (SecTrustSetAnchorCertificatesOnly(secTrust, false) != 0) return false
-                return SecTrustEvaluateWithError(secTrust, null)
+                return evaluateSecTrustWithMincifry(secTrust, host)
             } finally {
                 CFRelease(secTrust)
             }
+        }
+
+        /**
+         * Evaluates [secTrust] (not consumed) with an SSL server policy for [host] and anchors =
+         * system roots + [MincifryCa]. Also used by the NSURLSession media client.
+         */
+        internal fun evaluateSecTrustWithMincifry(secTrust: SecTrustRef, host: String): Boolean {
+            val cfHost = CFStringCreateWithCString(null, host, kCFStringEncodingUTF8)
+            val policy = SecPolicyCreateSSL(true, cfHost)
+            try {
+                if (policy != null && SecTrustSetPolicies(secTrust, policy) != 0) return false
+            } finally {
+                if (policy != null) CFRelease(policy)
+                if (cfHost != null) CFRelease(cfHost)
+            }
+            val anchors = mincifryAnchors ?: return false
+            if (SecTrustSetAnchorCertificates(secTrust, anchors) != 0) return false
+            // false = the custom anchors are added to, not substituted for, the system roots
+            if (SecTrustSetAnchorCertificatesOnly(secTrust, false) != 0) return false
+            return SecTrustEvaluateWithError(secTrust, null)
         }
 
         /** [MincifryCa.derCertificates] as a CFArray of SecCertificate, built once, never freed. */

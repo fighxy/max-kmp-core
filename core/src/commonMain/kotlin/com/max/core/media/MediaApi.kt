@@ -9,6 +9,7 @@ import com.max.core.events.MaxEvent
 import com.max.core.events.MaxEvents
 import com.max.core.protocol.Opcode
 import com.max.core.session.SessionMachine
+import com.max.core.session.UserAgentInfo
 import com.max.core.session.randomHexId
 import com.max.core.transport.ServerErrorException
 import kotlinx.coroutines.CancellationException
@@ -45,16 +46,19 @@ import kotlin.time.Duration.Companion.seconds
  * `STICKER_UPLOAD` 81 exists in both opcode tables but neither reference sends it or defines its
  * payload, so there is no sticker upload here.
  *
+ * @param http CDN client; defaults to the platform one ([defaultMediaHttp]: OkHttp on JVM /
+ *   Android, `NSURLSession` on iOS).
  * @param events typed pushes used for readiness waits (for a session: `MaxEvents(session).all`).
  *   Without it uploads return right after the POST and [sendMessage] does not retry.
- * @param userAgent HTTP User-Agent, normally `UserAgentInfo.httpUserAgent` (sent percent-encoded).
+ * @param userAgent HTTP User-Agent, normally `UserAgentInfo.httpUserAgent` of the session's
+ *   device (sent percent-encoded); defaults to the default Android profile's.
  * @param readyTimeout PyMax waits 60 s for readiness signals.
  * @param boundary multipart boundary generator (kolibri uses a time-based `----KolibriBoundary…`).
  */
 class MediaApi(
     private val sink: RequestSink,
-    private val http: MediaHttp,
-    private val userAgent: String,
+    private val http: MediaHttp = defaultMediaHttp(),
+    private val userAgent: String = UserAgentInfo().httpUserAgent,
     private val events: Flow<MaxEvent>? = null,
     private val clock: () -> Long = ::epochMillis,
     private val readyTimeout: Duration = 60.seconds,
@@ -66,7 +70,7 @@ class MediaApi(
      * `session.config.device.userAgent.httpUserAgent`. Collecting starts per upload, before the
      * POST, so the session must be connected.
      */
-    constructor(session: SessionMachine, http: MediaHttp, clock: () -> Long = ::epochMillis) : this(
+    constructor(session: SessionMachine, http: MediaHttp = defaultMediaHttp(), clock: () -> Long = ::epochMillis) : this(
         RequestSink { opcode, payload -> session.request(opcode, payload) },
         http,
         session.config.device.userAgent.httpUserAgent,
@@ -177,7 +181,8 @@ class MediaApi(
      *    200, the trimmed body parsed as a number is the resume offset (used when `<= size`).
      * 2. The rest is split into [chunkSize] ranges; up to [concurrency] workers `POST` them with
      *    `Content-Range: bytes <start>-<end-1>/<size>`; 200 and 201 are accepted.
-     * 3. [progress] gets `(offset + bytes done, size)` after every chunk.
+     * 3. [progress] gets `(offset + bytes done, size)` after every chunk, in increasing order
+     *    (kolibri reports from each worker without ordering).
      *
      * The same [uploadName] (kolibri: current microseconds `& 0x7FFFFFFF`) goes into every
      * request's `Content-Disposition`. kolibri returns `false` on failure; this throws
@@ -222,8 +227,11 @@ class MediaApi(
                         if (resp.status != 200 && resp.status != 201) {
                             throw UploadException("video chunk $range failed with status ${resp.status}", resp.status)
                         }
-                        val done = lock.withLock { sent += chunk.size; sent }
-                        progress?.onProgress(done, total.toLong())
+                        // reported under the lock so values arrive in increasing order across workers
+                        lock.withLock {
+                            sent += chunk.size
+                            progress?.onProgress(sent, total.toLong())
+                        }
                     }
                 }
             }

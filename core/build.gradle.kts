@@ -24,10 +24,9 @@ kotlin {
         val jvmAndroidSharedDir = file("src/jvmAndroidShared/kotlin")
 
         commonMain.dependencies {
-            // ktor-client-* engines are listed in libs.versions.toml but unused: the Max protocol
-            // needs a raw TLS byte stream, which HTTP engines do not expose. Used instead:
-            // java.net.Socket + javax.net.ssl on JVM/Android; Apple Network.framework (platform.Network,
-            // no extra dependency) on iOS, since ktor-network-tls on Native is a stub in 3.1.1.
+            // No HTTP / networking library in common code. Transport: java.net.Socket + javax.net.ssl on
+            // JVM/Android, Apple Network.framework on iOS. Media CDN client (expect defaultMediaHttp):
+            // OkHttp on JVM/Android, NSURLSession (platform.Foundation, no dependency) on iOS.
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.core)
             implementation(libs.kotlinx.serialization.json)
@@ -40,21 +39,15 @@ kotlin {
         androidMain {
             kotlin.srcDir(jvmAndroidSharedDir)
             dependencies {
-                // Kept for the next HTTP layer (media uploads / ws2); the transport does not use it.
-                implementation(libs.ktor.client.okhttp)
-            }
-        }
-        iosMain {
-            dependencies {
-                // Kept for the next HTTP layer; the transport uses Network.framework, not Darwin.
-                implementation(libs.ktor.client.darwin)
+                // media/OkHttpMediaHttp.kt (jvmAndroidShared)
+                implementation(libs.okhttp)
             }
         }
         jvmMain {
             kotlin.srcDir(jvmAndroidSharedDir)
             dependencies {
-                // Kept for the next HTTP layer; the transport uses java.net.Socket, not CIO.
-                implementation(libs.ktor.client.cio)
+                // media/OkHttpMediaHttp.kt (jvmAndroidShared)
+                implementation(libs.okhttp)
             }
         }
     }

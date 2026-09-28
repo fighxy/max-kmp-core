@@ -59,7 +59,7 @@ flowchart LR
 | | `Auth.kt`: `AuthApi.approveQrLogin`, `QrApproval` | P0 | подтверждение web-входа по QR с залогиненного Android-устройства: `AUTH_QR_APPROVE` (290) `{qrLink}` (PyMax `ApproveQrLoginPayload`); сам вход по QR (288/289/291) в references есть только у web-клиента PyMax — не реализован (§D.3) |
 | | `TokenStore` (interface, actual: Keychain / EncryptedSharedPreferences) | P0 | хранение login token |
 | `com.max.core.api` | `MaxApi.kt`: `MaxApi` (фасад); `MessagesApi.kt`: `MessagesApi`, `ClientIdGenerator`; `ChatsApi.kt`: `ChatsApi`; `ApiModels.kt`: `MaxMessage`, `Chat`, `ChatHistory`, `ReadState`, `ReactionInfo`, `ChatMember(sPage)`, `MalformedReplyException` | P0 | только request/response поверх `RequestSink` (залогиненный `SessionMachine`): `MSG_SEND` 64 (текст, reply, forward), `MSG_GET` 71, `MSG_EDIT` 67, `MSG_DELETE` 66, `CHAT_HISTORY` 49, `CHAT_MARK` 50, pin через `CHAT_UPDATE` 55, реакции 178/179/180; `CHAT_INFO` 48, `CHATS_LIST` 53, `CHAT_MEMBERS` 59, `CHAT_LEAVE` 58, `CHAT_DELETE` 52 — payload-ы как в PyMax `api/messages`, `api/chats`; без markdown, отложенных сообщений (вложения — в `media`), комментариев и управления группами |
-| `com.max.core.media` | `MediaApi.kt`: `MediaApi`; `MediaHttp.kt`: `MediaHttp` (interface `request(method, url, headers, body, progress)`), `UploadProgress`, `HttpResponse`, `UploadRequests`; `Attachments.kt`: sealed `OutgoingAttachment` (`Photo`/`File`/`Video`/`Voice`/`VideoNote`), sealed `Attachment` (`Photo`/`Video`/`File`/`Audio`/`Sticker`/`Unknown`), `MaxMessage.attachments`; `MediaModels.kt`: `PhotoUploadSlot`, `UploadSlot`, `VideoLink`, `FileLink`, `UploadException` | P1 | control plane как PyMax `api/uploads/service.py`: `PHOTO_UPLOAD` 80, `FILE_UPLOAD` 87, `VIDEO_UPLOAD` 82 с `{count, type, uploaderType, profile}` (video `0/0`, voice `2/1`, video note `1/1`) → CDN (форма запросов как kolibri `media/upload.rs`: multipart `file` для фото, один POST с `Content-Range` для файлов/видео/voice/video note; UA = `UserAgentInfo.httpUserAgent`, percent-encoded) → ожидание `NOTIF_ATTACH` 136 (60 с) для file/video → `attaches` в `MSG_SEND` 64 (`MediaApi.sendMessage`; при `attachment.not.ready` — ждёт сигнал первого voice (`audioId`) / video note (`videoId`) и повторяет один раз). Video note: `thumbhash` из JSON CDN (base64 с `=`-паддингом), payload `{_type: VIDEO, token, videoType: 1, thumbhash?, duration?}`. Видео по частям: `uploadVideoParallel` / `uploadChunked` — kolibri `upload_video`: GET-handshake (resume offset из тела) → POST-чанки `bytes a-b/n` (2 MiB, 4 воркера — дефолты kolibri-py), `X-Uploading-Mode: parallel`, `Connection: close`, `fileName="<micros & 0x7FFFFFFF>"`. Прогресс: `UploadProgress(sent, total)` на всех загрузках (kolibri `ProgressFn`). Аудио = `Voice` (другого пути в references нет; `AUDIO_PLAY` 301 не используется). Стикеры — только входящие; `STICKER_UPLOAD` 81 в references не вызывается. Ссылки: `VIDEO_PLAY` 83, `FILE_DOWNLOAD` 88. HTTP только через `MediaHttp`: реализации нет — `ktor-client-core` не подключён в commonMain (engines только в платформенных source sets); следующий шаг — actual'ы на OkHttp/Darwin (§G) |
+| `com.max.core.media` | `MediaApi.kt`: `MediaApi`; `MediaHttp.kt`: `MediaHttp` (interface `request(method, url, headers, body, progress)`), `UploadProgress`, `HttpResponse`, `UploadRequests`; `Attachments.kt`: sealed `OutgoingAttachment` (`Photo`/`File`/`Video`/`Voice`/`VideoNote`), sealed `Attachment` (`Photo`/`Video`/`File`/`Audio`/`Sticker`/`Unknown`), `MaxMessage.attachments`; `MediaModels.kt`: `PhotoUploadSlot`, `UploadSlot`, `VideoLink`, `FileLink`, `UploadException` | P1 | control plane как PyMax `api/uploads/service.py`: `PHOTO_UPLOAD` 80, `FILE_UPLOAD` 87, `VIDEO_UPLOAD` 82 с `{count, type, uploaderType, profile}` (video `0/0`, voice `2/1`, video note `1/1`) → CDN (форма запросов как kolibri `media/upload.rs`: multipart `file` для фото, один POST с `Content-Range` для файлов/видео/voice/video note; UA = `UserAgentInfo.httpUserAgent`, percent-encoded) → ожидание `NOTIF_ATTACH` 136 (60 с) для file/video → `attaches` в `MSG_SEND` 64 (`MediaApi.sendMessage`; при `attachment.not.ready` — ждёт сигнал первого voice (`audioId`) / video note (`videoId`) и повторяет один раз). Video note: `thumbhash` из JSON CDN (base64 с `=`-паддингом), payload `{_type: VIDEO, token, videoType: 1, thumbhash?, duration?}`. Видео по частям: `uploadVideoParallel` / `uploadChunked` — kolibri `upload_video`: GET-handshake (resume offset из тела) → POST-чанки `bytes a-b/n` (2 MiB, 4 воркера — дефолты kolibri-py), `X-Uploading-Mode: parallel`, `Connection: close`, `fileName="<micros & 0x7FFFFFFF>"`. Прогресс: `UploadProgress(sent, total)` на всех загрузках (kolibri `ProgressFn`). Аудио = `Voice` (другого пути в references нет; `AUDIO_PLAY` 301 не используется). Стикеры — только входящие; `STICKER_UPLOAD` 81 в references не вызывается. Ссылки: `VIDEO_PLAY` 83, `FILE_DOWNLOAD` 88. HTTP через `MediaHttp`; по умолчанию `expect fun defaultMediaHttp(MediaHttpConfig)` (`DefaultMediaHttp.kt`: таймауты, Минцифры CA, insecure, proxy): **JVM/Android** — `OkHttpMediaHttp` (jvmAndroidShared, OkHttp 4.12: заголовки как есть, тело без media type → `Content-Type` дословно, прогресс по 64 KiB через counting `RequestBody`, отмена корутины → `Call.cancel()`, без редиректов и ретраев, trust = system + `MincifryCa` как в `JavaSocketConnectionFactory`, HTTP/SOCKS5-proxy); **iOS** — `UrlSessionMediaHttp` (`NSURLSession` с delegate: `didSendBodyData` → прогресс, `didReceiveChallenge` → system + `MincifryCa` через `NetworkFrameworkConnectionFactory.evaluateSecTrustWithMincifry`, редиректы запрещены, `task.cancel()` при отмене; `Content-Length`/`Connection`/`Host` управляет сама NSURLSession; proxy не поддержан). Проверка: JVM — end-to-end через локальный `com.sun.net.httpserver` (`OkHttpMediaHttpTest`); iOS — только type-check на Linux, компиляция и offline-тесты в macOS CI (§G) |
 | `com.max.core.calls` | `CallSignaling.kt`, `Vcp` (новые) | P2 | §H |
 | `com.max.shared` | `Session.kt` (фасад), `MaxClient` (новый) | P0 | единая точка для Swift/Android |
 
@@ -68,10 +68,10 @@ flowchart LR
 ```text
 core/src/
   commonMain/kotlin/com/max/core/{protocol,transport,session,events,auth,api,media,calls}
-  iosMain/kotlin/com/max/core/     # actual: TLS TODO (Network.framework); TokenStore (Keychain) позже
-  androidMain/kotlin/com/max/core/ # actual: java.net.Socket + javax.net.ssl (shared with jvm), TokenStore позже
-  jvmMain/kotlin/com/max/core/     # desktop / тесты (тот же JavaSocketConnectionFactory)
-  jvmAndroidShared/kotlin/        # общий java.net / javax.net.ssl код (не KMP source set)
+  iosMain/kotlin/com/max/core/     # actual: TLS (Network.framework), media HTTP (NSURLSession); TokenStore (Keychain) позже
+  androidMain/kotlin/com/max/core/ # actual: java.net.Socket + javax.net.ssl, OkHttp media (shared with jvm), TokenStore позже
+  jvmMain/kotlin/com/max/core/     # desktop / тесты (тот же JavaSocketConnectionFactory и OkHttpMediaHttp)
+  jvmAndroidShared/kotlin/        # общий java.net / javax.net.ssl и OkHttp код (не KMP source set)
 shared/src/
   commonMain/kotlin/com/max/shared/  # Session, MaxClient, DTO для UI
   iosMain/ androidMain/ jvmMain/    # PlatformSession.kt (уже есть)
@@ -94,7 +94,7 @@ ios/src/
 
 1. **P0 iOS:** protocol → transport(+Dispatcher) → session(+Ping/Reconnect) → auth(SMS, пароль) → api(chats/messages) → events (MaxEvents) → shared/ios export → Swift-клиент ([ios-plan.md](ios-plan.md)).
 2. **P0 Android:** те же `commonMain`, `androidMain` actual'ы, Android UI.
-3. **P1:** QR, media (скелет `MediaApi` есть; нужна реализация `MediaHttp`), LOGIN2, push-регистрация (после эксперимента §K). Proxy, Минцифры CA и iOS TLS (Network.framework) уже в P0-транспорте.
+3. **P1:** QR, media (`MediaApi` + платформенные `MediaHttp`; нужна живая проверка на CDN Max), LOGIN2, push-регистрация (после эксперимента §K). Proxy, Минцифры CA и iOS TLS (Network.framework) уже в P0-транспорте.
 4. **P2:** CallSignaling, stories (EXPERIMENTAL), desktop.
 
 Открытые протокольные вопросы, влияющие на ядро (cmd=2, исходящее сжатие, поля handshake, 158) — [protocol.md §K](protocol.md#k-открытые-вопросы).
@@ -147,14 +147,14 @@ max-kmp-core/
 │       │   ├── api/                             # MaxApi, MessagesApi, ChatsApi, модели   P0
 │       │   ├── events/                          # MaxEvent, EventParser, MaxEvents        P0
 │       │   ├── media/                           # MediaApi 80/82/87 + CDN, 83/88, attaches, video note,
-│       │   │                                    # parallel/resume video, progress (MediaHttp без реализации) P1
+│       │   │                                    # parallel/resume video, progress; defaultMediaHttp (expect) P1
 │       │   ├── calls/
 │       │   │   └── CallSignaling.kt             # vcp → ws2 → WebRTC            (план)    P2
 │       │   ├── push/
 │       │   │   └── PushToken.kt                 # регистрация токена, опкод неизвестен (план) P1
 │       │   └── Platform.kt
 │       ├── androidMain/kotlin/com/max/core/     # actual: сокет/TLS, TokenStore, TrustStore
-│       ├── iosMain/kotlin/com/max/core/         # actual: Ktor Darwin / Network.framework, Keychain
+│       ├── iosMain/kotlin/com/max/core/         # actual: Network.framework, NSURLSession (media), Keychain
 │       └── jvmMain/kotlin/com/max/core/         # actual: JVM-сокеты, тесты
 ├── shared/                                      # узкий публичный API
 │   ├── build.gradle.kts
@@ -217,7 +217,7 @@ max-kmp-core/
 
 | Слой | Технологии |
 |------|------------|
-| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Kotlin Serialization, собственный MessagePack-кодек, собственные LZ4 (block/frame) и Zstd-декодер на чистом Kotlin (энкодер Zstd — только raw/RLE-блоки, без сжатия). Транспорт: raw TLS через `java.net.Socket`/`javax.net.ssl` (JVM/Android), Apple Network.framework (iOS). Ktor client engines (CIO/OkHttp/Darwin) в зависимости оставлены для будущего HTTP-слоя, транспорт их не использует (`ktor-network-tls` на Native в 3.1.1 — stub). |
+| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Kotlin Serialization, собственный MessagePack-кодек, собственные LZ4 (block/frame) и Zstd-декодер на чистом Kotlin (энкодер Zstd — только raw/RLE-блоки, без сжатия). Транспорт: raw TLS через `java.net.Socket`/`javax.net.ssl` (JVM/Android), Apple Network.framework (iOS). Медиа-HTTP: OkHttp (JVM/Android), `NSURLSession` (iOS); Ktor убран из зависимостей (транспорту нужен сырой TLS-поток, `ktor-network-tls` на Native в 3.1.1 — stub; медиа хватает OkHttp/NSURLSession без зависимостей в commonMain). |
 | iOS | SwiftUI, async/await, `AsyncStream`, XCFramework из Kotlin/Native |
 | Android | Kotlin, Jetpack Compose |
 | Desktop | Compose Multiplatform (рендер через Skia) |
