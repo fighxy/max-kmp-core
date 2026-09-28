@@ -43,10 +43,11 @@ flowchart LR
 | | `Compression.kt` (новый) | P0 | LZ4-block out ≥32 B, sniff Zstd/LZ4-frame/LZ4-block in (§B.4) |
 | | `Opcodes.kt`: `Opcodes`, `name()` | P0 | union kolibri ∪ PyMax (§E) |
 | | `MessagePack.kt`: `MessagePackCodec`, `MsgValue` | P0 | payload (§F.3) |
-| `com.max.core.transport` | `TlsTransport.kt`: `TlsTransport`, `TransportConfig` | P0 | TLS TCP, timeouts 15/30 s (§B.6) |
-| | `Dispatcher.kt` (новый) | P0 | seq→pending, `cmd 1/2/3` = ответ, `cmd 0` = push (§B.7) |
-| | `ProxyConnector.kt` (новый) | P1 | HTTP CONNECT / SOCKS5 (§B.8) |
-| | `TrustStore.kt` (новый, expect/actual) | P1 | opt-in Минцифры CA (§B.6, §K14) |
+| `com.max.core.transport` | `TlsTransport` / `MaxTransport`, `TransportConfig` | P0 | TLS TCP, timeouts 15/30 s, ping, reconnect (§B.6, §C.3–C.4) |
+| | `RawConnection` / `ConnectionFactory` (expect/actual) | P0 | платформенный сокет: JVM/Android `java.net.Socket`+`javax.net.ssl`; iOS — TODO |
+| | `PendingRequests` / `SeqCounter` / `PacketReassembler` | P0 | seq→pending, `cmd 1/2/3` = ответ, `cmd 0` = push (§B.7) |
+| | `ProxyConfig` / `ProxyHandshake` | P0 | HTTP CONNECT / SOCKS5 / SOCKS5h (§B.8) |
+| | `MincifryCa` (embedded PEM) | P0 | Root+Sub CA Минцифры; `trustMincifryCa=true` по умолчанию (§B.6) |
 | `com.max.core.session` | `SessionMachine.kt`: `SessionMachine`, `SessionState` | P0 | handshake 6, состояния (§C.1–C.2) |
 | | `HandshakeConfig.kt` / `UserAgent` (новый) | P0 | поля `userAgent` (§C.2) |
 | | `PingScheduler.kt` (новый) | P0 | PING 1, 30 s, `interactive` (§C.3) |
@@ -65,9 +66,10 @@ flowchart LR
 ```text
 core/src/
   commonMain/kotlin/com/max/core/{protocol,transport,session,events,auth,api,media,calls}
-  iosMain/kotlin/com/max/core/     # actual: TLS (Ktor darwin / Network.framework), TrustStore, TokenStore (Keychain)
-  androidMain/kotlin/com/max/core/ # actual: TLS (Ktor okhttp / sockets), TrustStore, TokenStore
-  jvmMain/kotlin/com/max/core/     # desktop / тесты
+  iosMain/kotlin/com/max/core/     # actual: TLS TODO (Network.framework); TokenStore (Keychain) позже
+  androidMain/kotlin/com/max/core/ # actual: java.net.Socket + javax.net.ssl (shared with jvm), TokenStore позже
+  jvmMain/kotlin/com/max/core/     # desktop / тесты (тот же JavaSocketConnectionFactory)
+  jvmAndroidShared/kotlin/        # общий java.net / javax.net.ssl код (не KMP source set)
 shared/src/
   commonMain/kotlin/com/max/shared/  # Session, MaxClient, DTO для UI
   iosMain/ androidMain/ jvmMain/    # PlatformSession.kt (уже есть)
@@ -90,7 +92,7 @@ ios/src/
 
 1. **P0 iOS:** protocol → transport(+Dispatcher) → session(+Ping/Reconnect) → auth(SMS, пароль) → api(chats/messages) → EventBus → shared/ios export → Swift-клиент ([ios-plan.md](ios-plan.md)).
 2. **P0 Android:** те же `commonMain`, `androidMain` actual'ы, Android UI.
-3. **P1:** proxy, Минцифры trust, QR, MediaUploader (photo/file), LOGIN2, push-регистрация (после эксперимента §K).
+3. **P1:** iOS TLS (Network.framework), QR, MediaUploader (photo/file), LOGIN2, push-регистрация (после эксперимента §K). Proxy и Минцифры CA уже в P0-транспорте.
 4. **P2:** video parallel upload, CallSignaling, stories (EXPERIMENTAL), desktop.
 
 Открытые протокольные вопросы, влияющие на ядро (cmd=2, исходящее сжатие, поля handshake, 158) — [protocol.md §K](protocol.md#k-открытые-вопросы).
@@ -121,9 +123,11 @@ max-kmp-core/
 │       │   │   ├── MessagePack.kt               # MessagePackCodec, MsgValue              P0
 │       │   │   └── Compression.kt               # LZ4-block / LZ4-frame / Zstd  (план)    P0
 │       │   ├── transport/
-│       │   │   ├── TlsTransport.kt              # TLS TCP к api2.oneme.ru                 P0
-│       │   │   ├── Dispatcher.kt                # seq → ответ, push → EventBus  (план)    P0
-│       │   │   └── ProxySupport.kt              # HTTP CONNECT / SOCKS5         (план)    P1
+│       │   │   ├── TlsTransport.kt              # интерфейс + TransportConfig             P0
+│       │   │   ├── MaxTransport.kt              # seq, pushes, ping, reconnect            P0
+│       │   │   ├── RawConnection.kt             # expect/actual фабрика сокета            P0
+│       │   │   ├── ProxyConfig.kt / ProxyHandshake.kt  # HTTP CONNECT / SOCKS5            P0
+│       │   │   └── MincifryCa.kt                # embedded PEM Root+Sub CA                P0
 │       │   ├── session/
 │       │   │   ├── SessionMachine.kt            # состояния соединения                    P0
 │       │   │   ├── Handshake.kt                 # опкод 6, userAgent            (план)    P0
@@ -205,7 +209,7 @@ max-kmp-core/
 
 | Слой | Технологии |
 |------|------------|
-| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Ktor (сеть/TLS), Kotlin Serialization, собственный MessagePack-кодек на чистом Kotlin без зависимостей (`core/…/protocol/MessagePack.kt`), LZ4/Zstd |
+| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Kotlin Serialization, собственный MessagePack-кодек, LZ4/Zstd (stubs). Транспорт: raw TLS через `java.net.Socket`/`javax.net.ssl` (JVM/Android); iOS TLS — TODO. Ktor client engines (CIO/OkHttp/Darwin) в зависимости оставлены для будущего HTTP-слоя, транспорт их не использует (`ktor-network-tls` на Native в 3.1.1 — stub). |
 | iOS | SwiftUI, async/await, `AsyncStream`, XCFramework из Kotlin/Native |
 | Android | Kotlin, Jetpack Compose |
 | Desktop | Compose Multiplatform (рендер через Skia) |

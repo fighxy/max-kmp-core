@@ -13,8 +13,13 @@ ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
 ktor-client-darwin = { module = "io.ktor:ktor-client-darwin", version.ref = "ktor" }
-ktor-network-tls = { module = "io.ktor:ktor-network-tls", version.ref = "ktor" }
+# ktor-client-* kept for a future HTTP layer (media / ws2); the transport does not use them.
+# ktor-network + ktor-network-tls: Network works on jvm/android/iosArm64/iosSimulatorArm64 in 3.1.1,
+# but ktor-network-tls on Native is a stub ("TLS sessions are not supported on Native platform"),
+# so the transport uses java.net.Socket + javax.net.ssl on JVM/Android instead and leaves iOS TODO.
+# The ktor-network-tls alias is removed so it is not added as a dead dependency.
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-core = { module = "org.jetbrains.kotlinx:kotlinx-serialization-core", version.ref = "serialization" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 # MessagePack: no library; pure-Kotlin codec in core/src/commonMain/kotlin/com/max/core/protocol/MessagePack.kt
