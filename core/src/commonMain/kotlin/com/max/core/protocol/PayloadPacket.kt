@@ -13,10 +13,9 @@ package com.max.core.protocol
 /**
  * Serializes [payload] with [codec] and builds a packet through [encodePacketCompressed].
  *
- * [format] defaults to [CompressionFormat.NONE]: PyMax never compresses outgoing bodies, and the
- * LZ4/Zstd codecs in [Compression] are still stubs. Pass [CompressionFormat.LZ4_BLOCK] to get the
- * kolibri behaviour (bodies of [COMPRESSION_THRESHOLD] bytes or more are compressed) once LZ4 is
- * implemented.
+ * [format] defaults to [CompressionFormat.NONE] (PyMax never compresses outgoing bodies). Pass
+ * [CompressionFormat.LZ4_BLOCK] to get the kolibri behaviour (bodies of [COMPRESSION_THRESHOLD]
+ * bytes or more are LZ4-compressed when that makes them smaller); [com.max.core.transport.MaxTransport] does so.
  *
  * @throws MessagePackException if [payload] contains an unsupported type.
  * @throws IllegalArgumentException if the header fields are out of range or the body is longer
@@ -39,9 +38,9 @@ fun encodePayloadPacket(
  * Splits and decompresses one complete packet with [decodePacketBody] and decodes its body with
  * [codec]. An empty body gives `null`.
  *
- * @throws IllegalArgumentException on a malformed packet or unknown compression flag.
+ * @throws IllegalArgumentException on a malformed packet, an unknown compression flag or a
+ * malformed compressed body ([CompressionException]).
  * @throws MessagePackException if the body is not valid MessagePack.
- * @throws UnsupportedOperationException while the codec for the flagged compression is a stub.
  */
 fun decodePayloadPacket(
     bytes: ByteArray,

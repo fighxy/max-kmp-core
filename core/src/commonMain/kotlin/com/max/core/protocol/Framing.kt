@@ -192,10 +192,12 @@ fun decodePacket(bytes: ByteArray): Pair<PacketHeader, ByteArray> {
 
 /**
  * Splits one complete packet like [decodePacket] and decompresses the body with [Compression]
- * according to the header flag.
+ * according to the header flag (a Zstd / LZ4-frame magic number overrides the flag, see
+ * [Compression.decompress]).
  *
  * @throws IllegalArgumentException on a malformed packet or an unknown compression flag.
- * @throws UnsupportedOperationException while the codec for the flagged format is a stub.
+ * @throws CompressionException (an [IllegalArgumentException]) on a malformed or oversized
+ * compressed body.
  */
 fun decodePacketBody(bytes: ByteArray): Pair<PacketHeader, ByteArray> {
     val (header, body) = decodePacket(bytes)
@@ -206,12 +208,16 @@ fun decodePacketBody(bytes: ByteArray): Pair<PacketHeader, ByteArray> {
 }
 
 /**
- * Builds a packet from an uncompressed [rawBody]: compresses it with [format] through
- * [Compression] when the body reaches [COMPRESSION_THRESHOLD] (otherwise sends it as is), then
- * fills in `length` and the compression flag.
+ * Builds a packet from an uncompressed [rawBody] following the kolibri rule: bodies of at least
+ * [COMPRESSION_THRESHOLD] bytes are compressed with [format], and the flag byte is set to the
+ * kolibri ratio hint `(rawLen / compLen) + 1` for LZ4 block (clamped to `1..0x7F`, see
+ * [CompressionFormat.toFlag]; kolibri truncates it to a byte instead, which could wrap to `0` or
+ * into the unknown `0x80..0xFE` range). Unlike kolibri, a body whose compressed form is not
+ * smaller than the raw body is sent uncompressed (flag `0`); this always happens for
+ * [CompressionFormat.ZSTD], whose encoder is non-compressing.
  *
- * @throws IllegalArgumentException if [format] has no known wire flag (LZ4 frame).
- * @throws UnsupportedOperationException while the codec for [format] is a stub.
+ * @throws IllegalArgumentException if [format] has no known wire flag (LZ4 frame) and the body
+ * would be sent compressed.
  */
 fun encodePacketCompressed(
     version: Byte,
@@ -221,8 +227,12 @@ fun encodePacketCompressed(
     rawBody: ByteArray,
     format: CompressionFormat = CompressionFormat.LZ4_BLOCK,
 ): ByteArray {
-    val effective = if (Compression.shouldCompress(rawBody.size)) format else CompressionFormat.NONE
-    val body = Compression.compress(rawBody, effective)
+    var effective = if (Compression.shouldCompress(rawBody.size)) format else CompressionFormat.NONE
+    var body = Compression.compress(rawBody, effective)
+    if (effective != CompressionFormat.NONE && body.size >= rawBody.size) {
+        effective = CompressionFormat.NONE
+        body = rawBody
+    }
     val ratio = if (body.isEmpty()) 1 else rawBody.size / body.size + 1
     val flag = requireNotNull(CompressionFormat.toFlag(effective, ratio)) {
         "$effective has no known wire flag"

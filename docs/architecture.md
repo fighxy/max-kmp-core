@@ -121,7 +121,10 @@ max-kmp-core/
 │       │   │   ├── Framing.kt                   # 10-байтный заголовок, сборка пакетов   P0
 │       │   │   ├── Opcodes.kt                   # таблица опкодов (kolibri ∪ PyMax)       P0
 │       │   │   ├── MessagePack.kt               # MessagePackCodec, MsgValue              P0
-│       │   │   └── Compression.kt               # LZ4-block / LZ4-frame / Zstd  (план)    P0
+│       │   │   ├── Compression.kt               # флаг сжатия, sniff, лимит 32 MiB       P0
+│       │   │   ├── Lz4.kt                       # LZ4 block + frame (pure Kotlin)         P0
+│       │   │   ├── Zstd.kt                      # Zstd-декодер RFC 8878, raw/RLE-энкодер  P0
+│       │   │   └── XxHash.kt                    # XXH32/XXH64 для чексумм                 P0
 │       │   ├── transport/
 │       │   │   ├── TlsTransport.kt              # интерфейс + TransportConfig             P0
 │       │   │   ├── MaxTransport.kt              # seq, pushes, ping, reconnect            P0
@@ -209,7 +212,7 @@ max-kmp-core/
 
 | Слой | Технологии |
 |------|------------|
-| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Kotlin Serialization, собственный MessagePack-кодек, LZ4/Zstd (stubs). Транспорт: raw TLS через `java.net.Socket`/`javax.net.ssl` (JVM/Android), Apple Network.framework (iOS). Ktor client engines (CIO/OkHttp/Darwin) в зависимости оставлены для будущего HTTP-слоя, транспорт их не использует (`ktor-network-tls` на Native в 3.1.1 — stub). |
+| Ядро | Kotlin Multiplatform, Kotlin Coroutines, Kotlin Serialization, собственный MessagePack-кодек, собственные LZ4 (block/frame) и Zstd-декодер на чистом Kotlin (энкодер Zstd — только raw/RLE-блоки, без сжатия). Транспорт: raw TLS через `java.net.Socket`/`javax.net.ssl` (JVM/Android), Apple Network.framework (iOS). Ktor client engines (CIO/OkHttp/Darwin) в зависимости оставлены для будущего HTTP-слоя, транспорт их не использует (`ktor-network-tls` на Native в 3.1.1 — stub). |
 | iOS | SwiftUI, async/await, `AsyncStream`, XCFramework из Kotlin/Native |
 | Android | Kotlin, Jetpack Compose |
 | Desktop | Compose Multiplatform (рендер через Skia) |
