@@ -19,8 +19,9 @@ import com.max.core.transport.TransportPacket
  * | `NOTIF_MARK` 130 | [MaxEvent.MessageRead] |
  * | `NOTIF_PRESENCE` 132 | [MaxEvent.Presence] |
  * | `NOTIF_MSG_REACTIONS_CHANGED` 155 | [MaxEvent.ReactionsChanged] |
+ * | `NOTIF_ATTACH` 136 | [MaxEvent.AttachmentReady] (`fileId` / `videoId` / `audioId`) |
  *
- * Everything else — including `NOTIF_ATTACH` 136 upload signals (media, not covered), an empty
+ * Everything else — including an empty
  * payload (PyMax passes such frames on raw), a payload missing a required field, and
  * `cmd != 0` — becomes [MaxEvent.Unknown]. Parsing never throws.
  */
@@ -74,6 +75,17 @@ object EventParser {
             else {
                 val info = ReactionInfo.from(map)!!
                 MaxEvent.ReactionsChanged(chatId, messageId, info.counters, info.totalCount, opcode, raw)
+            }
+        }
+        Opcode.NOTIF_ATTACH.value -> {
+            val file = map["fileId"].long()
+            val video = map["videoId"].long()
+            val audio = map["audioId"].long()
+            when {
+                file != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.FILE, file, opcode, raw)
+                video != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.VIDEO, video, opcode, raw)
+                audio != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.AUDIO, audio, opcode, raw)
+                else -> null
             }
         }
         else -> null

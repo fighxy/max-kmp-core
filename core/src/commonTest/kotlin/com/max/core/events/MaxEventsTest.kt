@@ -117,8 +117,9 @@ class MaxEventsTest {
 
     @Test
     fun unknownFallback() {
-        // media upload signal and an opcode without a typed event (PyMax: raw only)
-        assertEquals(MaxEvent.Unknown(136, 0, mapOf("fileId" to 99)), event("attach"))
+        // an upload signal is typed now; NOTIF_ATTACH without a known id and an opcode without a typed event stay raw
+        assertEquals(MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.FILE, 99, 136, mapOf("fileId" to 99)), event("attach"))
+        assertIs<MaxEvent.Unknown>(EventParser.parse(136, 0, mapOf("photoId" to 1)))
         assertEquals(134, assertIs<MaxEvent.Unknown>(event("config")).opcode)
         // empty payload, missing required field, non-push cmd, unparseable message, not a map
         assertIs<MaxEvent.Unknown>(EventParser.parse(128, 0, emptyMap<String, Any?>()))

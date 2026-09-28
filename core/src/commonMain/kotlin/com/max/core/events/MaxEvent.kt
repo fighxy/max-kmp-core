@@ -76,6 +76,16 @@ sealed interface MaxEvent {
     ) : MaxEvent
 
     /**
+     * An uploaded file / video / voice finished server-side processing (`NOTIF_ATTACH` 136).
+     * PyMax `resolve_attach` tries, in this order, `FileUploadSignal {fileId}` → `FILE_READY`,
+     * `VideoUploadSignal {videoId}` → `VIDEO_READY`, `AudioUploadSignal {audioId}` → `VOICE_READY`
+     * (`src/pymax/types/events/{file,video,voice}.py`); its upload service waits for these.
+     */
+    data class AttachmentReady(val kind: Kind, val id: Long, override val opcode: Int, override val raw: Any?) : MaxEvent {
+        enum class Kind { FILE, VIDEO, AUDIO }
+    }
+
+    /**
      * Any other push: opcodes without a typed event yet, payloads that do not fit the model, and
      * packets with `cmd != 0` (PyMax only maps `cmd == REQUEST (0)` frames). PyMax's "raw" events.
      */

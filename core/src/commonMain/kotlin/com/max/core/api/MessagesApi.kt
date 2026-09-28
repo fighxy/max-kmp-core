@@ -32,7 +32,8 @@ enum class HistoryItemType { REGULAR, DELAYED }
  *
  * Text is sent as given, with optional raw formatting [elements][sendMessage]; PyMax instead
  * parses Markdown in the text (`Formatter.format_markdown`) into the plain text plus
- * `elements`. Attachments, delayed sending and comments (channel posts) are not covered.
+ * `elements`. Attachments are sent through `com.max.core.media.MediaApi.sendMessage`; delayed
+ * sending and comments (channel posts) are not covered.
  *
  * Errors: ERROR replies throw `ServerErrorException`; an OK reply without the required fields
  * throws [MalformedReplyException]; invalid arguments throw `IllegalArgumentException`.
@@ -192,19 +193,41 @@ class MessagesApi(
         return reactions.entries.mapNotNull { (k, v) -> ReactionInfo.from(v)?.let { k.toString() to it } }.toMap()
     }
 
-    /** `MSG_SEND` body for a text message (PyMax `SendMessagePayload`). */
+    /**
+     * `MSG_SEND` body (PyMax `SendMessagePayload` / `SendMessagePayloadMessage`): `text` is left
+     * out when `null` (attachments only), `attaches` holds attachment payloads such as
+     * `com.max.core.media.OutgoingAttachment.toPayload()`.
+     */
     fun sendMessagePayload(
         chatId: Long,
-        text: String,
+        text: String?,
         cid: Long,
         replyTo: Long?,
         notify: Boolean,
         elements: List<Map<String, Any?>> = emptyList(),
+        attaches: List<Map<String, Any?>> = emptyList(),
     ): Map<String, Any?> {
-        val message = linkedMapOf<String, Any?>("text" to text, "cid" to cid, "elements" to elements, "attaches" to emptyList<Any?>())
+        val message = linkedMapOf<String, Any?>()
+        if (text != null) message["text"] = text
+        message["cid"] = cid
+        message["elements"] = elements
+        message["attaches"] = attaches
         if (replyTo != null) message["link"] = linkedMapOf("type" to "REPLY", "messageId" to replyTo)
         return linkedMapOf("chatId" to chatId, "message" to message, "notify" to notify)
     }
+
+    /**
+     * Next client message id (PyMax `_next_cid`); exposed so a caller that must resend the same
+     * `MSG_SEND` payload (e.g. after `attachment.not.ready`) can build it once.
+     */
+    fun nextCid(): Long = cids.next()
+
+    /**
+     * Sends a prepared `MSG_SEND` [payload] (see [sendMessagePayload]) and parses the reply like
+     * [sendMessage].
+     */
+    suspend fun sendPrepared(chatId: Long, payload: Map<String, Any?>): MaxMessage =
+        requireMessage(sink.request(Opcode.MSG_SEND, payload), Opcode.MSG_SEND, chatId)
 
     /** `MSG_SEND` body for a forward (PyMax `ForwardMessagePayload`); [cid] is negative in PyMax. */
     fun forwardMessagePayload(chatId: Long, messageId: Long, sourceChatId: Long, cid: Long, notify: Boolean): Map<String, Any?> =
