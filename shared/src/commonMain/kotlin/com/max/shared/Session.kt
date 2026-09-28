@@ -1,31 +1,33 @@
 package com.max.shared
 
+import com.max.core.session.HandshakeInfo
 import kotlinx.coroutines.flow.Flow
 
 /**
- * Public cross-platform API.
+ * Low-level cross-platform session: raw opcodes with MessagePack bodies. [MaxClient] implements
+ * it; prefer the typed APIs of [MaxClient] (`api`, `media`, `auth`, `store`) where they exist.
  *
- * - [connect] — TLS + handshake → Online
- * - [request] — send opcode + MessagePack payload, await response
- * - [pushes] — stream of server pushes
- *
- * TODO: back with com.max.core.session.SessionMachine.
+ * - [connect] — TLS + handshake (+ `LOGIN` when a token is stored) → Online
+ * - [request] — send [opcode] with a MessagePack [payload] (empty = no body), await the OK reply
+ *   body (MessagePack; empty when none). ERROR replies throw `ServerErrorException`.
+ * - [pushes] — every server push
  */
 interface Session {
     suspend fun connect(): SessionInfo
-    suspend fun request(opcode: UShort, payload: ByteArray): ByteArray
+    suspend fun request(opcode: Int, payload: ByteArray): ByteArray
     val pushes: Flow<Push>
     suspend fun close()
 }
 
-data class SessionInfo(
-    val raw: ByteArray = byteArrayOf(),
-)
+/** Handshake reply of the current connection. [raw] is the whole reply map. */
+data class SessionInfo(val callsSeed: Long?, val deviceName: String?, val raw: Map<*, *>) {
+    companion object {
+        fun from(h: HandshakeInfo): SessionInfo = SessionInfo(h.callsSeed, h.deviceName, h.payload ?: emptyMap<Any?, Any?>())
+    }
+}
 
-data class Push(
-    val opcode: UShort,
-    val payload: ByteArray,
-)
+/** A server push: [opcode], header [cmd], MessagePack [payload] (empty when none). */
+class Push(val opcode: Int, val cmd: Int, val payload: ByteArray)
 
-/** Factory. TODO: real implementation. */
-fun openSession(host: String, port: Int = 443): Session = error("TODO: openSession")
+/** A [MaxClient] with the default settings for [host]; see [MaxClient] for the full API. */
+fun openSession(host: String, port: Int = 443): MaxClient = MaxClient(MaxClientConfig(host = host, port = port))
