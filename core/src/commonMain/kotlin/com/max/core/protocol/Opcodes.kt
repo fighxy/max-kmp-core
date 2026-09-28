@@ -47,13 +47,13 @@ enum class Opcode(val value: Int) {
     AUTH_LOGIN_RESTORE_PASSWORD(101), // TODO: payload unknown
     AUTH_2FA_DETAILS(104), // TODO: payload unknown
     EXTERNAL_CALLBACK(105), // TODO: payload unknown
-    AUTH_VALIDATE_PASSWORD(107), // TODO: payload unknown
-    AUTH_VALIDATE_HINT(108), // TODO: payload unknown
-    AUTH_VERIFY_EMAIL(109), // TODO: payload unknown
-    AUTH_CHECK_EMAIL(110), // TODO: payload unknown
-    AUTH_SET_2FA(111), // TODO: payload unknown
-    AUTH_CREATE_TRACK(112), // TODO: payload unknown
-    AUTH_CHECK_PASSWORD(113), // TODO: payload unknown
+    AUTH_VALIDATE_PASSWORD(107), // PyMax 2FA management, TwoFactorApi
+    AUTH_VALIDATE_HINT(108), // PyMax 2FA management, TwoFactorApi
+    AUTH_VERIFY_EMAIL(109), // PyMax 2FA management, TwoFactorApi
+    AUTH_CHECK_EMAIL(110), // PyMax 2FA management, TwoFactorApi
+    AUTH_SET_2FA(111), // PyMax 2FA management, TwoFactorApi
+    AUTH_CREATE_TRACK(112), // PyMax 2FA management, TwoFactorApi
+    AUTH_CHECK_PASSWORD(113), // PyMax 2FA management, TwoFactorApi
     AUTH_LOGIN_CHECK_PASSWORD(115), // PyMax CheckPasswordChallengePayload
     AUTH_LOGIN_PROFILE_DELETE(116), // TODO: payload unknown
 
