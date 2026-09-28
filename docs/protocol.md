@@ -769,6 +769,8 @@ JSON envelopes: command+sequence / response / notification; keepalive text `ping
 ## J. Рекомендуемая модульная раскладка max-kmp-core
 
 > **Рекомендация, не факт.** Раздел описывает предлагаемую структуру; Kotlin-исходники этим коммитом **не** менялись. Старт с Android: P0 = всё, что нужно для входа по SMS и отправки/приёма сообщений.
+>
+> **Обновление:** стартовая платформа теперь **iOS (Swift)**, затем Android; состав P0 не меняется. Полная раскладка модулей — [architecture.md](architecture.md), план iOS-клиента — [ios-plan.md](ios-plan.md).
 
 ### J.1 Существующий скелет → P0-классы
 

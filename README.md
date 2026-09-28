@@ -52,6 +52,8 @@
 ## Документация
 
 - [docs/protocol.md](docs/protocol.md) — архитектура протокола Max (референс kolibri / PyMax).
+- [docs/architecture.md](docs/architecture.md) — раскладка модулей и классов KMP-ядра.
+- [docs/ios-plan.md](docs/ios-plan.md) — план iOS-клиента на Swift (этап 1).
 
 ## Лицензия
 
