@@ -153,6 +153,56 @@ class MaxClientTest {
     }
 
     @Test
+    fun reloginFillsHistoryGapsAndHelpersFeedTheStore() = runTest {
+        val kv = InMemoryKeyValueStore()
+        val factory = ScriptedConnectionFactory()
+        val c = smsLogin(kv, factory)
+        val conn = factory.lastConnection!!
+        fun m(id: Long, time: Long, text: String = "m$id") = mapOf("id" to id, "time" to time, "type" to "USER", "sender" to 7, "text" to text)
+
+        val history = async { c.loadHistory(100) }
+        runCurrent()
+        assertEquals(100L, (conn.answer(Opcode.CHAT_HISTORY, mapOf("messages" to listOf(m(1, 5))))!!["chatId"] as Number).toLong())
+        history.await()
+        val sent = async { c.sendText(100, "hi") }
+        runCurrent()
+        conn.answer(Opcode.MSG_SEND, mapOf("chatId" to 100, "message" to m(2, 6, "hi")))
+        sent.await()
+        assertEquals(listOf(1L, 2L), c.store.state.value.messagesOf(100).map { it.id })
+
+        // reconnect: LOGIN reports lastMessage 4, messages 3..4 were missed
+        c.disconnect()
+        val again = async { c.start() }
+        runCurrent()
+        val conn2 = factory.lastConnection!!
+        conn2.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        val chat = mapOf("id" to 100, "type" to "DIALOG", "status" to "ACTIVE", "owner" to 5, "lastEventTime" to 30, "lastMessage" to m(4, 30))
+        conn2.answer(Opcode.LOGIN, loginReply(null) + mapOf("chats" to listOf(chat)))
+        assertEquals(ClientState.Ready(5), again.await())
+        runCurrent()
+        assertEquals(listOf(100L), c.store.state.value.historyGaps())
+        val fill = conn2.answer(Opcode.CHAT_HISTORY, mapOf("messages" to listOf(m(3, 20), m(4, 30))))!!
+        assertEquals(40, (fill["backward"] as Number).toInt())
+        runCurrent()
+        assertEquals(listOf(1L, 2L, 3L, 4L), c.store.state.value.messagesOf(100).map { it.id })
+        assertTrue(c.store.state.value.historyGaps().isEmpty())
+    }
+
+    @Test
+    fun clientStateErrorsAreClassified() {
+        val rejected = ClientState.TokenRejected(
+            com.max.core.auth.InvalidTokenException(
+                com.max.core.transport.ServerErrorException("rejected", "login.token", "FAIL_LOGIN_TOKEN", com.max.core.transport.TransportPacket(com.max.core.protocol.PacketHeader(10, 3, 1, 19, 0, false), null)),
+            ),
+        )
+        assertEquals(com.max.core.ErrorKind.SESSION_EXPIRED, rejected.error?.kind)
+        assertEquals(com.max.core.ErrorKind.NETWORK, ClientState.Reconnecting(2, com.max.core.transport.ConnectionClosedException()).error?.kind)
+        assertNull(ClientState.Reconnecting(1, null).error)
+        assertNull(ClientState.Idle.error)
+    }
+
+    @Test
     fun rejectedTokenIsClearedAndReported() = runTest {
         val kv = InMemoryKeyValueStore()
         smsLogin(kv, ScriptedConnectionFactory()).disconnect()

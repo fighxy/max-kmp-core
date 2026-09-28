@@ -1,6 +1,12 @@
 package com.max.shared
 
+import com.max.core.MaxError
+import com.max.core.api.Chat
+import com.max.core.api.ChatHistory
 import com.max.core.api.MaxApi
+import com.max.core.api.MaxMessage
+import com.max.core.api.MaxUser
+import com.max.core.toMaxError
 import com.max.core.auth.ApkFingerprint
 import com.max.core.auth.AuthApi
 import com.max.core.auth.CodeRequest
@@ -31,6 +37,7 @@ import com.max.core.transport.ConnectionFactory
 import com.max.core.transport.ProxyConfig
 import com.max.core.transport.TransportConfig
 import com.max.core.transport.defaultConnectionFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,6 +61,9 @@ import kotlinx.coroutines.sync.withLock
  * @property transport socket settings; `host` / `port` / `proxyUrl` here override its fields.
  * @property namespace separates credentials of several accounts in one [KeyValueStore].
  * @property messageLimit messages kept per chat in [MaxClient.store].
+ * @property fillGapsOnReconnect after a re-login, re-fetch the history of chats whose loaded
+ *   messages stop before the chat's new `lastMessage` ([MaxClient.fillGaps]).
+ * @property gapFillCount messages requested per chat when filling a gap (PyMax history default 40).
  */
 data class MaxClientConfig(
     val host: String = DEFAULT_HOST,
@@ -65,6 +75,8 @@ data class MaxClientConfig(
     val namespace: String = "default",
     val messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT,
     val fingerprint: ApkFingerprint? = ApkFingerprint.forVersion(userAgent.appVersion),
+    val fillGapsOnReconnect: Boolean = true,
+    val gapFillCount: Int = 40,
 )
 
 /** High-level state of a [MaxClient]. */
@@ -90,6 +102,15 @@ sealed interface ClientState {
     /** Connection or handshake failed for good. */
     data class Failed(val cause: Throwable) : ClientState
 }
+
+/** The classified error behind [ClientState.Reconnecting], [ClientState.TokenRejected] or [ClientState.Failed]. */
+val ClientState.error: MaxError?
+    get() = when (this) {
+        is ClientState.Reconnecting -> lastError?.toMaxError()
+        is ClientState.TokenRejected -> cause.toMaxError()
+        is ClientState.Failed -> cause.toMaxError()
+        else -> null
+    }
 
 /**
  * The one entry point for apps: a [SessionMachine] with token login, persisted credentials,
@@ -133,6 +154,7 @@ class MaxClient(
     private val tokenLogin = MutableStateFlow<TokenLogin?>(null)
     private val loggedIn = MutableStateFlow<Long?>(null)
     private val loggedInFlag = MutableStateFlow(false)
+    private val loginCount = MutableStateFlow(0)
     private val lifecycle = Mutex()
 
     init {
@@ -302,13 +324,48 @@ class MaxClient(
 
     private fun onLoggedIn(login: TokenLogin) {
         val r = login.result.value ?: return
+        val relogin = loginCount.value > 0
+        loginCount.value += 1
         store.applyLogin(r)
+        if (relogin && config.fillGapsOnReconnect) scope.launch { fillGaps() }
         login.login2Result.value?.let { r2 -> r2.contacts.mapNotNull(com.max.core.api.MaxUser::from).let(store::putUsers) }
         val uid = r.userId ?: loggedIn.value
         credentials.save(StoredCredentials(device.deviceId, device.instanceId, login.token, uid, login.sync))
         loggedIn.value = uid
         loggedInFlag.value = true
     }
+
+    // ---- store-backed helpers -------------------------------------------------------------------
+
+    /**
+     * Re-fetches the latest [MaxClientConfig.gapFillCount] messages of every chat listed by
+     * `MaxState.historyGaps` into [store] (done automatically after a re-login). Failures are
+     * skipped per chat; returns the chats that were filled.
+     */
+    suspend fun fillGaps(): List<Long> = store.state.value.historyGaps().filter { chatId ->
+        try {
+            store.putHistory(chatId, api.messages.getChatHistory(chatId, backward = config.gapFillCount))
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** One page of the chat list (`CHATS_LIST`) into [store]. */
+    suspend fun loadChats(marker: Long? = null): List<Chat> = api.chats.fetchChats(marker).also(store::putChats)
+
+    /** A history page (`CHAT_HISTORY`, the latest [backward] messages before [from]) into [store]. */
+    suspend fun loadHistory(chatId: Long, from: Long? = null, backward: Int = 40): ChatHistory =
+        api.messages.getChatHistory(chatId, from = from, backward = backward).also { store.putHistory(chatId, it) }
+
+    /** Users by id (`CONTACT_INFO`) into [store]. */
+    suspend fun loadUsers(userIds: List<Long>): List<MaxUser> = api.users.getUsers(userIds).also(store::putUsers)
+
+    /** Sends a text message and adds the server's copy to [store] (own messages are not pushed back). */
+    suspend fun sendText(chatId: Long, text: String, replyTo: Long? = null): MaxMessage =
+        api.messages.sendMessage(chatId, text, replyTo).also { store.putMessages(chatId, listOf(it)) }
 
     // ---- Session (raw access) ------------------------------------------------------------------
 
