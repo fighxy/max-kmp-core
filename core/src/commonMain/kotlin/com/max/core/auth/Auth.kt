@@ -177,7 +177,8 @@ class AuthApi(
      *
      * @param language sent as `language` (kolibri); `null` omits it (PyMax).
      * @throws ServerErrorException if the server rejects the request (bad number, limits).
-     * @throws AuthException if the reply has no `token`, or the fingerprint cannot be computed.
+     * @throws AuthException if the reply has no `token`, or the fingerprint cannot be computed
+     *   (no `callsSeed`, no digests for the app version, or an unknown `arch`).
      */
     suspend fun requestCode(phone: String, type: CodeRequestType = CodeRequestType.START_AUTH, language: String? = "ru"): CodeRequest {
         val reply = sink.request(Opcode.AUTH_REQUEST, requestCodePayload(phone, type, language, handshake()))
@@ -295,7 +296,11 @@ class AuthApi(
             ?: throw AuthException("the handshake reply has no callsSeed (needed for the fingerprint; the server omits it for IOS)")
         val fp = fingerprint
             ?: throw AuthException("no ApkFingerprint for app version ${device.userAgent.appVersion}; pass one to AuthApi / TokenLogin")
-        return fp.compute(seed, device.deviceId, device.userAgent.arch?.takeIf { it.isNotEmpty() } ?: ApkFingerprint.DEFAULT_ARCH)
+        val arch = device.userAgent.arch?.takeIf { it.isNotEmpty() } ?: ApkFingerprint.DEFAULT_ARCH
+        if (arch !in fp.soSha256) {
+            throw AuthException("no native-library digest for arch '$arch' in ApkFingerprint ${fp.appVersion}; known: ${fp.soSha256.keys.joinToString()}")
+        }
+        return fp.compute(seed, device.deviceId, arch)
     }
 
     companion object {

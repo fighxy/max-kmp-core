@@ -143,6 +143,16 @@ class AuthApiTest {
     }
 
     @Test
+    fun unknownArchIsAuthException() = runTest {
+        val mips = device.copy(userAgent = device.userAgent.copy(arch = "mips"))
+        assertTrue(assertFailsWith<AuthException> { api(FakeSink(), mips).requestCode("x") }.message!!.contains("mips"))
+        assertTrue(assertFailsWith<AuthException> { api(FakeSink(), mips).login("tok") }.message!!.contains("mips"))
+        // an empty arch still falls back to arm64-v8a
+        val empty = device.copy(userAgent = device.userAgent.copy(arch = ""))
+        assertEquals(96, (api(FakeSink(), empty).requestCodePayload("+7", CodeRequestType.START_AUTH, "ru", handshake)["mode"] as ByteArray).size)
+    }
+
+    @Test
     fun verifyCodeLoggedIn() = runTest {
         val profile = mapOf("contact" to mapOf("id" to 123456789L, "names" to listOf(mapOf("name" to "Ivan"))))
         val sink = FakeSink(mapOf("tokenAttrs" to mapOf("LOGIN" to mapOf("token" to "login-token")), "profile" to profile))
