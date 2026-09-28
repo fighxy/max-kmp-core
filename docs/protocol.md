@@ -776,19 +776,19 @@ JSON envelopes: command+sequence / response / notification; keepalive text `ping
 
 | Пакет | Файл (существует) | P0: что добавить |
 |-------|-------------------|------------------|
-| `ru.max.core.protocol` | `Framing.kt` (`Framing`, `Packet`) | encode/decode 10-байтного заголовка, `packetTotalLen`, `PacketReceiver` (reassembly, лимит 16 MiB) |
-| `ru.max.core.protocol` | — (новый `Compression.kt`) | LZ4-block out ≥32 B, flag = `raw/comp + 1`; in: sniff Zstd / LZ4-frame / LZ4-block, лимит 32 MiB |
-| `ru.max.core.protocol` | `Opcodes.kt` (`Opcodes`) | полный union kolibri ∪ PyMax (см. §E) + `name(code)` |
-| `ru.max.core.protocol` | `MessagePack.kt` (`MessagePackCodec`) | msgpack ↔ `MsgValue` (Map/Array/Binary/Ext/Int keys) |
-| `ru.max.core.transport` | `TlsTransport.kt` (`TlsTransport`, `TransportConfig`) | TLS-сокет, proxy, opt-in Минцифры CA, `Dispatcher` (seq→pending, pushes) |
-| `ru.max.core.session` | `SessionMachine.kt` (`SessionMachine`, `SessionState`) | handshake 6, ping 30 s, backoff 2/4/8/15 |
-| `ru.max.core.auth` | `Auth.kt` (`AuthApi`) → новый `AuthService.kt` | AUTH_REQUEST → AUTH → LOGIN; `ChatCacheFingerprint` |
-| `ru.max.shared` | `Session.kt` (`Session`, `Push`) | фасад над `SessionMachine` + `AuthService` |
+| `com.max.core.protocol` | `Framing.kt` (`Framing`, `Packet`) | encode/decode 10-байтного заголовка, `packetTotalLen`, `PacketReceiver` (reassembly, лимит 16 MiB) |
+| `com.max.core.protocol` | — (новый `Compression.kt`) | LZ4-block out ≥32 B, flag = `raw/comp + 1`; in: sniff Zstd / LZ4-frame / LZ4-block, лимит 32 MiB |
+| `com.max.core.protocol` | `Opcodes.kt` (`Opcodes`) | полный union kolibri ∪ PyMax (см. §E) + `name(code)` |
+| `com.max.core.protocol` | `MessagePack.kt` (`MessagePackCodec`) | msgpack ↔ `MsgValue` (Map/Array/Binary/Ext/Int keys) |
+| `com.max.core.transport` | `TlsTransport.kt` (`TlsTransport`, `TransportConfig`) | TLS-сокет, proxy, opt-in Минцифры CA, `Dispatcher` (seq→pending, pushes) |
+| `com.max.core.session` | `SessionMachine.kt` (`SessionMachine`, `SessionState`) | handshake 6, ping 30 s, backoff 2/4/8/15 |
+| `com.max.core.auth` | `Auth.kt` (`AuthApi`) → новый `AuthService.kt` | AUTH_REQUEST → AUTH → LOGIN; `ChatCacheFingerprint` |
+| `com.max.shared` | `Session.kt` (`Session`, `Push`) | фасад над `SessionMachine` + `AuthService` |
 
 ### J.2 Ключевые сигнатуры P0 (эскиз)
 
 ```kotlin
-// ru/max/core/protocol/Framing.kt
+// com/max/core/protocol/Framing.kt
 object Framing {
     const val HEADER_SIZE = 10
     const val PROTOCOL_VERSION: UByte = 10u
@@ -800,7 +800,7 @@ object Framing {
 data class Packet(val ver: UByte, val cmd: UByte, val seq: UShort, val opcode: UShort, val payload: ByteArray)
 object Cmd { const val REQUEST: UByte = 0u; const val OK: UByte = 1u; const val NOT_FOUND: UByte = 2u; const val ERROR: UByte = 3u }
 
-// ru/max/core/protocol/Opcodes.kt
+// com/max/core/protocol/Opcodes.kt
 object Opcodes {
     const val PING: UShort = 1u; const val SESSION_INIT: UShort = 6u
     const val AUTH_REQUEST: UShort = 17u; const val AUTH: UShort = 18u; const val LOGIN: UShort = 19u
@@ -810,13 +810,13 @@ object Opcodes {
     fun name(code: UShort): String
 }
 
-// ru/max/core/protocol/MessagePack.kt
+// com/max/core/protocol/MessagePack.kt
 object MessagePackCodec {
     fun encode(value: MsgValue): ByteArray
     fun decode(bytes: ByteArray): MsgValue          // empty -> MsgValue.Nil
 }
 
-// ru/max/core/transport/TlsTransport.kt
+// com/max/core/transport/TlsTransport.kt
 interface TlsTransport {
     suspend fun connect(config: TransportConfig)
     suspend fun send(bytes: ByteArray)
@@ -827,7 +827,7 @@ data class TransportConfig(val host: String, val port: Int = 443, val proxyUrl: 
                            val trustMincifryCa: Boolean = false,
                            val connectTimeoutMs: Long = 15_000, val requestTimeoutMs: Long = 30_000)
 
-// ru/max/core/session/SessionMachine.kt
+// com/max/core/session/SessionMachine.kt
 class SessionMachine(transport: TlsTransport, config: SessionConfig) {
     val state: StateFlow<SessionState>
     val pushes: SharedFlow<Packet>
@@ -838,7 +838,7 @@ class SessionMachine(transport: TlsTransport, config: SessionConfig) {
     suspend fun disconnect()
 }
 
-// ru/max/core/auth/AuthService.kt (new)
+// com/max/core/auth/AuthService.kt (new)
 class AuthService(private val session: SessionMachine, private val digests: ApkDigests) {
     suspend fun requestCode(phone: String, language: String = "ru"): String          // -> temp token
     suspend fun verifyCode(tempToken: String, code: String): VerifyResult           // tokenAttrs.LOGIN / passwordChallenge / REGISTER
@@ -849,7 +849,7 @@ object ChatCacheFingerprint {
     fun compute(d: ApkDigests, callsSeed: Long, deviceId: String): ByteArray        // 96 B
 }
 
-// ru/max/shared/Session.kt
+// com/max/shared/Session.kt
 interface Session {
     suspend fun connect(): SessionInfo
     suspend fun request(opcode: UShort, payload: ByteArray): ByteArray
@@ -861,14 +861,14 @@ interface Session {
 ### J.3 P1/P2 — TODO-заглушки (только в документе)
 
 ```kotlin
-// P1 — ru/max/core/media/MediaUploader.kt
+// P1 — com/max/core/media/MediaUploader.kt
 class MediaUploader(private val session: SessionMachine, private val userAgent: String) {
     suspend fun uploadPhoto(bytes: ByteArray, filename: String): String   // TODO: PHOTO_UPLOAD(80) -> URL -> multipart "file" -> photoToken
     suspend fun uploadFile(path: String, filename: String): Long          // TODO: FILE_UPLOAD(87) -> URL -> POST Content-Range
     suspend fun uploadVideo(path: String, chunkSize: Int, concurrency: Int): Boolean // TODO P2: GET resume + parallel POST
 }
 
-// P2 — ru/max/core/calls/CallSignaling.kt
+// P2 — com/max/core/calls/CallSignaling.kt
 class CallSignaling {
     companion object { fun decodeVcp(vcp: String): ConversationParams? = TODO() } // "<rawLen>:<base64(LZ4-block(JSON))>"
     suspend fun connect(ws2Url: String, userAgent: String?): Unit = TODO()

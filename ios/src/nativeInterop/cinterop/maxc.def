@@ -2,4 +2,4 @@
 # headers = maxc.h
 # staticLibraries = libmaxc.a
 # libraryPaths = path/to/lib
-package = ru.max.ios.cinterop
+package = com.max.ios.cinterop

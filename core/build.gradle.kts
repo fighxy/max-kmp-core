@@ -39,7 +39,7 @@ kotlin {
 }
 
 android {
-    namespace = "ru.max.core"
+    namespace = "com.max.core"
     compileSdk = 35
     defaultConfig {
         minSdk = 26

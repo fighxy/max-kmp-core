@@ -10,15 +10,15 @@
 | **cinterop + `maxc.def`** | `.def` описывает C-заголовки/статическую либу, которые Kotlin/Native **импортирует** (Kotlin → C). Сейчас `ios/src/nativeInterop/cinterop/maxc.def` — заглушка (`headers = maxc.h`, `staticLibraries = libmaxc.a` закомментированы) | P2/опционально: только если появится внешняя C-библиотека (например, нативный LZ4/Zstd или Rust-ядро через C ABI) |
 | Свой C ABI из Kotlin (`@CName`, экспорт C-символов) | Kotlin/Native → C-функции, Swift зовёт как C | Не нужен на этапе 1 |
 
-Роль `maxc.def`: декларация для cinterop (`headers`, `staticLibraries`, `libraryPaths`, `package = ru.max.ios.cinterop`). Это вход **в** Kotlin, а не выход к Swift. Поэтому для Swift-клиента основной артефакт — XCFramework (`./gradlew :ios:assembleMaxIosXCFramework` или аналог; P0 — настроить задачу `XCFramework(...)` в `ios/build.gradle.kts`).
+Роль `maxc.def`: декларация для cinterop (`headers`, `staticLibraries`, `libraryPaths`, `package = com.max.ios.cinterop`). Это вход **в** Kotlin, а не выход к Swift. Поэтому для Swift-клиента основной артефакт — XCFramework (`./gradlew :ios:assembleMaxIosXCFramework` или аналог; P0 — настроить задачу `XCFramework(...)` в `ios/build.gradle.kts`).
 
-Экспортируемый API держать узким: `ru.max.shared` + `ru.max.ios.IosBridge` (адаптеры `suspend`/`Flow`).
+Экспортируемый API держать узким: `com.max.shared` + `com.max.ios.IosBridge` (адаптеры `suspend`/`Flow`).
 
 ## 2. Swift-обёртки (P0)
 
 ```swift
 // Тонкий слой над MaxIos
-actor MaxSession {                                   // над ru.max.shared.Session
+actor MaxSession {                                   // над com.max.shared.Session
     func connect() async throws -> HandshakeInfo      // TLS + opcode 6
     func request(_ opcode: UInt16, _ payload: Data) async throws -> Data
     var events: AsyncStream<CoreEvent> { get }        // pushes (NOTIF_MESSAGE 128, NOTIF_TYPING 129, NOTIF_MARK 130, …)

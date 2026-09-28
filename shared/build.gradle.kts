@@ -25,7 +25,7 @@ kotlin {
 }
 
 android {
-    namespace = "ru.max.shared"
+    namespace = "com.max.shared"
     compileSdk = 35
     defaultConfig {
         minSdk = 26
