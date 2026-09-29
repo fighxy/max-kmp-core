@@ -27,7 +27,8 @@ import platform.CoreFoundation.kCFTypeArrayCallBacks
 import platform.Foundation.CFBridgingRelease
 import platform.Foundation.NSOperatingSystemVersion
 import platform.Foundation.NSProcessInfo
-import platform.Network.NW_CONNECTION_DEFAULT_STREAM_CONTEXT
+import platform.Network.nw_content_context_create
+import platform.Network.nw_content_context_set_is_final
 import platform.Network.nw_connection_cancel
 import platform.Network.nw_connection_create
 import platform.Network.nw_connection_receive
@@ -282,6 +283,14 @@ internal class NwRawConnection(
     private val queue: dispatch_queue_t,
     private val label: String,
 ) : RawConnection {
+    // Apple's default stream context is a block-backed sentinel. The platform binding
+    // exposes it as NSObject, so Kotlin/Native attempts to convert a void-returning block
+    // to kotlin.Any and aborts. Use a real context with the same final-stream semantics;
+    // reuse it for every write and never mark a send complete (close() cancels the stream).
+    private val streamContext = nw_content_context_create("com.max.core.transport.stream")
+        ?.also { nw_content_context_set_is_final(it, true) }
+        ?: throw TransportException("nw_content_context_create failed")
+
     /** 0 = open, 1 = closed by [close] or by the stack (failed / cancelled). */
     private val closed = AtomicInt(0)
 
@@ -370,8 +379,8 @@ internal class NwRawConnection(
             ?: throw TransportException("dispatch_data_create failed")
         suspendCancellableCoroutine { cont ->
             cont.invokeOnCancellation { cancelConnection() }
-            // STREAM + is_complete=false: keep the TCP send side open (MESSAGE + true would FIN after the first write).
-            nw_connection_send(connection, data, NW_CONNECTION_DEFAULT_STREAM_CONTEXT, false) { error ->
+            // A final stream context + is_complete=false keeps the TCP send side open.
+            nw_connection_send(connection, data, streamContext, false) { error ->
                 if (error == null) {
                     cont.resume(Unit)
                 } else {

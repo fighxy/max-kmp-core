@@ -5,9 +5,14 @@ package com.max.core.transport
 import com.max.core.protocol.Opcode
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import platform.CoreFoundation.CFArrayGetCount
 import platform.CoreFoundation.CFRelease
+import platform.Network.nw_connection_create
+import platform.Network.nw_connection_set_queue
+import platform.Network.nw_endpoint_create_host
+import platform.darwin.dispatch_queue_create
 import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -82,6 +87,27 @@ class NetworkFrameworkConnectionFactoryTest {
     @Test
     fun describesMissingError() {
         assertEquals("no error details", describeNwError(null))
+    }
+
+    @Test
+    fun queuedWriteUsesNativeContextWithoutStartingNetwork() = runBlocking {
+        val queue = assertNotNull(dispatch_queue_create("com.max.core.test.queued-write", null))
+        val endpoint = assertNotNull(nw_endpoint_create_host("127.0.0.1", "9"))
+        val parameters = assertNotNull(NetworkFrameworkConnectionFactory.secureTcpParameters("localhost", TlsOptions()))
+        val connection = assertNotNull(nw_connection_create(endpoint, parameters))
+        nw_connection_set_queue(connection, queue)
+        val raw = NwRawConnection(connection, queue, "offline-test")
+        try {
+            // Network.framework permits a send before start and queues it. This exercises
+            // the actual dispatch_data/context/send bindings without connecting to a server.
+            // The old default stream sentinel aborted the process here instead of timing out.
+            assertFailsWith<TimeoutCancellationException> {
+                withTimeout(1.seconds) { raw.write(byteArrayOf(1, 2, 3)) }
+            }
+            assertFailsWith<ConnectionClosedException> { raw.write(byteArrayOf(4)) }
+        } finally {
+            raw.close()
+        }
     }
 
     // ── integration (network, Max servers) ─────────────────────────
