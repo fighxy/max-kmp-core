@@ -11,7 +11,7 @@ import kotlin.test.assertTrue
 
 /**
  * Settings requests: payload shapes as KometTeam/Komet sends them (only the schema is taken, see
- * `lib/backend/modules/account/*`, `contacts.dart`, `folders.dart`, `webapp.dart`).
+ * `lib/backend/modules/account`, `contacts.dart`, `folders.dart`, `webapp.dart`).
  */
 class SettingsApisTest {
     private val me = mapOf("id" to 5L, "names" to listOf(mapOf("firstName" to "Ivan", "lastName" to "K")), "photoId" to 77L, "baseUrl" to "https://i/a")

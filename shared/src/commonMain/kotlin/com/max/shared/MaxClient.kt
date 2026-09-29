@@ -13,7 +13,6 @@ import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.PrivacySettings
 import com.max.core.api.Profile
-import com.max.core.api.SessionInfo
 import com.max.core.toMaxError
 import com.max.core.auth.ApkFingerprint
 import com.max.core.auth.AuthApi
@@ -758,7 +757,7 @@ class MaxClient @Throws(Exception::class) constructor(
 
     /** Active sessions (`SESSIONS_INFO` 96). */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun loadSessions(): List<SessionInfo> = api.users.getSessions()
+    suspend fun loadSessions(): List<com.max.core.api.SessionInfo> = api.users.getSessions()
 
     /** Creates a folder ([com.max.core.api.AccountApi.addFolder]) and merges it into [store]. */
     @Throws(CancellationException::class, Exception::class)
