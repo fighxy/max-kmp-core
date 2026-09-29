@@ -4,7 +4,7 @@
 
 ## 1. Проект и цель
 
-`fighxy/max-kmp-core` — приватное сетевое ядро на Kotlin Multiplatform для мессенджера Max. Платформы: iOS (приоритет), Android и JVM desktop. Протокол восстановлен по двум референсам, KometTeam/kolibri и MaxApiTeam/PyMax. Их используем только как описание схем, **код не копируем** (там GPL).
+`fighxy/max-kmp-core` — приватное сетевое ядро на Kotlin Multiplatform для мессенджера Max. Платформы: iOS (приоритет), Android и JVM desktop. Протокол восстановлен по референсам KometTeam/kolibri и MaxApiTeam/PyMax; с 2026-09-29 Иван разрешил и KometTeam/Komet (клиент на Dart). Их используем только как описание схем, **код не копируем** (там GPL).
 
 Цель: готовое ядро, которое iOS- и Android-приложения подключают через модуль `shared` (фасад `MaxClient`). В ядре есть транспорт, сессия, авторизация, API, события, локальное состояние и медиа.
 
@@ -27,6 +27,8 @@
 - JVM-файл токена на POSIX создаётся сразу как `rw-------`. Каталог ставится в `rwx------`, только если хранилище само его создало; права существующего каталога не трогаются. Если права файла не встали, запись падает.
 - Опкод 8 ядро шлёт как PyMax `LOGIN2` `{needProfile, contactsSync, configHash}`. Вопрос K11 (имя kolibri `CONTACTS_GET`) открыт.
 - Локальный прогон тестов — Gradle (`:core:jvmTest`, `:shared:jvmTest`). Скрипт `/workspace/tools/run-tests.sh` относится к среде, где ядро писали, на этой машине его нет.
+
+- Контакты и журнал звонков для iOS: `MaxState.contactIds` (список `contacts` из `LOGIN`, без себя; дельта-`LOGIN` без поля его не трогает), `CallsApi.history()` (79 по схеме Komet), `MaxIosClient.loadContacts` / `loadCallHistory` (`IosContact`, `IosCall`). У диалога в `IosChat` имя и аватар собеседника (из `participants` и `users`, недостающие догружаются `CONTACT_INFO`), плюс `avatarUrl` и `lastAuthorId`.
 
 ## 3. Совместимость с чужими коммитами
 

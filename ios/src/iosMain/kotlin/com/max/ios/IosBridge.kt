@@ -5,6 +5,9 @@ package com.max.ios
 import com.max.core.ErrorKind
 import com.max.core.api.Chat
 import com.max.core.api.MaxMessage
+import com.max.core.api.MaxUser
+import com.max.core.calls.CallLogEntry
+import com.max.core.state.MaxState
 import com.max.core.auth.CodeRequestType
 import com.max.core.auth.VerifyResult
 import com.max.core.events.MaxEvent
@@ -99,12 +102,41 @@ class MaxIosClient internal constructor(
     fun loadChats(onResult: (List<IosChat>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
             c.loadChats()
-            c.store.state.value.chats.values.map(::chatSnapshot)
+            val chats = c.store.state.value.chats.values
+            resolveUsers(c, chats.mapNotNull { dialogPeer(it, c.userId.value) })
+            val state = c.store.state.value
+            chats.map { chatSnapshot(it, state) }
         }
     }
 
     fun loadChat(chatId: String, onResult: (IosChat?, String?, String?) -> Unit) {
-        perform(onResult, { null }) { c -> chatSnapshot(c.api.chats.getChat(parseId(chatId))) }
+        perform(onResult, { null }) { c ->
+            val chat = c.api.chats.getChat(parseId(chatId))
+            resolveUsers(c, listOfNotNull(dialogPeer(chat, c.userId.value)))
+            chatSnapshot(chat, c.store.state.value)
+        }
+    }
+
+    /** The account's contact list from the last `LOGIN` reply, with the last known presence. */
+    fun loadContacts(onResult: (List<IosContact>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val state = c.store.state.value
+            state.contactIds.mapNotNull { id -> state.users[id]?.let { contactSnapshot(it, state) } }
+        }
+    }
+
+    /**
+     * The call log (`VIDEO_CHAT_HISTORY` 79), newest first as the server sends it. Unknown peers
+     * are looked up with `CONTACT_INFO` once; a call whose peer stays unknown is a group call.
+     */
+    fun loadCallHistory(onResult: (List<IosCall>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val me = c.userId.value
+            val entries = c.api.calls.history()
+            resolveUsers(c, entries.mapNotNull { it.peerId(me) })
+            val state = c.store.state.value
+            entries.map { callSnapshot(it, me, state) }
+        }
     }
 
     fun loadHistory(chatId: String, beforeMs: Long, limit: Int, onResult: (List<IosMessage>, String?, String?) -> Unit) {
@@ -147,6 +179,20 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /** Loads profiles of [ids] missing from the store. Best effort: names are cosmetic here. */
+    private suspend fun resolveUsers(c: MaxClient, ids: List<Long>) {
+        val known = c.store.state.value.users
+        val missing = ids.filter { it != 0L && it !in known }.distinct()
+        if (missing.isEmpty()) return
+        try {
+            missing.chunked(USERS_PAGE).forEach { c.loadUsers(it) }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            // the list still loads; such rows fall back to a generic title in the app
+        }
+    }
+
     private fun loggedInStep(c: MaxClient): IosAuthStep =
         IosAuthStep("loggedIn", "", "", "", c.userId.value?.toString().orEmpty())
 
@@ -186,6 +232,9 @@ class MaxIosClient internal constructor(
         perform<Unit>({ _, kind, key -> onResult(kind, key) }, { }) { body(it) }
     }
 }
+
+/** Ids per `CONTACT_INFO` request when resolving names. */
+private const val USERS_PAGE = 100
 
 /** Scope of a [MaxIosClient]: exceptions that escape anyway are dropped instead of aborting the app. */
 private fun newScope(): CoroutineScope =
@@ -241,7 +290,11 @@ class IosAuthStep(
     val userId: String,
 )
 
-/** One chat, ids as decimal strings. [updatedAtMs] and message times are Unix milliseconds. */
+/**
+ * One chat, ids as decimal strings. [updatedAtMs] and message times are Unix milliseconds.
+ * A dialog has no server title: [title] and [avatarUrl] are the other participant's when known.
+ * [avatarUrl] is empty without a picture.
+ */
 class IosChat(
     val id: String,
     val title: String,
@@ -250,6 +303,42 @@ class IosChat(
     val lastText: String,
     val updatedAtMs: Long,
     val unread: Int,
+    val avatarUrl: String,
+    val lastAuthorId: String,
+)
+
+/**
+ * One contact of the account. [phone] is digits without `+`, empty when hidden.
+ * [lastSeenMs] is the last presence time (0 when unknown); [online] is the current presence.
+ */
+class IosContact(
+    val id: String,
+    val firstName: String,
+    val lastName: String,
+    val phone: String,
+    val avatarUrl: String,
+    val lastSeenMs: Long,
+    val online: Boolean,
+)
+
+/**
+ * One call of the call log. [peerId] is empty for a group call ([isGroup]). [hangupType] is the
+ * server value (`HUNGUP`, `CANCELED`, `REJECTED`, `MISSED`, ...), [duration] its raw length
+ * (0 when nobody answered). [chatId] is empty when the server did not send it.
+ */
+class IosCall(
+    val id: String,
+    val chatId: String,
+    val peerId: String,
+    val title: String,
+    val avatarUrl: String,
+    val isGroup: Boolean,
+    val outgoing: Boolean,
+    val missed: Boolean,
+    val video: Boolean,
+    val hangupType: String,
+    val duration: Long,
+    val timeMs: Long,
 )
 
 /** One message. [authorId] is empty when the server omitted the sender. */
@@ -300,21 +389,76 @@ private fun classify(t: Throwable): Pair<String, String?> {
     return kind to error.errorKey
 }
 
-private fun chatSnapshot(chat: Chat): IosChat {
+private fun chatSnapshot(chat: Chat, state: MaxState): IosChat {
     val last = chat.lastMessage
     val updated = when {
         chat.lastEventTime > 0 -> chat.lastEventTime
         last != null -> last.time
         else -> 0L
     }
+    val peer = dialogPeer(chat, state.me)?.let { state.users[it] }
+    val title = chat.title?.takeIf { it.isNotBlank() } ?: peer?.displayName.orEmpty()
+    val avatar = (chat.raw["baseIconUrl"] as? String)?.takeIf { it.isNotBlank() } ?: peer?.baseUrl.orEmpty()
     return IosChat(
         id = chat.id.toString(),
-        title = chat.title.orEmpty(),
+        title = title,
         type = chat.type,
         lastMessageId = last?.id?.toString().orEmpty(),
         lastText = last?.text.orEmpty(),
         updatedAtMs = updated,
         unread = chat.newMessages,
+        avatarUrl = avatar,
+        lastAuthorId = last?.sender?.toString().orEmpty(),
+    )
+}
+
+/**
+ * The other participant of a `DIALOG` (keys of `participants`), or `null` for other chats. A
+ * dialog with only the own id is "saved messages" and has no peer.
+ */
+private fun dialogPeer(chat: Chat, me: Long?): Long? {
+    if (chat.type != "DIALOG") return null
+    val ids = (chat.raw["participants"] as? Map<*, *>).orEmpty().keys.mapNotNull { key ->
+        when (key) {
+            is Number -> key.toLong()
+            is String -> key.toLongOrNull()
+            else -> null
+        }
+    }
+    return ids.firstOrNull { it != me }
+}
+
+private fun contactSnapshot(user: MaxUser, state: MaxState): IosContact {
+    val name = user.names.firstOrNull()
+    val first = name?.firstName?.takeIf { it.isNotBlank() } ?: name?.name.orEmpty()
+    val presence = state.presence[user.id]
+    return IosContact(
+        id = user.id.toString(),
+        firstName = first,
+        lastName = name?.lastName.orEmpty(),
+        phone = user.phone?.toString().orEmpty(),
+        avatarUrl = user.baseUrl.orEmpty(),
+        lastSeenMs = presence?.seen?.let { if (it < 100_000_000_000L) it * 1000 else it } ?: 0L,
+        online = presence?.status == 1,
+    )
+}
+
+private fun callSnapshot(entry: CallLogEntry, me: Long?, state: MaxState): IosCall {
+    val peerId = entry.peerId(me)
+    val peer = peerId?.let { state.users[it] }
+    return IosCall(
+        id = entry.messageId.toString(),
+        chatId = entry.chatId?.toString().orEmpty(),
+        peerId = peerId?.toString().orEmpty(),
+        title = peer?.displayName.orEmpty(),
+        avatarUrl = peer?.baseUrl.orEmpty(),
+        isGroup = peer == null && entry.contactIds.size > 1,
+        outgoing = me != null && entry.senderId == me,
+        missed = entry.isMissed(me),
+        video = entry.isVideo,
+        hangupType = entry.hangupType.orEmpty(),
+        duration = entry.duration,
+        timeMs = entry.time,
     )
 }
 
