@@ -90,7 +90,7 @@ class NetworkFrameworkConnectionFactoryTest {
     }
 
     @Test
-    fun queuedWriteUsesNativeContextWithoutStartingNetwork() = runBlocking {
+    fun queuedWriteUsesNativeContextWithoutStartingNetwork(): Unit = runBlocking {
         val queue = assertNotNull(dispatch_queue_create("com.max.core.test.queued-write", null))
         val endpoint = assertNotNull(nw_endpoint_create_host("127.0.0.1", "9"))
         val parameters = assertNotNull(NetworkFrameworkConnectionFactory.secureTcpParameters("localhost", TlsOptions()))
