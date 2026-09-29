@@ -23,6 +23,9 @@ import com.max.core.events.MaxEvent
  * @property typing per chat id: user id → local clock time (ms) of the last `NOTIF_TYPING`.
  *   The protocol has no "stopped typing" push; see [typingUsers].
  * @property readMarks per chat id: user id → last read `mark` (`NOTIF_MARK` 130).
+ * @property gapAnchors chat id → newest local message id when a hole was noticed (`lastMessage`
+ *   moved ahead of the loaded tail). Cleared when a history page contains that id, or when the
+ *   server has nothing older ([MaxStore.closeHistoryGap]).
  */
 data class MaxState(
     val me: Long? = null,
@@ -32,6 +35,7 @@ data class MaxState(
     val presence: Map<Long, PresenceInfo> = emptyMap(),
     val typing: Map<Long, Map<Long, Long>> = emptyMap(),
     val readMarks: Map<Long, Map<Long, Long>> = emptyMap(),
+    val gapAnchors: Map<Long, Long> = emptyMap(),
 ) {
     /** Chats ordered like a chat list: latest activity first (`lastEventTime`, then last message time). */
     val chatList: List<Chat>
@@ -48,16 +52,11 @@ data class MaxState(
         typing[chatId].orEmpty().filterValues { now - it <= ttlMs }.keys
 
     /**
-     * Chats whose loaded messages end before the chat's `lastMessage` (e.g. after a reconnect the
-     * `LOGIN` reply moved `lastMessage` on, but the messages in between were never pushed). Only
-     * chats with loaded messages are listed: their history should be re-fetched
-     * (`MessagesApi.getChatHistory` → `MaxStore.putHistory`).
+     * Chats with an open history hole. The hole stays open until a `CHAT_HISTORY` page contains
+     * the anchor id, or the server returns an empty page. Chats that had no loaded messages when
+     * `lastMessage` moved on are not listed.
      */
-    fun historyGaps(): List<Long> = chats.values.filter { chat ->
-        val last = chat.lastMessage ?: return@filter false
-        val local = messages[chat.id]
-        !local.isNullOrEmpty() && local.none { it.id == last.id } && last.time >= local.last().time
-    }.map { it.id }
+    fun historyGaps(): List<Long> = gapAnchors.keys.toList()
 
     companion object {
         const val DEFAULT_TYPING_TTL_MS: Long = 6_000
@@ -107,10 +106,12 @@ object StateReducer {
     /**
      * Seeds the state from a `LOGIN` reply (PyMax `App.start`): `me`, `chats`, `contacts`
      * (→ [MaxState.users], including the own profile contact) and `messages` (`{chatId: [message]}`,
-     * keys may be integers or decimal strings).
+     * keys may be integers or decimal strings). A different user replaces the snapshot; the same
+     * user is merged, then holes against `lastMessage` are recorded.
      */
     fun login(state: MaxState, result: LoginResult, messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT): MaxState {
-        var s = state.copy(me = result.userId ?: state.me)
+        val base = if (result.userId != null && state.me != null && result.userId != state.me) MaxState() else state
+        var s = base.copy(me = result.userId ?: base.me)
         s = putChats(s, result.chats.mapNotNull(Chat::from))
         val users = (result.raw["contacts"] as? List<*>).orEmpty().mapNotNull(MaxUser::from) +
             listOfNotNull(MaxUser.from(result.profile?.get("contact")))
@@ -121,7 +122,7 @@ object StateReducer {
             val list = (v as? List<*>).orEmpty().mapNotNull { MaxMessage.from(it, chatId) }
             s = putMessages(s, chatId, list, messageLimit)
         }
-        return s
+        return openHistoryGaps(s)
     }
 
     /** Adds / replaces chats (a chat without `lastMessage` keeps the stored one). */
@@ -130,27 +131,55 @@ object StateReducer {
     fun putChat(state: MaxState, chat: Chat): MaxState {
         val old = state.chats[chat.id]
         val merged = if (chat.lastMessage == null && old?.lastMessage != null) chat.copy(lastMessage = old.lastMessage) else chat
-        return state.copy(chats = state.chats + (chat.id to merged))
+        return openHistoryGaps(state.copy(chats = state.chats + (chat.id to merged)))
     }
 
-    /** Removes a chat and its messages, typing and read marks (after leaving / deleting it). */
+    /** Removes a chat and its messages, typing, read marks and history hole (after leaving / deleting it). */
     fun removeChat(state: MaxState, chatId: Long): MaxState = state.copy(
         chats = state.chats - chatId,
         messages = state.messages - chatId,
         typing = state.typing - chatId,
         readMarks = state.readMarks - chatId,
+        gapAnchors = state.gapAnchors - chatId,
     )
 
     fun putUsers(state: MaxState, users: List<MaxUser>): MaxState =
         if (users.isEmpty()) state else state.copy(users = state.users + users.associateBy { it.id })
 
-    /** Merges [list] (e.g. a `CHAT_HISTORY` page) into the chat's messages. */
+    /**
+     * Merges [list] (e.g. a `CHAT_HISTORY` page) into the chat's messages. A page that contains
+     * the chat's gap anchor closes the hole; the check uses [list], not the trimmed tail.
+     */
     fun putMessages(state: MaxState, chatId: Long, list: List<MaxMessage>, messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT): MaxState {
         if (list.isEmpty()) return state
         val byId = LinkedHashMap<Long, MaxMessage>()
         state.messagesOf(chatId).forEach { byId[it.id] = it }
         list.forEach { byId[it.id] = it }
-        return state.copy(messages = state.messages + (chatId to sortAndTrim(byId.values, messageLimit)))
+        val anchor = state.gapAnchors[chatId]
+        val anchors = if (anchor != null && list.any { it.id == anchor }) state.gapAnchors - chatId else state.gapAnchors
+        return state.copy(messages = state.messages + (chatId to sortAndTrim(byId.values, messageLimit)), gapAnchors = anchors)
+    }
+
+    /**
+     * Records a hole for each chat whose `lastMessage` is ahead of the loaded tail and is not
+     * itself loaded. An existing anchor stays: it is the tail id from when the hole was noticed.
+     * Chats with no loaded messages are skipped.
+     */
+    private fun openHistoryGaps(state: MaxState): MaxState {
+        var anchors = state.gapAnchors
+        var changed = false
+        for (chat in state.chats.values) {
+            if (chat.id in anchors) continue
+            val last = chat.lastMessage ?: continue
+            val local = state.messages[chat.id]
+            if (local.isNullOrEmpty()) continue
+            val tail = local.last()
+            if (local.none { it.id == last.id } && last.time >= tail.time) {
+                anchors = anchors + (chat.id to tail.id)
+                changed = true
+            }
+        }
+        return if (changed) state.copy(gapAnchors = anchors) else state
     }
 
     private fun newMessage(state: MaxState, m: MaxMessage, limit: Int): MaxState {
@@ -194,12 +223,25 @@ object StateReducer {
         val ids = e.messageIds.toSet()
         val remaining = state.messagesOf(e.chatId).filterNot { it.id in ids }
         var s = state.copy(messages = if (remaining.isEmpty()) state.messages - e.chatId else state.messages + (e.chatId to remaining))
+        val hadAnchor = e.chatId in state.gapAnchors
         e.chat?.let { s = putChat(s, it) }
         val chat = s.chats[e.chatId]
         if (chat != null && chat.lastMessage?.id in ids) {
             s = s.copy(chats = s.chats + (e.chatId to chat.copy(lastMessage = remaining.lastOrNull())))
         }
+        // putChat may have opened a hole against the chat in the push; the fallback last message
+        // can already be in the remaining list, and that hole is not real.
+        if (!hadAnchor && e.chatId in s.gapAnchors && !holeStillOpen(s, e.chatId)) {
+            s = s.copy(gapAnchors = s.gapAnchors - e.chatId)
+        }
         return s
+    }
+
+    private fun holeStillOpen(state: MaxState, chatId: Long): Boolean {
+        val last = state.chats[chatId]?.lastMessage ?: return false
+        val local = state.messages[chatId]
+        if (local.isNullOrEmpty()) return false
+        return local.none { it.id == last.id } && last.time >= local.last().time
     }
 
     private fun read(state: MaxState, e: MaxEvent.MessageRead): MaxState {

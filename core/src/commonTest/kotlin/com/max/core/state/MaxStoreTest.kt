@@ -63,9 +63,42 @@ class MaxStoreTest {
         // a re-login reports a newer lastMessage for chat 1 (7 was never pushed) and chat 2 (no loaded messages)
         store.applyLogin(LoginResult.from(mapOf("chats" to listOf(chat(1, 300, 2, msg(7, 300)), chat(2, 310, 1, msg(9, 310, chatId = 2))))))
         assertEquals(listOf(1L), store.state.value.historyGaps())
-        // fetching the history closes the gap
+        // a page of only the missed messages does not reach the local tail (id 5)
         store.putHistory(1, ChatHistory(listOf(msg(6, 250), msg(7, 300)).map { MaxMessage.from(it, 1)!! }, null, emptyMap<Any?, Any?>()))
+        assertEquals(listOf(1L), store.state.value.historyGaps())
+        // a page that contains the anchor closes the hole
+        store.putHistory(1, ChatHistory(listOf(msg(5, 100), msg(6, 250)).map { MaxMessage.from(it, 1)!! }, null, emptyMap<Any?, Any?>()))
         assertEquals(emptyList(), store.state.value.historyGaps())
+    }
+
+    @Test
+    fun emptyPageClosesHistoryGap() {
+        val store = loggedIn()
+        store.applyLogin(LoginResult.from(mapOf("chats" to listOf(chat(1, 300, 2, msg(7, 300))))))
+        assertEquals(listOf(1L), store.state.value.historyGaps())
+        store.closeHistoryGap(1)
+        assertEquals(emptyList(), store.state.value.historyGaps())
+        assertEquals(listOf(4L, 5L), store.state.value.messagesOf(1).map { it.id })
+    }
+
+    @Test
+    fun loginAsAnotherUserReplacesSnapshot() {
+        val store = loggedIn()
+        store.applyLogin(
+            LoginResult.from(
+                mapOf(
+                    "profile" to mapOf("contact" to mapOf("id" to 99, "names" to listOf(mapOf("name" to "Other")))),
+                    "chats" to listOf(chat(3, 10, last = msg(1, 10, chatId = 3))),
+                    "messages" to mapOf("3" to listOf(msg(1, 10, chatId = 3))),
+                ),
+            ),
+        )
+        val s = store.state.value
+        assertEquals(99L, s.me)
+        assertEquals(setOf(3L), s.chats.keys)
+        assertTrue(s.messagesOf(1).isEmpty())
+        assertNull(s.users[20])
+        assertEquals(listOf(1L), s.messagesOf(3).map { it.id })
     }
 
     @Test

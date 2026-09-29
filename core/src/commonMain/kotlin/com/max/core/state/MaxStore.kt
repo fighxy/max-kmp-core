@@ -65,6 +65,11 @@ class MaxStore(
         StateReducer.putMessages(withChat, chatId, history.messages, messageLimit)
     }
 
+    /** Drops the history hole for [chatId]. Used when the server returns an empty page. */
+    fun closeHistoryGap(chatId: Long) = _state.update { s ->
+        if (chatId !in s.gapAnchors) s else s.copy(gapAnchors = s.gapAnchors - chatId)
+    }
+
     fun removeChat(chatId: Long) = _state.update { StateReducer.removeChat(it, chatId) }
 
     /** Drops everything (e.g. on logout). */
