@@ -20,11 +20,11 @@
 - Ветка `main`, всё запушено.
 - Звонки: разбор `vcp`, `MaxEvent.CallStart` (137), `CallsApi.requestCallsToken` (158, ответ observed-not-ref, `icyfalc0n/maxcalls`), сборка ws2 URL. В query уходит профиль Android Pixel 8 (`UserAgentInfo`: Pixel 8, 26.25.0, Android 14), не строки kolibri-net SDK. `capabilities` и `clientType` остаются константами сигналинга.
 - `ConversationParams.decode` отклоняет заявленную длину LZ4 больше 64 КиБ до Base64 и распаковки. Потолок пакета 32 МиБ не менялся. Битый `vcp` по-прежнему оставляет `CallStart` с `params = null`.
-- Дыра истории хранится якорем (id локального хвоста на момент дыры). Страница `CHAT_HISTORY` закрывает её, только если содержит этот id; пустая страница тоже закрывает. Одна более новая страница дыру не закрывает.
+- Дыра истории хранится якорем (id локального хвоста на момент дыры). Закрывает её только страница догрузки истории (`StateReducer.putHistoryPage` / `MaxStore.putHistory`), если содержит этот id; пустая страница тоже закрывает. Правка, повтор или вставка сообщения (`putMessages`) дыру не закрывают. Одна более новая страница дыру не закрывает.
 - `MaxClient.logout` отменяет догрузку, останавливает `EventRouter` и дожидается текущего события, затем чистит снимок и снова запускает роутер. Сохранение токена и его очистка идут под одним mutex. Чужой аккаунт при `LOGIN` заменяет снимок целиком, а не сливает его с остатком.
 - `fillGaps` листает историю назад (`gapFillCount` 40, не больше `gapFillPageLimit` страниц, по умолчанию 16). Если упёрлись в лимит или самая старая id не сдвигается, дыра остаётся открытой.
 - Модуль `android/` есть. Java и Kotlin JVM target — 17. CI компилирует `:core`, `:shared` и `:android`, на устройстве не запускает.
-- JVM-файл токена на POSIX создаётся сразу как `rw-------`, каталог — `rwx------`. Если права не встали, запись падает.
+- JVM-файл токена на POSIX создаётся сразу как `rw-------`. Каталог ставится в `rwx------`, только если хранилище само его создало; права существующего каталога не трогаются. Если права файла не встали, запись падает.
 - Опкод 8 ядро шлёт как PyMax `LOGIN2` `{needProfile, contactsSync, configHash}`. Вопрос K11 (имя kolibri `CONTACTS_GET`) открыт.
 - Локальный прогон тестов — Gradle (`:core:jvmTest`, `:shared:jvmTest`). Скрипт `/workspace/tools/run-tests.sh` относится к среде, где ядро писали, на этой машине его нет.
 
@@ -37,7 +37,7 @@
 
 ## 4. Состояние CI (`.github/workflows/ios-core.yml`, джоба `ios-and-jvm`)
 
-- macos-14: JVM-тесты `:core` и `:shared`, компиляция и тесты Kotlin/Native для iOS Simulator, `compileDebugKotlinAndroid` для `:core` и `:shared`, `compileDebugKotlin` для `:android`, линковка `:ios:linkDebugFrameworkIosSimulatorArm64`. На устройстве ничего из этого не запускается. Release XCFramework собирает приложение Orbitl.
+- macos-14: JVM-тесты `:core` и `:shared`, компиляция и тесты Kotlin/Native для iOS Simulator, `compileDebugKotlinAndroid` для `:core` и `:shared`, `compileDebugKotlin` для `:android`, линковка `:ios:linkDebugFrameworkIosSimulatorArm64`, тесты фасада `:ios:iosSimulatorArm64Test`, Android unit-тесты `:shared:testDebugUnitTest` (fake SharedPreferences, плюс common-тесты `shared` на Android JVM). На устройстве ничего из этого не запускается. Release XCFramework собирает приложение Orbitl.
 - Рассинхрон Java 1.8 и Kotlin 17 на KMP-модулях закрыт `compileOptions` Java 17 в `core` и `shared`. У `:android` то же самое: `compileOptions` и `jvmTarget` 17.
 - Предупреждение `kotlin.mpp.enableCInteropCommonization` безвредно.
 
@@ -68,3 +68,21 @@
 - Коммиты: автор и коммиттер `Ivan K <57476075+fighxy@users.noreply.github.com>`, английский язык, conventional commits.
 - Пушить только по явной просьбе Ивана. Force-push только после подтверждения.
 - Ревью кода по диапазону `f58f3bc..38d7497` Иван отменил, не начинать без новой просьбы.
+
+## 7. Исправления по ревью e385796 (15 пунктов, по коммиту на пункт)
+
+Поведение:
+- **Swift-граница.** Все публичные `suspend` у `MaxClient` и `Session` помечены `@Throws(CancellationException::class, Exception::class)`, конструктор `MaxClient` и `openSession` — `@Throws(Exception::class)`. `MaxIosClient` ловит всё и отдаёт вид ошибки в callback ровно один раз, включая `CANCELLED` и вызовы после `close`. Ошибка Keychain приходит видом ошибки, процесс не падает. Swift API `MaxIosClient` не менялся. API ядра (`client.api`, фреймворк MaxCore) аннотациями не покрыт, Swift работает только через `MaxIosClient`.
+- **Полный снимок.** Первый `LOGIN` нового `MaxClient` шлёт нулевые маркеры и `configHash` по умолчанию: снимок не хранится между процессами, дельта на пустой кэш потеряла бы данные.
+- **Поздние ответы.** Операции берут билет (сессия входа + поколение аккаунта) до запроса и применяют результат под lifecycle-lock. Если за это время был logout, отказ токена, close или другой аккаунт, бросается `SessionClosedException`, стор и токен не меняются.
+- **logout/close из обработчика события** работают: роутер не ждёт сам себя, обязательная очистка идёт в `NonCancellable`.
+- **События без потерь.** Роутер `MaxClient` читает `session.reliablePushes` (неограниченный канал на подписчика). В два этапа: сначала применение к стору, потом обработчики в отдельной корутине, так что медленный обработчик не блокирует ни стор, ни чтение сокета. Публичный `MaxClient.events` остаётся с потерями для медленного подписчика.
+- **Отправка.** Успешный `sendText` делает сообщение превью чата (`lastMessage`, `lastEventTime`) без роста unread.
+- **Unread.** Пересчёт от read-mark используется, только если кэш покрывает весь диапазон; иначе берётся `max(серверный счётчик, посчитанный)`.
+- **LOGIN2.** Профиль из `LOGIN2` сливается с `LOGIN` (`LoginResult.withLogin2`) до применения к стору и сохранения учётных данных; устаревший `login2Result` не переиспользуется.
+- **cid.** Один потокобезопасный `ClientIdGenerator` на сессию (`MaxApi.cids`), его же получает `MediaApi`.
+- **Таймаут запроса** покрывает ожидание write-lock, запись и ответ. При таймауте посреди записи соединение закрывается, pending-запрос удаляется при любом выходе.
+- **Хранилища.** `FileKeyValueStore` публикует кэш только после успешной записи и не меняет права чужого каталога. Android `SharedPreferencesStore` бросает `KeyValueStoreException`, если `commit()` вернул `false`.
+- **putChats** применяет пачку за один проход и ищет дыры только у изменённых чатов.
+
+Новое в публичном API (всё аддитивно): `MaxTransport.reliablePushes()`, `SessionMachine.reliablePushes`, `StateReducer.putSentMessage` / `putHistoryPage`, `MaxStore.putSentMessage`, `LoginResult.withLogin2`, `MaxApi.cids` и конструкторы `MaxApi(..., cids)`, перегрузка `MediaApi(session, http, cids, clock)`, `KeyValueStoreException`, `SessionClosedException` у операций `MaxClient`, аннотации `@Throws`. Поведенческое изменение для вызывающих: `StateReducer.putMessages` больше не закрывает дыру истории.
