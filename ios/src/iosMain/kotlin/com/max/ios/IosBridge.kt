@@ -300,6 +300,7 @@ class MaxIosClient internal constructor(
                 onSuccess = { guarded { onResult(it, null, null) } },
                 onFailure = { t ->
                     val (kind, key) = classify(t)
+                    if (kind != "CANCELLED") IosDiagnostics.reportFailure(kind, t)
                     guarded { onResult(fallback(), kind, key) }
                 },
             )
@@ -330,7 +331,14 @@ private inline fun <T> NSLock.locked(block: () -> T): T {
 private inline fun <T> attempt(fallback: T, block: () -> T): T = try {
     block()
 } catch (t: Throwable) {
+    IosDiagnostics.reportFailure(classifyKind(t), t)
     fallback
+}
+
+private fun classifyKind(t: Throwable): String = try {
+    classify(t).first
+} catch (e: Throwable) {
+    "UNKNOWN"
 }
 
 /** Runs a Swift callback; whatever it throws stays here. */
