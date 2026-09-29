@@ -41,9 +41,12 @@ import com.max.core.transport.TransportConfig
 import com.max.core.transport.defaultConnectionFactory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -63,9 +66,11 @@ import kotlinx.coroutines.sync.withLock
  * @property transport socket settings; `host` / `port` / `proxyUrl` here override its fields.
  * @property namespace separates credentials of several accounts in one [KeyValueStore].
  * @property messageLimit messages kept per chat in [MaxClient.store].
- * @property fillGapsOnReconnect after a re-login, re-fetch the history of chats whose loaded
- *   messages stop before the chat's new `lastMessage` ([MaxClient.fillGaps]).
- * @property gapFillCount messages requested per chat when filling a gap (PyMax history default 40).
+ * @property fillGapsOnReconnect after a re-login, page backward through chats with an open history
+ *   hole ([MaxClient.fillGaps]) until a page overlaps the local tail or the server runs out.
+ * @property gapFillCount messages requested per history page when filling a gap (PyMax history default 40).
+ * @property gapFillPageLimit how many pages to walk per chat. The hole stays open when the cap is
+ *   hit, or when a page repeats the same oldest id. Values below 1 are treated as 1.
  */
 data class MaxClientConfig(
     val host: String = DEFAULT_HOST,
@@ -79,6 +84,7 @@ data class MaxClientConfig(
     val fingerprint: ApkFingerprint? = ApkFingerprint.forVersion(userAgent.appVersion),
     val fillGapsOnReconnect: Boolean = true,
     val gapFillCount: Int = 40,
+    val gapFillPageLimit: Int = 16,
 )
 
 /** High-level state of a [MaxClient]. */
@@ -158,6 +164,9 @@ class MaxClient(
     private val loggedInFlag = MutableStateFlow(false)
     private val loginCount = MutableStateFlow(0)
     private val lifecycle = Mutex()
+    /** Bumped on login, logout and token rejection so an in-flight gap fill cannot write afterwards. */
+    private var sessionEpoch = 0
+    private var gapJob: Job? = null
 
     init {
         DeviceProfile.requireAndroid(config.userAgent)
@@ -214,11 +223,7 @@ class MaxClient(
         router.start(this.scope)
         this.scope.launch {
             session.state.collect { s ->
-                if (s is SessionState.Failed && s.cause is InvalidTokenException) {
-                    credentials.clearToken()
-                    tokenLogin.value = null
-                    loggedInFlag.value = false
-                }
+                if (s is SessionState.Failed && s.cause is InvalidTokenException) rejectToken()
             }
         }
     }
@@ -247,13 +252,21 @@ class MaxClient(
         try {
             session.connect()
         } catch (e: InvalidTokenException) {
-            lifecycle.withLock {
-                credentials.clearToken()
-                tokenLogin.value = null
-                loggedInFlag.value = false
-            }
+            rejectToken()
         }
         return currentState()
+    }
+
+    /** Drops the token under [lifecycle] and invalidates any gap fill still in flight. */
+    private suspend fun rejectToken() {
+        lifecycle.withLock {
+            sessionEpoch += 1
+            credentials.clearToken()
+            tokenLogin.value = null
+            loggedInFlag.value = false
+            gapJob?.cancel()
+            gapJob = null
+        }
     }
 
     private fun currentState(): ClientState = map(session.state.value, loggedInFlag.value)
@@ -304,18 +317,28 @@ class MaxClient(
 
     /**
      * Logs out on the server (`LOGOUT` 20, best effort), clears the token and the local state,
-     * and disconnects. The device identity is kept.
+     * and disconnects. The device identity is kept. Gap fill is cancelled and the event router
+     * is stopped before the snapshot is dropped, then the router is started again so this client
+     * can log in once more.
      */
     suspend fun logout() {
         runCatching { if (loggedInFlag.value) auth.logout() }
-        lifecycle.withLock {
+        val gap = lifecycle.withLock {
+            sessionEpoch += 1
             tokenLogin.value = null
             credentials.clearToken()
             loggedInFlag.value = false
             loggedIn.value = null
+            val running = gapJob
+            gapJob = null
+            running?.cancel()
+            running
         }
-        store.clear()
+        gap?.cancelAndJoin()
+        router.stop()
+        lifecycle.withLock { store.clear() }
         session.disconnect()
+        router.start(scope)
     }
 
     /** Disconnects (the token stays stored); [start] reconnects. */
@@ -324,36 +347,107 @@ class MaxClient(
         loggedInFlag.value = false
     }
 
-    private fun onLoggedIn(login: TokenLogin) {
+    private suspend fun onLoggedIn(login: TokenLogin) {
         val r = login.result.value ?: return
-        val relogin = loginCount.value > 0
-        loginCount.value += 1
-        store.applyLogin(r)
-        if (relogin && config.fillGapsOnReconnect) scope.launch { fillGaps() }
-        login.login2Result.value?.let { r2 -> r2.contacts.mapNotNull(com.max.core.api.MaxUser::from).let(store::putUsers) }
-        val uid = r.userId ?: loggedIn.value
-        credentials.save(StoredCredentials(device.deviceId, device.instanceId, login.token, uid, login.sync))
-        loggedIn.value = uid
-        loggedInFlag.value = true
+        val fillEpoch = lifecycle.withLock {
+            if (tokenLogin.value !== login) return@withLock null
+            sessionEpoch += 1
+            val epoch = sessionEpoch
+            val relogin = loginCount.value > 0
+            loginCount.value += 1
+            store.applyLogin(r)
+            login.login2Result.value?.let { r2 -> r2.contacts.mapNotNull(com.max.core.api.MaxUser::from).let(store::putUsers) }
+            val uid = r.userId ?: loggedIn.value
+            credentials.save(StoredCredentials(device.deviceId, device.instanceId, login.token, uid, login.sync))
+            loggedIn.value = uid
+            loggedInFlag.value = true
+            if (relogin && config.fillGapsOnReconnect) epoch else null
+        }
+        if (fillEpoch != null) scheduleGapFill(fillEpoch)
+    }
+
+    /** Publishes [fillGapsAt] only while [epoch] is still the current session. */
+    private suspend fun scheduleGapFill(epoch: Int) {
+        val job = scope.launch(start = CoroutineStart.LAZY) { fillGapsAt(epoch) }
+        lifecycle.withLock {
+            if (sessionEpoch != epoch || tokenLogin.value == null) {
+                job.cancel()
+            } else {
+                gapJob?.cancel()
+                gapJob = job
+                job.start()
+            }
+        }
     }
 
     // ---- store-backed helpers -------------------------------------------------------------------
 
     /**
-     * Re-fetches the latest [MaxClientConfig.gapFillCount] messages of every chat listed by
-     * `MaxState.historyGaps` into [store] (done automatically after a re-login). Failures are
-     * skipped per chat; returns the chats that were filled.
+     * Pages backward through every chat in `MaxState.historyGaps` ([MaxClientConfig.gapFillCount]
+     * messages at a time, up to [MaxClientConfig.gapFillPageLimit] pages). A hole closes when a
+     * page contains its anchor or the server returns an empty page. A short page, a repeated
+     * oldest id, or the page cap leaves the hole open. Failures are skipped per chat; returns
+     * the chats whose holes closed.
      */
-    suspend fun fillGaps(): List<Long> = store.state.value.historyGaps().filter { chatId ->
-        try {
-            store.putHistory(chatId, api.messages.getChatHistory(chatId, backward = config.gapFillCount))
-            true
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            false
-        }
+    suspend fun fillGaps(): List<Long> {
+        val epoch = lifecycle.withLock { sessionEpoch }
+        return fillGapsAt(epoch)
     }
+
+    private suspend fun fillGapsAt(epoch: Int): List<Long> {
+        val closed = ArrayList<Long>()
+        for (chatId in store.state.value.historyGaps()) {
+            if (fillChatGap(chatId, epoch)) closed += chatId
+        }
+        return closed
+    }
+
+    private suspend fun fillChatGap(chatId: Long, epoch: Int): Boolean {
+        var from: Long? = null
+        var previousOldest: Long? = null
+        repeat(config.gapFillPageLimit.coerceAtLeast(1)) {
+            if (!gapStillOpen(chatId, epoch)) {
+                return lifecycle.withLock { sessionOpen(epoch) && chatId !in store.state.value.historyGaps() }
+            }
+            val history = try {
+                api.messages.getChatHistory(chatId, from = from, backward = config.gapFillCount)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return false
+            }
+            if (history.messages.isEmpty()) {
+                return lifecycle.withLock {
+                    if (!sessionOpen(epoch)) false
+                    else {
+                        store.closeHistoryGap(chatId)
+                        true
+                    }
+                }
+            }
+            val oldest = history.messages.minWith(compareBy({ it.time }, { it.id }))
+            if (oldest.id == previousOldest) return false
+            previousOldest = oldest.id
+            val committed = lifecycle.withLock {
+                if (!sessionOpen(epoch)) false
+                else {
+                    store.putHistory(chatId, history)
+                    true
+                }
+            }
+            if (!committed) return false
+            if (chatId !in store.state.value.historyGaps()) return true
+            from = oldest.time
+        }
+        return false
+    }
+
+    private suspend fun gapStillOpen(chatId: Long, epoch: Int): Boolean = lifecycle.withLock {
+        sessionOpen(epoch) && chatId in store.state.value.historyGaps()
+    }
+
+    /** Caller holds [lifecycle]. */
+    private fun sessionOpen(epoch: Int): Boolean = sessionEpoch == epoch && tokenLogin.value != null
 
     /** One page of the chat list (`CHATS_LIST`) into [store]. */
     suspend fun loadChats(marker: Long? = null): List<Chat> = api.chats.fetchChats(marker).also(store::putChats)
@@ -427,6 +521,14 @@ class MaxClient(
 
     /** Stops everything: disconnects and, if the client created its own scope, cancels it. */
     override suspend fun close() {
+        val gap = lifecycle.withLock {
+            sessionEpoch += 1
+            val running = gapJob
+            gapJob = null
+            running?.cancel()
+            running
+        }
+        gap?.cancelAndJoin()
         router.stop()
         session.disconnect()
         loggedInFlag.value = false

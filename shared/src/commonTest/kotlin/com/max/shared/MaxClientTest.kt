@@ -183,7 +183,14 @@ class MaxClientTest {
         runCurrent()
         assertEquals(listOf(100L), c.store.state.value.historyGaps())
         val fill = conn2.answer(Opcode.CHAT_HISTORY, mapOf("messages" to listOf(m(3, 20), m(4, 30))))!!
+        assertEquals(100L, (fill["chatId"] as Number).toLong())
         assertEquals(40, (fill["backward"] as Number).toInt())
+        runCurrent()
+        // messages 3..4 do not reach the local tail (id 2); the hole stays open
+        assertEquals(listOf(100L), c.store.state.value.historyGaps())
+        val older = conn2.answer(Opcode.CHAT_HISTORY, mapOf("messages" to listOf(m(2, 6), m(3, 20))))!!
+        assertEquals(100L, (older["chatId"] as Number).toLong())
+        assertEquals(20L, (older["from"] as Number).toLong())
         runCurrent()
         assertEquals(listOf(1L, 2L, 3L, 4L), c.store.state.value.messagesOf(100).map { it.id })
         assertTrue(c.store.state.value.historyGaps().isEmpty())

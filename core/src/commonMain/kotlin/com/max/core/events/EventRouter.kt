@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -70,10 +71,15 @@ class EventRouter(
         return scope.launch(start = CoroutineStart.UNDISPATCHED) { events.collect { dispatch(it) } }.also { job = it }
     }
 
-    /** Stops collecting; handlers stay registered and [start] may be called again. */
-    fun stop() {
-        job?.cancel()
+    /**
+     * Stops collecting and waits until an in-flight [dispatch] finishes. Handlers stay registered
+     * and [start] may be called again. Do not call this from a handler: that handler is the
+     * collector, so joining it deadlocks.
+     */
+    suspend fun stop() {
+        val running = job ?: return
         job = null
+        running.cancelAndJoin()
     }
 
     /** Applies [event] to the store and runs the handlers (what the collector does per event). */
