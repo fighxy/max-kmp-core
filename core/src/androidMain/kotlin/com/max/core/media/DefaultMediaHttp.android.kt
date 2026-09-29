@@ -1,7 +1,7 @@
 package com.max.core.media
 
 /**
- * Android: OkHttp, see [OkHttpMediaHttp] (needs `android.permission.INTERNET`). Not compiled in
- * this repository's CI yet (no Android SDK); see docs/architecture.md.
+ * Android: OkHttp, see [OkHttpMediaHttp] (needs `android.permission.INTERNET`).
+ * `androidMain` is compiled in CI and is not run on a device; see docs/architecture.md.
  */
 actual fun defaultMediaHttp(config: MediaHttpConfig): MediaHttp = okHttpMediaHttp(config)

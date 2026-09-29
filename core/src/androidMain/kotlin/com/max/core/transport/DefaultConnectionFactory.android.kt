@@ -7,7 +7,8 @@ import javax.net.ssl.HttpsURLConnection
  * ([JavaSocketConnectionFactory], Conscrypt underneath), plus Android's default host name verifier
  * after the handshake. Needs the `android.permission.INTERNET` permission in the app.
  *
- * Not compiled or run in this repository's CI yet (no Android SDK); see docs/architecture.md.
+ * `androidMain` is compiled in CI (`:core:compileDebugKotlinAndroid`) and is not run on a device.
+ * `:android` is compiled there too (`:android:compileDebugKotlin`); see docs/architecture.md.
  */
 actual fun defaultConnectionFactory(): ConnectionFactory =
     JavaSocketConnectionFactory(hostnameVerifier = HttpsURLConnection.getDefaultHostnameVerifier())

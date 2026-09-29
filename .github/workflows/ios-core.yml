@@ -1,5 +1,7 @@
-# Compiles and tests :core and :shared for iOS Simulator arm64 (and JVM, Android compile) on macOS. The Linux agent that authors
-# the Network.framework code cannot run Kotlin/Native for iOS; this workflow is the compile check.
+# Compiles and tests :core and :shared for iOS Simulator arm64 (and JVM, Android compile of
+# :core, :shared and :android) on macOS. The Linux agent that authors the Network.framework code
+# cannot run Kotlin/Native for iOS; this workflow is the compile check. None of the Android
+# targets are run on a device.
 name: iOS core
 
 on:
@@ -9,6 +11,7 @@ on:
     paths:
       - 'core/**'
       - 'shared/**'
+      - 'android/**'
       - 'gradle/**'
       - 'gradlew'
       - 'gradlew.bat'
@@ -21,6 +24,7 @@ on:
     paths:
       - 'core/**'
       - 'shared/**'
+      - 'android/**'
       - 'gradle/**'
       - 'gradlew'
       - 'gradlew.bat'
@@ -64,5 +68,9 @@ jobs:
         run: ./gradlew :core:iosSimulatorArm64Test :shared:iosSimulatorArm64Test --no-daemon --stacktrace
 
       - name: Compile Android (core + shared)
-        # androidMain code (SharedPreferencesStore, OkHttp media) is not compiled anywhere else.
+        # androidMain of :core and :shared (SharedPreferencesStore, OkHttp media). Compiled here, not run on a device.
         run: ./gradlew :core:compileDebugKotlinAndroid :shared:compileDebugKotlinAndroid --no-daemon --stacktrace
+
+      - name: Compile Android library module
+        # :android is a plain Android library (kotlin.android), Java 17. Compiled here, not run on a device.
+        run: ./gradlew :android:compileDebugKotlin --no-daemon --stacktrace
