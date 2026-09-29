@@ -3,6 +3,8 @@
 package com.max.ios
 
 import com.max.core.ErrorKind
+import com.max.core.api.AccountConfig
+import com.max.core.api.EntryApp
 import com.max.core.api.Chat
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
@@ -23,12 +25,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import platform.Foundation.NSData
 import platform.Foundation.NSLock
 
 /**
  * Swift entry of the network core.
  *
- * The framework exports only the types in this file. [MaxClient] stays inside it: the device
+ * The framework exports only the types in this file and in `IosSettings.kt`. [MaxClient] stays inside it: the device
  * profile is still the Android Pixel 8 profile, and the login token stays in the Keychain store
  * `com.max.kmp.<namespace>`. Callbacks run on the core dispatcher, not the main thread.
  *
@@ -219,6 +222,241 @@ class MaxIosClient internal constructor(
         c.watchPinnedChats { ids -> if (ids != null) guarded { onEach(ids.map { it.toString() }) } }
     }
 
+    // ---- settings -------------------------------------------------------------------------
+
+    /** The own profile ([IosMyProfile]); `CONTACT_INFO` for it when the store has none. */
+    fun loadMyProfile(onResult: (IosMyProfile?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val me = c.loadMe() ?: throw IllegalStateException("own profile not found")
+            myProfileSnapshot(me, c.accountConfig.value)
+        }
+    }
+
+    /** Changes the name and the "about" text (`PROFILE` 16); an empty [description] clears it. */
+    fun updateProfile(firstName: String, lastName: String, description: String, onResult: (IosMyProfile?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val profile = c.updateProfile(firstName.trim(), lastName.trim(), description.trim())
+            myProfileSnapshot(profile.contact, c.accountConfig.value)
+        }
+    }
+
+    /** Uploads [image] (JPEG) as the new avatar ([MaxClient.uploadAvatar]). */
+    fun uploadAvatar(image: NSData, onResult: (IosMyProfile?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val profile = c.uploadAvatar(image.toByteArray(), "avatar.jpg")
+            myProfileSnapshot(profile.contact, c.accountConfig.value)
+        }
+    }
+
+    /** Removes the avatar (`REMOVE_CONTACT_PHOTO` 43); a profile without one stays as it is. */
+    fun removeAvatar(onResult: (IosMyProfile?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val contact = c.removeAvatar()?.contact ?: c.loadMe() ?: throw IllegalStateException("own profile not found")
+            myProfileSnapshot(contact, c.accountConfig.value)
+        }
+    }
+
+    /**
+     * Schedules the account deletion (`PROFILE_DELETE` 199); [onResult] gets the deletion time in
+     * Unix milliseconds (0 when the server did not say). The app logs out afterwards.
+     */
+    fun deleteAccount(onResult: (Long, String?, String?) -> Unit) {
+        perform(onResult, { 0L }) { c ->
+            val ts = c.api.account.requestProfileDeletion(true) ?: 0L
+            if (ts in 1 until 100_000_000_000L) ts * 1000 else ts
+        }
+    }
+
+    /** The current settings ([IosAccountSettings], `known = false` before the first config). */
+    fun accountSettings(): IosAccountSettings = attempt(settingsSnapshot(null)) { settingsSnapshot(client().accountConfig.value) }
+
+    /** [accountSettings] now and after every change (login, own change). */
+    fun watchAccountSettings(onEach: (IosAccountSettings) -> Unit): IosWatch = watch { c ->
+        c.watchAccountConfig { config -> guarded { onEach(settingsSnapshot(config)) } }
+    }
+
+    /** "Who sees my phone number": `ALL`, `CONTACTS` or `NOBODY` (`PHONE_NUMBER_PRIVACY`). */
+    fun setPhonePrivacy(value: String, onResult: (IosAccountSettings?, String?, String?) -> Unit) {
+        val wire = value.uppercase()
+        updateSettings(onResult) {
+            require(wire in setOf("ALL", "CONTACTS", "NOBODY")) { "bad phone privacy: $value" }
+            mapOf<String, Any?>("PHONE_NUMBER_PRIVACY" to wire)
+        }
+    }
+
+    /** Hides the online status from everybody (`HIDDEN: true`) or shows it to contacts (`false`). */
+    fun setOnlineHidden(hidden: Boolean, onResult: (IosAccountSettings?, String?, String?) -> Unit) {
+        updateSettings(onResult) { mapOf<String, Any?>("HIDDEN" to hidden) }
+    }
+
+    /**
+     * Safe mode as Komet sets it: on sends `SAFE_MODE`, `SAFE_MODE_NO_PIN`, `CONTENT_LEVEL_ACCESS`
+     * `true` and `SEARCH_BY_PHONE`, `INCOMING_CALL`, `CHATS_INVITE` `CONTACTS`; off sends only
+     * `SAFE_MODE` and `SAFE_MODE_NO_PIN` `false`.
+     */
+    fun setSafeMode(enabled: Boolean, onResult: (IosAccountSettings?, String?, String?) -> Unit) {
+        updateSettings(onResult) {
+            if (enabled) {
+                linkedMapOf<String, Any?>(
+                    "INCOMING_CALL" to "CONTACTS", "SEARCH_BY_PHONE" to "CONTACTS", "SAFE_MODE_NO_PIN" to true,
+                    "CONTENT_LEVEL_ACCESS" to true, "CHATS_INVITE" to "CONTACTS", "SAFE_MODE" to true,
+                )
+            } else {
+                linkedMapOf<String, Any?>("SAFE_MODE_NO_PIN" to false, "SAFE_MODE" to false)
+            }
+        }
+    }
+
+    /** Deletes the account after this much inactivity: `1M`, `3M` or `6M` (`INACTIVE_TTL`). */
+    fun setInactiveTtl(value: String, onResult: (IosAccountSettings?, String?, String?) -> Unit) {
+        val wire = value.uppercase()
+        updateSettings(onResult) {
+            require(wire in INACTIVE_TTLS) { "bad inactive ttl: $value" }
+            mapOf<String, Any?>("INACTIVE_TTL" to wire)
+        }
+    }
+
+    /** Active sessions (`SESSIONS_INFO` 96), the current one first. */
+    fun loadSessions(onResult: (List<IosSession>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            c.loadSessions().map(::sessionSnapshot).sortedByDescending { it.current }
+        }
+    }
+
+    /** Ends every other session (`SESSIONS_CLOSE` 97); the core keeps the new token. */
+    fun closeOtherSessions(onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.closeOtherSessions() }
+    }
+
+    /** Approves a login on another device from its QR code ([MaxClient.approveQrLogin]). */
+    fun approveQrLogin(qrLink: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.approveQrLogin(qrLink) }
+    }
+
+    /** The black list (`CONTACT_LIST` 36 pages of 100, at most [BLOCKED_PAGES] of them). */
+    fun loadBlockedUsers(onResult: (List<IosBlockedUser>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val all = ArrayList<IosBlockedUser>()
+            var from = 0
+            repeat(BLOCKED_PAGES) pages@{
+                if (from < 0) return@pages
+                val users = c.api.users.blockedContacts(from, BLOCKED_PAGE_SIZE)
+                all += users.map(::blockedSnapshot)
+                // a short or empty page is the last one
+                from = if (users.size < BLOCKED_PAGE_SIZE) -1 else from + users.size
+            }
+            all.distinctBy { it.id }
+        }
+    }
+
+    /** Unblocks [userId] (`CONTACT_UPDATE` 34 `UNBLOCK`). */
+    fun unblockUser(userId: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.api.users.setBlocked(parseId(userId), false) }
+    }
+
+    /** The whole contact list (opcode 8 `{contactsSync: 0}`) into the store, then as [loadContacts]. */
+    fun syncContacts(onResult: (List<IosContact>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            c.syncContacts()
+            val state = c.store.state.value
+            state.contactIds.mapNotNull { id -> state.users[id]?.let { contactSnapshot(it, state) } }
+        }
+    }
+
+    /** The cloud password state (`AUTH_CREATE_TRACK` 112 → `AUTH_2FA_DETAILS` 104). */
+    fun loadTwoFactor(onResult: (IosTwoFactor?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c -> twoFactorSnapshot(c.api.twoFactor.status()) }
+    }
+
+    /** Starts a recovery e-mail change: a track (112) and the current [password] (113); returns the track id. */
+    fun startEmailChange(password: String, onResult: (String?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val track = c.api.twoFactor.createTrack()
+            c.api.twoFactor.checkCurrentPassword(track, password)
+            track
+        }
+    }
+
+    /** Mails a code to [email] (109); returns the seconds until a new code may be requested. */
+    fun sendEmailCode(trackId: String, email: String, onResult: (Int, String?, String?) -> Unit) {
+        perform(onResult, { 0 }) { c -> c.api.twoFactor.sendEmailCode(trackId, email.trim()) }
+    }
+
+    /** Checks the mailed [code] (110) and saves the e-mail (111 `[4]`); returns the new state. */
+    fun confirmEmail(trackId: String, code: String, onResult: (IosTwoFactor?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            c.api.twoFactor.confirmEmailCode(trackId, code.trim())
+            c.api.twoFactor.commitEmail(trackId)
+            twoFactorSnapshot(c.api.twoFactor.status())
+        }
+    }
+
+    /**
+     * Launch data of a settings mini app (`WEB_APP_INIT_DATA` 160): [app] is `sferum` or
+     * `digitalId`; the bot comes from the server config ([AccountConfig.entryAppBotId]).
+     */
+    fun launchMiniApp(app: String, onResult: (IosMiniApp?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val entry = when (app) {
+                "sferum" -> EntryApp.SFERUM
+                "digitalId" -> EntryApp.DIGITAL_ID
+                else -> throw IllegalArgumentException("unknown mini app: $app")
+            }
+            val botId = (c.accountConfig.value ?: AccountConfig()).entryAppBotId(entry)
+            miniAppSnapshot(botId, c.api.bots.getWebAppInitData(botId))
+        }
+    }
+
+    /**
+     * The mini app to reopen after an external step returned to [url] (`externalCallback=1`):
+     * `EXTERNAL_CALLBACK` 105, then 160 with the bot and start parameter it named.
+     */
+    fun miniAppCallback(url: String, onResult: (IosMiniApp?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val next = c.api.bots.externalCallback(url)
+            miniAppSnapshot(next.botId, c.api.bots.getWebAppInitData(next.botId, startParam = next.startParam))
+        }
+    }
+
+    /** The folders (`FOLDERS_GET` 272), in the server's order. */
+    fun loadFolders(onResult: (List<IosFolder>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c -> folderSnapshots(c.loadFolders()) }
+    }
+
+    /** The folders now (when known) and after every change: own requests and `NOTIF_FOLDERS` pushes. */
+    fun watchFolders(onEach: (List<IosFolder>) -> Unit): IosWatch = watch { c ->
+        c.watchFolders { folders -> if (folders != null) guarded { onEach(folderSnapshots(folders)) } }
+    }
+
+    /** Creates a folder with [chatIds] and [filters] (codes as text, e.g. `"4"` for dialogs). */
+    fun createFolder(title: String, chatIds: List<String>, filters: List<String>, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.createFolder(title.trim(), chatIds.map(::parseId), parseFilters(filters)) }
+    }
+
+    /** Renames [folderId]; its chats, filters and pinned chats stay. */
+    fun renameFolder(folderId: String, title: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.editFolder(folderId, title = title.trim()) }
+    }
+
+    /** Sets the chats of [folderId]; its title, filters and pinned chats stay. */
+    fun setFolderChats(folderId: String, chatIds: List<String>, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.editFolder(folderId, chatIds = chatIds.map(::parseId)) }
+    }
+
+    /** Deletes [folderId] (`FOLDERS_DELETE` 276). */
+    fun deleteFolder(folderId: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.deleteFolders(listOf(folderId)) }
+    }
+
+    /** Sets the folder order (`FOLDERS_REORDER` 275), the whole list of ids. */
+    fun reorderFolders(order: List<String>, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.reorderFolders(order) }
+    }
+
+    private fun updateSettings(onResult: (IosAccountSettings?, String?, String?) -> Unit, values: () -> Map<String, Any?>) {
+        perform(onResult, { null }) { c -> settingsSnapshot(c.updateUserSettings(values())) }
+    }
+
     /** A dead [IosWatch] (no callbacks) when the client cannot be created. */
     fun watchState(onEach: (String) -> Unit): IosWatch = watch { c -> c.watchState { guarded { onEach(phaseOf(it)) } } }
 
@@ -351,6 +589,10 @@ class MaxIosClient internal constructor(
 /** Ids per `CONTACT_INFO` request when resolving names. */
 private const val USERS_PAGE = 100
 
+/** Black list page size and page cap of [MaxIosClient.loadBlockedUsers]. */
+private const val BLOCKED_PAGE_SIZE = 100
+private const val BLOCKED_PAGES = 20
+
 /** Scope of a [MaxIosClient]: exceptions that escape anyway are dropped instead of aborting the app. */
 private fun newScope(): CoroutineScope =
     CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, _ -> })
@@ -390,7 +632,7 @@ private inline fun guarded(block: () -> Unit) {
 private fun parseId(value: String): Long =
     value.toLongOrNull() ?: throw IllegalArgumentException("not a numeric id: \"$value\"")
 
-/** Cancels one [MaxIosClient.watchState], [MaxIosClient.watchEvents] or [MaxIosClient.watchPinnedChats] subscription. */
+/** Cancels one `watch…` subscription of [MaxIosClient]. */
 class IosWatch internal constructor(private val watcher: Watcher?) {
     fun cancel() {
         watcher?.cancel()
