@@ -24,6 +24,13 @@ class FileKeyValueStoreTest {
             assertNull(FileKeyValueStore(file).get("k"))
             val perms = runCatching { Files.getPosixFilePermissions(file.toPath()) }.getOrNull()
             if (perms != null) assertEquals(setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE), perms)
+            val dirPerms = runCatching { Files.getPosixFilePermissions(file.parentFile.toPath()) }.getOrNull()
+            if (dirPerms != null) {
+                assertEquals(
+                    setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE),
+                    dirPerms,
+                )
+            }
             assertTrue(!File(file.parentFile, file.name + ".tmp").exists())
         } finally {
             dir.deleteRecursively()
