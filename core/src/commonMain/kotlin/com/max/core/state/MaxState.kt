@@ -129,14 +129,28 @@ object StateReducer {
         return openHistoryGaps(s)
     }
 
-    /** Adds / replaces chats (a chat without `lastMessage` keeps the stored one). */
-    fun putChats(state: MaxState, chats: List<Chat>): MaxState = chats.fold(state, ::putChat)
-
-    fun putChat(state: MaxState, chat: Chat): MaxState {
-        val old = state.chats[chat.id]
-        val merged = if (chat.lastMessage == null && old?.lastMessage != null) chat.copy(lastMessage = old.lastMessage) else chat
-        return openHistoryGaps(state.copy(chats = state.chats + (chat.id to merged)))
+    /**
+     * Adds / replaces chats (a chat without `lastMessage` keeps the stored one) in one pass: one
+     * copy of the chat map, and the hole check runs only for the chats in [chats] (the messages
+     * do not change here, so no other chat can gain a hole). The result is the same as putting
+     * the chats one by one with [putChat].
+     */
+    fun putChats(state: MaxState, chats: List<Chat>): MaxState {
+        if (chats.isEmpty()) return state
+        val merged = LinkedHashMap(state.chats)
+        var anchors = state.gapAnchors
+        for (chat in chats) {
+            val old = merged[chat.id]
+            val next = if (chat.lastMessage == null && old?.lastMessage != null) chat.copy(lastMessage = old.lastMessage) else chat
+            merged[chat.id] = next
+            if (chat.id !in anchors) {
+                holeAnchor(next, state.messages[chat.id])?.let { anchors = anchors + (chat.id to it) }
+            }
+        }
+        return state.copy(chats = merged, gapAnchors = anchors)
     }
+
+    fun putChat(state: MaxState, chat: Chat): MaxState = putChats(state, listOf(chat))
 
     /** Removes a chat and its messages, typing, read marks and history hole (after leaving / deleting it). */
     fun removeChat(state: MaxState, chatId: Long): MaxState = state.copy(
@@ -197,16 +211,31 @@ object StateReducer {
         var changed = false
         for (chat in state.chats.values) {
             if (chat.id in anchors) continue
-            val last = chat.lastMessage ?: continue
-            val local = state.messages[chat.id]
-            if (local.isNullOrEmpty()) continue
-            val tail = local.last()
-            if (local.none { it.id == last.id } && last.time >= tail.time) {
-                anchors = anchors + (chat.id to tail.id)
-                changed = true
-            }
+            val anchor = holeAnchor(chat, state.messages[chat.id]) ?: continue
+            anchors = anchors + (chat.id to anchor)
+            changed = true
         }
         return if (changed) state.copy(gapAnchors = anchors) else state
+    }
+
+    /**
+     * The anchor (local tail id) when [chat]'s `lastMessage` is ahead of the stored [local]
+     * messages and not stored itself, else `null`. [local] is sorted by (`time`, `id`), so a stored
+     * copy of the last message normally sits in the tail entries not older than it: those are
+     * checked first and the full scan runs only when that finds nothing (a hole, or a stored copy
+     * with another time).
+     */
+    private fun holeAnchor(chat: Chat, local: List<MaxMessage>?): Long? {
+        val last = chat.lastMessage ?: return null
+        if (local.isNullOrEmpty()) return null
+        val tail = local.last()
+        if (last.time < tail.time) return null
+        for (i in local.indices.reversed()) {
+            val m = local[i]
+            if (m.time < last.time) break
+            if (m.id == last.id) return null
+        }
+        return if (local.any { it.id == last.id }) null else tail.id
     }
 
     private fun newMessage(state: MaxState, m: MaxMessage, limit: Int): MaxState {
