@@ -26,8 +26,10 @@ import kotlinx.coroutines.flow.asStateFlow
  * `Failed` (it is a `FatalSessionError`).
  *
  * With [followLogin2] (default, as PyMax `App.login`) a reply whose `login2Flags` has a flag set
- * is followed by opcode 8 ([AuthApi.login2]); its result goes to [login2Result]. A failed `LOGIN2`
- * does not fail the login (kolibri never sends it, protocol.md K11); the error is kept in
+ * is followed by opcode 8 ([AuthApi.login2]); its result goes to [login2Result] and its profile is
+ * merged into [result] ([LoginResult.withLogin2]), so `userId` / `profile` describe this login even
+ * when only `LOGIN2` carried the profile. Both are reset at the start of every login. A failed
+ * `LOGIN2` does not fail the login (kolibri never sends it, protocol.md K11); the error is kept in
  * [login2Error].
  */
 class TokenLogin(
@@ -59,7 +61,7 @@ class TokenLogin(
 
     private val _result = MutableStateFlow<LoginResult?>(null)
 
-    /** The last successful `LOGIN` reply (profile, chats, ...), `null` before the first. */
+    /** The last successful `LOGIN` reply (profile merged with `LOGIN2`'s, chats, ...), `null` before the first. */
     val result: StateFlow<LoginResult?> = _result.asStateFlow()
 
     private val _login2 = MutableStateFlow<Login2Result?>(null)
@@ -76,22 +78,25 @@ class TokenLogin(
 
     private suspend fun login(transport: MaxTransport, handshake: HandshakeInfo) {
         val api = AuthApi(RequestSink { opcode, payload -> transport.request(opcode, payload) }, device, { handshake }, fingerprint)
+        // results of the previous login must not be mistaken for this one
+        _login2.value = null
+        login2Error = null
         val r = api.login(token, sync, interactive, chatsCount, handshake)
         r.token?.let { token = it }
         sync = sync.updatedBy(r)
         val flags = r.login2
+        var r2: Login2Result? = null
         if (followLogin2 && flags != null && flags.enabled) {
             try {
-                val r2 = api.login2(flags, sync)
+                r2 = api.login2(flags, sync)
                 sync = sync.updatedBy(r2)
                 _login2.value = r2
-                login2Error = null
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 login2Error = e
             }
         }
-        _result.value = r
+        _result.value = r.withLogin2(r2)
     }
 }

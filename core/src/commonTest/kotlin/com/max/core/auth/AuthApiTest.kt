@@ -477,6 +477,39 @@ class AuthApiTest {
     }
 
     @Test
+    fun login2ProfileIsMergedAndNotReusedByTheNextLogin() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val login = AuthApi.tokenLoginHook("stored-token", device)
+        val m = SessionMachine(SessionConfig(quiet, device), factory, scope = backgroundScope, afterHandshake = login.hook)
+        val connecting = async { m.connect() }
+        runCurrent()
+        val conn = factory.lastConnection!!
+        conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        conn.answer(Opcode.LOGIN, mapOf("time" to 1700L, "login2Flags" to mapOf("profileEnabled" to true)))
+        runCurrent()
+        conn.answer(Opcode.CONTACTS_GET, mapOf("profile" to mapOf("contact" to mapOf("id" to 42), "options" to listOf("x"))))
+        connecting.await()
+        assertEquals(42L, login.result.value!!.userId)
+        assertEquals(listOf("x"), login.result.value!!.profile!!["options"])
+        m.disconnect()
+
+        // the next login has no LOGIN2: nothing of the previous LOGIN2 is left
+        val again = async { m.connect() }
+        runCurrent()
+        val conn2 = factory.lastConnection!!
+        conn2.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        conn2.answer(Opcode.LOGIN, mapOf("time" to 1800L, "profile" to mapOf("contact" to mapOf("id" to 43))))
+        again.await()
+        assertNull(login.login2Result.value)
+        assertNull(login.login2Error)
+        assertEquals(43L, login.result.value!!.userId)
+        assertNull(login.result.value!!.profile!!["options"])
+        m.disconnect()
+    }
+
+    @Test
     fun tokenLoginFollowsLogin2WhenFlagged() = runTest {
         val factory = ScriptedConnectionFactory()
         val login = AuthApi.tokenLoginHook("stored-token", device)

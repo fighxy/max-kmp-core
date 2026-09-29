@@ -183,6 +183,8 @@ class MaxClient @Throws(Exception::class) constructor(
     private var sessionEpoch = 0
     /** Bumped on logout, token rejection and close; with the [TokenLogin] identity it names an account session. */
     private var accountGen = 0
+    /** The [TokenLogin] of the last applied login; guarded by [lifecycle]. */
+    private var lastLogin: TokenLogin? = null
     /** `true` while [store] holds a `LOGIN` snapshot of this process; guarded by [lifecycle]. */
     private var snapshotLoaded = false
     private var gapJob: Job? = null
@@ -411,7 +413,9 @@ class MaxClient @Throws(Exception::class) constructor(
             store.applyLogin(r)
             snapshotLoaded = true
             login.login2Result.value?.let { r2 -> r2.contacts.mapNotNull(com.max.core.api.MaxUser::from).let(store::putUsers) }
-            val uid = r.userId ?: loggedIn.value
+            // r already carries the LOGIN2 profile; a reconnect without a profile keeps this login's id
+            val uid = r.userId ?: loggedIn.value.takeIf { lastLogin === login }
+            lastLogin = login
             credentials.save(StoredCredentials(device.deviceId, device.instanceId, login.token, uid, login.sync))
             loggedIn.value = uid
             loggedInFlag.value = true

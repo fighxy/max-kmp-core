@@ -410,6 +410,42 @@ class MaxClientTest {
     }
 
     @Test
+    fun login2ProfileSetsTheIdentity() = runTest {
+        val kv = InMemoryKeyValueStore()
+        val factory = ScriptedConnectionFactory()
+        val c = client(kv, factory, backgroundScope)
+        val starting = async { c.start() }
+        runCurrent()
+        val conn = factory.lastConnection!!
+        conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        starting.await()
+        val verify = async { c.verifyCode("tmp", "1") }
+        runCurrent()
+        conn.answer(Opcode.AUTH, mapOf("tokenAttrs" to mapOf("LOGIN" to mapOf("token" to "login-1"))))
+        runCurrent()
+        // LOGIN without a profile asks for LOGIN2, which carries it
+        conn.answer(Opcode.LOGIN, loginReply("login-2") - "profile" + ("login2Flags" to mapOf("profileEnabled" to true)))
+        runCurrent()
+        val payload8 = conn.answer(
+            Opcode.CONTACTS_GET,
+            mapOf(
+                "profile" to mapOf("contact" to mapOf("id" to 5, "names" to listOf(mapOf("name" to "Me")))),
+                "contactInfos" to listOf(mapOf("id" to 7, "names" to listOf(mapOf("name" to "Ann")))),
+            ),
+        )!!
+        assertEquals(true, payload8["needProfile"])
+        assertIs<VerifyResult.LoggedIn>(verify.await())
+        runCurrent()
+        assertEquals(ClientState.Ready(5), c.state.value)
+        assertEquals(5L, c.userId.value)
+        assertEquals(5L, c.store.state.value.me)
+        assertEquals("Me", c.store.state.value.users.getValue(5).displayName)
+        assertEquals("Ann", c.store.state.value.users.getValue(7).displayName)
+        assertEquals(5L, CredentialStore(kv, "max.default").load()!!.userId)
+        c.close()
+    }
+
+    @Test
     fun accountChangesUpdateStoredCredentials() = runTest {
         val kv = InMemoryKeyValueStore()
         val factory = ScriptedConnectionFactory()

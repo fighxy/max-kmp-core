@@ -189,6 +189,20 @@ data class LoginResult(
     /** [login2Flags] parsed; `null` when the reply has none. */
     val login2: Login2Flags? get() = Login2Flags.from(login2Flags)
 
+    /**
+     * This reply with the profile of the `LOGIN2` reply [login2] (sent after this `LOGIN`) merged
+     * in: its fields win over the ones of this reply, and [userId] comes from the merged
+     * `profile.contact.id`. Unchanged when [login2] is `null` or has no profile.
+     */
+    fun withLogin2(login2: Login2Result?): LoginResult {
+        val extra = login2?.profile ?: return this
+        val merged: Map<*, *> = LinkedHashMap<Any?, Any?>().apply {
+            profile?.let { putAll(it) }
+            putAll(extra)
+        }
+        return copy(profile = merged, userId = userIdOf(merged) ?: userId ?: userIdOf(extra))
+    }
+
     companion object {
         fun from(payload: Any?): LoginResult {
             val map = payload as? Map<*, *> ?: emptyMap<Any?, Any?>()
