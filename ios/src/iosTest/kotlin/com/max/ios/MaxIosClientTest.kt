@@ -57,6 +57,7 @@ class MaxIosClientTest {
         val chats = callback<Pair<Int, String?>> { d -> c.loadChats { list, k, _ -> d.complete(list.size to k) } }
         assertEquals(0 to "UNKNOWN", chats)
         c.watchState { }.cancel()
+        c.watchPinnedChats { }.cancel()
         // creation is retried on every call instead of caching the failure
         assertTrue(attempts >= 5)
         callback<Unit> { d -> c.close { d.complete(Unit) } }
@@ -76,6 +77,11 @@ class MaxIosClientTest {
         assertEquals("NETWORK", read)
         val code = callback<String?> { d -> c.requestCode("+79990000000", false) { _, k, _ -> d.complete(k) } }
         assertEquals("NETWORK", code)
+        val badPin = callback<Pair<Int, String?>> { d -> c.setPinnedChats(listOf("1", "x")) { list, k, _ -> d.complete(list.size to k) } }
+        assertEquals(0 to "UNKNOWN", badPin)
+        // no folders yet: the folder resync needs the network
+        val pin = callback<Pair<Int, String?>> { d -> c.setPinnedChats(listOf("1")) { list, k, _ -> d.complete(list.size to k) } }
+        assertEquals(0 to "NETWORK", pin)
         callback<Unit> { d -> c.close { d.complete(Unit) } }
     }
 

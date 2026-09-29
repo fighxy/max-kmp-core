@@ -107,13 +107,16 @@ class MaxIosClient internal constructor(
 
     /**
      * The chat list. The first call after each login pages through the whole list
-     * ([MaxClient.loadAllChats]); later calls (polls) refresh only the newest page.
+     * ([MaxClient.loadAllChats]) and resyncs the folders with the pinned chats
+     * ([MaxClient.loadFolders], best effort: the `LOGIN` config normally has them already);
+     * later calls (polls) refresh only the newest page.
      */
     fun loadChats(onResult: (List<IosChat>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
             val user = c.userId.value
             if (user != null && clientLock.locked { pagedUser } != user) {
                 c.loadAllChats()
+                syncFolders(c)
                 clientLock.locked { pagedUser = user }
             } else {
                 c.loadChats()
@@ -194,6 +197,28 @@ class MaxIosClient internal constructor(
         runUnit(onResult) { it.api.messages.markRead(parseId(chatId), parseId(messageId)) }
     }
 
+    /**
+     * Sets the pinned chats to [chatIds] (decimal ids, top first): pin, unpin and reorder all send
+     * the whole new list ([MaxClient.setPinnedChats], `FOLDERS_UPDATE` 274). [onResult] gets the
+     * pinned ids the server confirmed; on failure the core keeps the previous pins and the app
+     * rolls its optimistic change back.
+     */
+    fun setPinnedChats(chatIds: List<String>, onResult: (List<String>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            c.setPinnedChats(chatIds.map(::parseId)).map { it.toString() }
+        }
+    }
+
+    /**
+     * The server's pinned chats, top first, now and after every change: `LOGIN` config, folder
+     * resync, own [setPinnedChats] and `NOTIF_FOLDERS` pushes from other devices. Nothing is
+     * delivered while the pins are unknown (before the folders arrived, after logout), so an empty
+     * list always means "nothing pinned".
+     */
+    fun watchPinnedChats(onEach: (List<String>) -> Unit): IosWatch = watch { c ->
+        c.watchPinnedChats { ids -> if (ids != null) guarded { onEach(ids.map { it.toString() }) } }
+    }
+
     /** A dead [IosWatch] (no callbacks) when the client cannot be created. */
     fun watchState(onEach: (String) -> Unit): IosWatch = watch { c -> c.watchState { guarded { onEach(phaseOf(it)) } } }
 
@@ -216,6 +241,17 @@ class MaxIosClient internal constructor(
                 guarded(onDone)
                 scope.cancel()
             }
+        }
+    }
+
+    /** `FOLDERS_GET` into the store. A failure keeps the pins from the `LOGIN` config. */
+    private suspend fun syncFolders(c: MaxClient) {
+        try {
+            c.loadFolders()
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            IosDiagnostics.reportFailure(classifyKind(t), t)
         }
     }
 
@@ -354,7 +390,7 @@ private inline fun guarded(block: () -> Unit) {
 private fun parseId(value: String): Long =
     value.toLongOrNull() ?: throw IllegalArgumentException("not a numeric id: \"$value\"")
 
-/** Cancels one [MaxIosClient.watchState] or [MaxIosClient.watchEvents] subscription. */
+/** Cancels one [MaxIosClient.watchState], [MaxIosClient.watchEvents] or [MaxIosClient.watchPinnedChats] subscription. */
 class IosWatch internal constructor(private val watcher: Watcher?) {
     fun cancel() {
         watcher?.cancel()
