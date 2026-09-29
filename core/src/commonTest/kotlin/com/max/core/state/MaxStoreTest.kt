@@ -72,6 +72,36 @@ class MaxStoreTest {
     }
 
     @Test
+    fun sentMessageBecomesTheChatPreviewWithoutUnread() {
+        val store = store()
+        store.applyLogin(
+            LoginResult.from(
+                mapOf(
+                    "profile" to mapOf("contact" to mapOf("id" to me)),
+                    "chats" to listOf(chat(1, 100, 3, msg(5, 100)), chat(2, 200, 1, msg(9, 200, chatId = 2))),
+                    "messages" to mapOf("1" to listOf(msg(5, 100))),
+                ),
+            ),
+        )
+        assertEquals(listOf(2L, 1L), store.state.value.chatList.map { it.id })
+        val sent = MaxMessage.from(msg(6, 300, sender = me, text = "mine"), 1)!!
+        store.putSentMessage(1, sent)
+        val s = store.state.value
+        val chat = s.chats.getValue(1)
+        assertEquals(listOf(5L, 6L), s.messagesOf(1).map { it.id })
+        assertEquals(sent, chat.lastMessage)
+        assertEquals(300L, chat.lastEventTime)
+        assertEquals(3, chat.newMessages)
+        assertEquals(listOf(1L, 2L), s.chatList.map { it.id })
+        assertEquals(emptyList(), s.historyGaps())
+        // an older confirmation does not move the preview back
+        store.putSentMessage(1, MaxMessage.from(msg(4, 50, sender = me), 1)!!)
+        assertEquals(6L, store.state.value.chats.getValue(1).lastMessage!!.id)
+        assertEquals(300L, store.state.value.chats.getValue(1).lastEventTime)
+        assertEquals(3, store.state.value.chats.getValue(1).newMessages)
+    }
+
+    @Test
     fun emptyPageClosesHistoryGap() {
         val store = loggedIn()
         store.applyLogin(LoginResult.from(mapOf("chats" to listOf(chat(1, 300, 2, msg(7, 300))))))

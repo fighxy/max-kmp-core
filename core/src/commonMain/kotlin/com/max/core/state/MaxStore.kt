@@ -59,6 +59,9 @@ class MaxStore(
 
     fun putMessages(chatId: Long, messages: List<MaxMessage>) = _state.update { StateReducer.putMessages(it, chatId, messages, messageLimit) }
 
+    /** A message this client sent ([StateReducer.putSentMessage]): also the chat's last message, unread unchanged. */
+    fun putSentMessage(chatId: Long, message: MaxMessage) = _state.update { StateReducer.putSentMessage(it, chatId, message, messageLimit) }
+
     /** A `CHAT_HISTORY` result: its messages and, when requested with `getChat`, its chat. */
     fun putHistory(chatId: Long, history: ChatHistory) = _state.update { s ->
         val withChat = history.chat?.let { StateReducer.putChat(s, it) } ?: s

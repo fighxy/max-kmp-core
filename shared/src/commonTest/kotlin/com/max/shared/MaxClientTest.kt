@@ -207,6 +207,12 @@ class MaxClientTest {
         conn.answer(Opcode.MSG_SEND, mapOf("chatId" to 100, "message" to m(2, 6, "hi")))
         sent.await()
         assertEquals(listOf(1L, 2L), c.store.state.value.messagesOf(100).map { it.id })
+        // the own message is the chat preview now; unread is unchanged
+        val chat100 = c.store.state.value.chats.getValue(100)
+        assertEquals(2L, chat100.lastMessage!!.id)
+        assertEquals("hi", chat100.lastMessage!!.text)
+        assertEquals(10L, chat100.lastEventTime) // max(10, message time 6)
+        assertEquals(0, chat100.newMessages)
 
         // reconnect: LOGIN reports lastMessage 4, messages 3..4 were missed
         c.disconnect()

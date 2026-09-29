@@ -161,6 +161,19 @@ object StateReducer {
     }
 
     /**
+     * A message this client sent, as confirmed by the server (`MSG_SEND` reply). Own sends are not
+     * pushed back, so besides [putMessages] the chat's `lastMessage` / `lastEventTime` move to it
+     * when it is not older than the current last message; `newMessages` is left unchanged.
+     */
+    fun putSentMessage(state: MaxState, chatId: Long, m: MaxMessage, messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT): MaxState {
+        val s = putMessages(state, chatId, listOf(m), messageLimit)
+        val chat = s.chats[chatId] ?: return s
+        val prev = chat.lastMessage
+        if (prev != null && order(m, prev) < 0) return s
+        return s.copy(chats = s.chats + (chatId to chat.copy(lastMessage = m, lastEventTime = maxOf(chat.lastEventTime, m.time))))
+    }
+
+    /**
      * Records a hole for each chat whose `lastMessage` is ahead of the loaded tail and is not
      * itself loaded. An existing anchor stays: it is the tail id from when the hole was noticed.
      * Chats with no loaded messages are skipped.

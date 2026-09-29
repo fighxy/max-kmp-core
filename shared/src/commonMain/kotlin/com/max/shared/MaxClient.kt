@@ -603,12 +603,15 @@ class MaxClient @Throws(Exception::class) constructor(
         )
     }
 
-    /** Sends a text message and adds the server's copy to [store] (own messages are not pushed back). */
+    /**
+     * Sends a text message and adds the server's copy to [store] (own messages are not pushed
+     * back): it becomes the chat's last message and moves the chat up the list; unread stays.
+     */
     @Throws(CancellationException::class, Exception::class)
     suspend fun sendText(chatId: Long, text: String, replyTo: Long? = null): MaxMessage {
         val t = ticket()
         val message = api.messages.sendMessage(chatId, text, replyTo)
-        commit(t) { store.putMessages(chatId, listOf(message)) }
+        commit(t) { store.putSentMessage(chatId, message) }
         return message
     }
 
