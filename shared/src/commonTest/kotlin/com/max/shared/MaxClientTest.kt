@@ -324,6 +324,62 @@ class MaxClientTest {
         c.close()
     }
 
+    private fun newMessagePush(id: Long, chatId: Long = 100) =
+        push(Opcode.NOTIF_MESSAGE.value, mapOf("chatId" to chatId, "message" to mapOf("id" to id, "time" to 20 + id, "type" to "USER", "sender" to 7, "text" to "m$id")))
+
+    @Test
+    fun logoutFromAnEventHandlerFinishesItsCleanup() = runTest {
+        val kv = InMemoryKeyValueStore()
+        val factory = ScriptedConnectionFactory()
+        val c = smsLogin(kv, factory)
+        val conn = factory.lastConnection!!
+        var logouts = 0
+        val seen = ArrayList<Long>()
+        c.router.on<MaxEvent.NewMessage> { e ->
+            seen += e.message.id
+            if (e.message.text == "m1") {
+                logouts++
+                c.logout()
+            }
+        }
+        conn.feed(newMessagePush(1))
+        runCurrent()
+        conn.answer(Opcode.LOGOUT, null)
+        runCurrent()
+        assertEquals(1, logouts)
+        assertTrue(c.store.state.value.chats.isEmpty())
+        assertNull(CredentialStore(kv, "max.default").load()!!.token)
+        assertEquals(ClientState.Idle, c.state.value)
+        assertEquals(com.max.core.session.SessionState.Closed, c.session.state.value)
+        assertTrue(c.router.isRunning)
+
+        // the client logs in again and the handlers keep working
+        loginAgain(c, factory, id = 6, token = "login-b")
+        assertEquals(ClientState.Ready(6), c.state.value)
+        factory.lastConnection!!.feed(newMessagePush(2, chatId = 300))
+        runCurrent()
+        assertEquals(listOf(1L, 2L), seen)
+        assertEquals(2L, c.store.state.value.chats.getValue(300).lastMessage!!.id)
+        c.close()
+    }
+
+    @Test
+    fun closeFromAnEventHandlerDisconnects() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val c = smsLogin(InMemoryKeyValueStore(), factory)
+        var closed = false
+        c.router.on<MaxEvent.NewMessage> {
+            c.close()
+            closed = true
+        }
+        factory.lastConnection!!.feed(newMessagePush(1))
+        runCurrent()
+        assertTrue(closed)
+        assertEquals(com.max.core.session.SessionState.Closed, c.session.state.value)
+        assertEquals(ClientState.Idle, c.state.value)
+        assertTrue(!c.router.isRunning)
+    }
+
     @Test
     fun accountChangesUpdateStoredCredentials() = runTest {
         val kv = InMemoryKeyValueStore()

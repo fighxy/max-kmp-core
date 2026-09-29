@@ -6,10 +6,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import kotlin.reflect.KClass
 
 /**
@@ -20,7 +24,8 @@ import kotlin.reflect.KClass
  * handler already sees the updated state), then calls every matching handler in registration
  * order. A handler that throws does not stop the loop: the error goes to [onError] handlers
  * (PyMax `ErrorScope`), or is dropped if there are none. Handlers run on the collector coroutine;
- * a slow handler delays the following events (launch work elsewhere if needed).
+ * a slow handler delays the following events (launch work elsewhere if needed). A handler may call
+ * [stop] (directly or through e.g. `MaxClient.logout`); see there.
  *
  * ```
  * val router = EventRouter(MaxEvents(session).all, store)
@@ -68,18 +73,27 @@ class EventRouter(
      */
     fun start(scope: CoroutineScope): Job {
         job?.takeIf { it.isActive }?.let { return it }
-        return scope.launch(start = CoroutineStart.UNDISPATCHED) { events.collect { dispatch(it) } }.also { job = it }
+        return scope.launch(Collector(this), start = CoroutineStart.UNDISPATCHED) { events.collect { dispatch(it) } }.also { job = it }
     }
 
     /**
      * Stops collecting and waits until an in-flight [dispatch] finishes. Handlers stay registered
-     * and [start] may be called again. Do not call this from a handler: that handler is the
-     * collector, so joining it deadlocks.
+     * and [start] may be called again.
+     *
+     * Called from a handler (or a coroutine the handler runs inside), the collector is only
+     * cancelled, not joined: the caller is part of it and would otherwise wait for itself. The
+     * caller keeps running until its next suspension point; code that must finish there (cleanup)
+     * belongs in `withContext(NonCancellable)`.
      */
     suspend fun stop() {
         val running = job ?: return
         job = null
-        running.cancelAndJoin()
+        if (currentCoroutineContext()[Collector]?.router === this) running.cancel() else running.cancelAndJoin()
+    }
+
+    /** Marks the collector coroutine (and everything it runs) of one router. */
+    private class Collector(val router: EventRouter) : AbstractCoroutineContextElement(Collector) {
+        companion object Key : CoroutineContext.Key<Collector>
     }
 
     /** Applies [event] to the store and runs the handlers (what the collector does per event). */
@@ -87,6 +101,8 @@ class EventRouter(
         store?.apply(event)
         for (sub in handlers.value) {
             if (!sub.type.isInstance(event)) continue
+            // a handler may have stopped the router (e.g. logout): skip the rest
+            currentCoroutineContext().ensureActive()
             try {
                 sub.block(event)
             } catch (e: CancellationException) {

@@ -47,6 +47,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
@@ -60,6 +61,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Settings of a [MaxClient].
@@ -356,31 +358,36 @@ class MaxClient @Throws(Exception::class) constructor(
      * Logs out on the server (`LOGOUT` 20, best effort), clears the token and the local state,
      * and disconnects. The device identity is kept. Gap fill is cancelled and the event router
      * is stopped before the snapshot is dropped, then the router is started again so this client
-     * can log in once more.
+     * can log in once more. Safe to call from an [EventRouter] handler: the local cleanup always
+     * completes (the handler's own coroutine is cancelled by the router stop).
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun logout() {
         runCatching { if (loggedInFlag.value) auth.logout() }
-        val gap = lifecycle.withLock {
-            sessionEpoch += 1
-            accountGen += 1
-            tokenLogin.value = null
-            credentials.clearToken()
-            loggedInFlag.value = false
-            loggedIn.value = null
-            val running = gapJob
-            gapJob = null
-            running?.cancel()
-            running
+        // Mandatory cleanup: it also runs when logout() is called from an event handler, whose
+        // coroutine router.stop() cancels, and when the caller is cancelled half-way.
+        withContext(NonCancellable) {
+            val gap = lifecycle.withLock {
+                sessionEpoch += 1
+                accountGen += 1
+                tokenLogin.value = null
+                credentials.clearToken()
+                loggedInFlag.value = false
+                loggedIn.value = null
+                val running = gapJob
+                gapJob = null
+                running?.cancel()
+                running
+            }
+            gap?.cancelAndJoin()
+            router.stop()
+            lifecycle.withLock {
+                store.clear()
+                snapshotLoaded = false
+            }
+            session.disconnect()
+            router.start(scope)
         }
-        gap?.cancelAndJoin()
-        router.stop()
-        lifecycle.withLock {
-            store.clear()
-            snapshotLoaded = false
-        }
-        session.disconnect()
-        router.start(scope)
     }
 
     /** Disconnects (the token stays stored); [start] reconnects. */
@@ -622,18 +629,21 @@ class MaxClient @Throws(Exception::class) constructor(
     /** Stops everything: disconnects and, if the client created its own scope, cancels it. */
     @Throws(CancellationException::class, Exception::class)
     override suspend fun close() {
-        val gap = lifecycle.withLock {
-            sessionEpoch += 1
-            accountGen += 1
-            val running = gapJob
-            gapJob = null
-            running?.cancel()
-            running
+        // NonCancellable: close() may run inside an event handler, which router.stop() cancels
+        withContext(NonCancellable) {
+            val gap = lifecycle.withLock {
+                sessionEpoch += 1
+                accountGen += 1
+                val running = gapJob
+                gapJob = null
+                running?.cancel()
+                running
+            }
+            gap?.cancelAndJoin()
+            router.stop()
+            session.disconnect()
+            loggedInFlag.value = false
         }
-        gap?.cancelAndJoin()
-        router.stop()
-        session.disconnect()
-        loggedInFlag.value = false
         if (ownsScope) scope.cancel()
     }
 
