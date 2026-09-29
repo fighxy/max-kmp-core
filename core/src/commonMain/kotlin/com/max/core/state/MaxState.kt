@@ -24,8 +24,9 @@ import com.max.core.events.MaxEvent
  *   The protocol has no "stopped typing" push; see [typingUsers].
  * @property readMarks per chat id: user id → last read `mark` (`NOTIF_MARK` 130).
  * @property gapAnchors chat id → newest local message id when a hole was noticed (`lastMessage`
- *   moved ahead of the loaded tail). Cleared when a history page contains that id, or when the
- *   server has nothing older ([MaxStore.closeHistoryGap]).
+ *   moved ahead of the loaded tail). Cleared only when a history page contains that id
+ *   ([StateReducer.putHistoryPage]), or when the server has nothing older
+ *   ([MaxStore.closeHistoryGap]); edits, pushes and single inserts of the anchor keep it.
  */
 data class MaxState(
     val me: Long? = null,
@@ -147,17 +148,27 @@ object StateReducer {
         if (users.isEmpty()) state else state.copy(users = state.users + users.associateBy { it.id })
 
     /**
-     * Merges [list] (e.g. a `CHAT_HISTORY` page) into the chat's messages. A page that contains
-     * the chat's gap anchor closes the hole; the check uses [list], not the trimmed tail.
+     * Merges [list] into the chat's messages (insert or replace by id). It never closes a history
+     * hole: an edit, a replayed push or a single inserted message that happens to be the anchor
+     * says nothing about the messages in between. Only [putHistoryPage] does.
      */
     fun putMessages(state: MaxState, chatId: Long, list: List<MaxMessage>, messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT): MaxState {
         if (list.isEmpty()) return state
         val byId = LinkedHashMap<Long, MaxMessage>()
         state.messagesOf(chatId).forEach { byId[it.id] = it }
         list.forEach { byId[it.id] = it }
-        val anchor = state.gapAnchors[chatId]
-        val anchors = if (anchor != null && list.any { it.id == anchor }) state.gapAnchors - chatId else state.gapAnchors
-        return state.copy(messages = state.messages + (chatId to sortAndTrim(byId.values, messageLimit)), gapAnchors = anchors)
+        return state.copy(messages = state.messages + (chatId to sortAndTrim(byId.values, messageLimit)))
+    }
+
+    /**
+     * A `CHAT_HISTORY` page: [putMessages], and the page closes the chat's hole when it contains
+     * the gap anchor, i.e. it is contiguous history that overlaps the loaded tail. The check uses
+     * [page], not the trimmed tail.
+     */
+    fun putHistoryPage(state: MaxState, chatId: Long, page: List<MaxMessage>, messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT): MaxState {
+        val s = putMessages(state, chatId, page, messageLimit)
+        val anchor = s.gapAnchors[chatId] ?: return s
+        return if (page.any { it.id == anchor }) s.copy(gapAnchors = s.gapAnchors - chatId) else s
     }
 
     /**

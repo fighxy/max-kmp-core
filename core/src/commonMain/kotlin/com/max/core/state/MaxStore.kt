@@ -57,6 +57,7 @@ class MaxStore(
 
     fun putUsers(users: List<MaxUser>) = _state.update { StateReducer.putUsers(it, users) }
 
+    /** Inserts / replaces messages; never closes a history hole (use [putHistory] for pages). */
     fun putMessages(chatId: Long, messages: List<MaxMessage>) = _state.update { StateReducer.putMessages(it, chatId, messages, messageLimit) }
 
     /** A message this client sent ([StateReducer.putSentMessage]): also the chat's last message, unread unchanged. */
@@ -65,7 +66,7 @@ class MaxStore(
     /** A `CHAT_HISTORY` result: its messages and, when requested with `getChat`, its chat. */
     fun putHistory(chatId: Long, history: ChatHistory) = _state.update { s ->
         val withChat = history.chat?.let { StateReducer.putChat(s, it) } ?: s
-        StateReducer.putMessages(withChat, chatId, history.messages, messageLimit)
+        StateReducer.putHistoryPage(withChat, chatId, history.messages, messageLimit)
     }
 
     /** Drops the history hole for [chatId]. Used when the server returns an empty page. */

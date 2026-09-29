@@ -102,6 +102,27 @@ class MaxStoreTest {
     }
 
     @Test
+    fun editingOrReplayingTheAnchorKeepsTheGapOpen() {
+        val store = loggedIn()
+        // re-login: chat 1 moved on to 8 while the local tail is 5 (the anchor)
+        store.applyLogin(LoginResult.from(mapOf("chats" to listOf(chat(1, 300, 2, msg(8, 300))))))
+        assertEquals(mapOf(1L to 5L), store.state.value.gapAnchors)
+        // an edit of the anchor, a replayed push of it and a plain insert do not prove anything
+        store.apply(push(128, mapOf("chatId" to 1, "message" to msg(5, 100, text = "edited", status = "EDITED") - "chatId")))
+        assertEquals("edited", store.state.value.messagesOf(1).single { it.id == 5L }.text)
+        store.apply(newMessage(msg(5, 100, text = "replayed")))
+        store.putMessages(1, listOf(MaxMessage.from(msg(5, 100), 1)!!))
+        assertEquals(listOf(1L), store.state.value.historyGaps())
+        // sequential history pages: the one reaching the anchor closes the hole
+        fun page(vararg ids: Pair<Long, Long>) = ChatHistory(ids.map { (id, t) -> MaxMessage.from(msg(id, t), 1)!! }, null, emptyMap<Any?, Any?>())
+        store.putHistory(1, page(7L to 250, 8L to 300))
+        assertEquals(listOf(1L), store.state.value.historyGaps())
+        store.putHistory(1, page(5L to 100, 6L to 200, 7L to 250))
+        assertEquals(emptyList(), store.state.value.historyGaps())
+        assertEquals(listOf(4L, 5L, 6L, 7L, 8L), store.state.value.messagesOf(1).map { it.id })
+    }
+
+    @Test
     fun emptyPageClosesHistoryGap() {
         val store = loggedIn()
         store.applyLogin(LoginResult.from(mapOf("chats" to listOf(chat(1, 300, 2, msg(7, 300))))))
