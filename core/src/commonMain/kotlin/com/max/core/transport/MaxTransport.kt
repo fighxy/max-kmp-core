@@ -18,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -26,6 +27,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -79,6 +82,27 @@ class MaxTransport(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     override val pushes: SharedFlow<TransportPacket> = _pushes.asSharedFlow()
+
+    /** Queues of the [reliablePushes] collectors (copy-on-write). */
+    private val reliableQueues = MutableStateFlow<List<Channel<TransportPacket>>>(emptyList())
+
+    /**
+     * Every push, without loss: each collector gets its own unbounded queue, registered when the
+     * collection starts and removed when it ends, and sees every push that arrives in between,
+     * across reconnects. Unlike [pushes] nothing is dropped for a slow collector, so collect it
+     * with fast, non-blocking code (the router applies events to its store here and hands them
+     * to user handlers through its own queue). The socket reader never waits for a collector.
+     */
+    fun reliablePushes(): Flow<TransportPacket> = flow {
+        val queue = Channel<TransportPacket>(Channel.UNLIMITED)
+        reliableQueues.update { it + queue }
+        try {
+            for (packet in queue) emit(packet)
+        } finally {
+            reliableQueues.update { list -> list.filterNot { it === queue } }
+            queue.close()
+        }
+    }
 
     private val rawChunks = MutableSharedFlow<ByteArray>(
         extraBufferCapacity = PUSH_BUFFER_CAPACITY,
@@ -295,7 +319,11 @@ class MaxTransport(
         } else {
             // compressed pushes are decompressed by decodePayloadPacket (LZ4 block / LZ4 frame / Zstd);
             // undecodable ones (unknown flag, corrupt body, bad MessagePack) are skipped, like kolibri
-            decoded.onSuccess { (h, payload) -> _pushes.tryEmit(TransportPacket(h, payload)) }
+            decoded.onSuccess { (h, payload) ->
+                val packet = TransportPacket(h, payload)
+                reliableQueues.value.forEach { it.trySend(packet) }
+                _pushes.tryEmit(packet)
+            }
         }
     }
 

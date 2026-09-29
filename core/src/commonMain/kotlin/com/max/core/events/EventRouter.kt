@@ -5,6 +5,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -12,6 +14,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 import kotlin.reflect.KClass
@@ -20,12 +23,19 @@ import kotlin.reflect.KClass
  * Routes typed events to a [MaxStore] and to handlers, like PyMax's `Dispatcher`
  * (`src/pymax/dispatch/dispatcher.py`: `on_message`, `on_typing`, ..., `on_raw`, error handlers).
  *
- * One collector reads [events] in order; for each event it first applies it to [store] (so a
- * handler already sees the updated state), then calls every matching handler in registration
- * order. A handler that throws does not stop the loop: the error goes to [onError] handlers
- * (PyMax `ErrorScope`), or is dropped if there are none. Handlers run on the collector coroutine;
- * a slow handler delays the following events (launch work elsewhere if needed). A handler may call
- * [stop] (directly or through e.g. `MaxClient.logout`); see there.
+ * Two stages, so user code can never cost the store an event:
+ * 1. the collector reads [events] in order and applies each one to [store] right away (no user
+ *    code runs here), then queues it for the handlers (unbounded queue);
+ * 2. the handler coroutine takes the queue in order and calls every matching handler in
+ *    registration order. When a handler runs, the store already contains its event (and possibly
+ *    later ones).
+ *
+ * A slow or blocked handler only delays the following handler calls; the store keeps up, and a
+ * handler may await a reply on the same connection. For the pushes of a session use the lossless
+ * `MaxTransport.reliablePushes` (as `MaxClient` does): the hot `pushes` flow drops the oldest
+ * packets for a collector more than 256 packets behind. A handler that throws does not stop the
+ * loop: the error goes to [onError] handlers (PyMax `ErrorScope`), or is dropped if there are none.
+ * A handler may call [stop] (directly or through e.g. `MaxClient.logout`); see there.
  *
  * ```
  * val router = EventRouter(MaxEvents(session).all, store)
@@ -48,6 +58,7 @@ class EventRouter(
     private val handlers = MutableStateFlow<List<Subscription>>(emptyList())
     private val errorHandlers = MutableStateFlow<List<(MaxEvent, Throwable) -> Unit>>(emptyList())
     private var job: Job? = null
+    private var collector: Job? = null
 
     /** Registers [handler] for events of [type] (and its subtypes; `MaxEvent::class` = every event). */
     fun <T : MaxEvent> on(type: KClass<T>, handler: suspend (T) -> Unit): Subscription {
@@ -73,32 +84,59 @@ class EventRouter(
      */
     fun start(scope: CoroutineScope): Job {
         job?.takeIf { it.isActive }?.let { return it }
-        return scope.launch(Collector(this), start = CoroutineStart.UNDISPATCHED) { events.collect { dispatch(it) } }.also { job = it }
+        return scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val queue = Channel<MaxEvent>(Channel.UNLIMITED)
+            launch(Handlers(this@EventRouter)) {
+                for (event in queue) runHandlers(event)
+            }
+            collector = launch(start = CoroutineStart.UNDISPATCHED) {
+                try {
+                    events.collect { event ->
+                        store?.apply(event)
+                        queue.trySend(event)
+                    }
+                } finally {
+                    queue.close()
+                }
+            }
+        }.also { job = it }
     }
 
     /**
-     * Stops collecting and waits until an in-flight [dispatch] finishes. Handlers stay registered
-     * and [start] may be called again.
+     * Stops collecting and waits until the in-flight store update and handler call finish.
+     * Queued events that no handler has seen yet are dropped. Handlers stay registered and
+     * [start] may be called again. No event reaches [store] after this returns.
      *
-     * Called from a handler (or a coroutine the handler runs inside), the collector is only
-     * cancelled, not joined: the caller is part of it and would otherwise wait for itself. The
-     * caller keeps running until its next suspension point; code that must finish there (cleanup)
-     * belongs in `withContext(NonCancellable)`.
+     * Called from a handler (or a coroutine the handler runs inside), the handler coroutine is only
+     * cancelled, not joined: the caller is part of it and would otherwise wait for itself (the
+     * collector is still joined). The caller keeps running until its next suspension point; code
+     * that must finish there (cleanup) belongs in `withContext(NonCancellable)`.
      */
     suspend fun stop() {
         val running = job ?: return
+        val applying = collector
         job = null
-        if (currentCoroutineContext()[Collector]?.router === this) running.cancel() else running.cancelAndJoin()
+        collector = null
+        if (currentCoroutineContext()[Handlers]?.router === this) {
+            running.cancel()
+            withContext(NonCancellable) { applying?.join() }
+        } else {
+            running.cancelAndJoin()
+        }
     }
 
-    /** Marks the collector coroutine (and everything it runs) of one router. */
-    private class Collector(val router: EventRouter) : AbstractCoroutineContextElement(Collector) {
-        companion object Key : CoroutineContext.Key<Collector>
+    /** Marks the handler coroutine (and everything it runs) of one router. */
+    private class Handlers(val router: EventRouter) : AbstractCoroutineContextElement(Handlers) {
+        companion object Key : CoroutineContext.Key<Handlers>
     }
 
-    /** Applies [event] to the store and runs the handlers (what the collector does per event). */
+    /** Applies [event] to the store and runs the handlers inline (both stages for one event). */
     suspend fun dispatch(event: MaxEvent) {
         store?.apply(event)
+        runHandlers(event)
+    }
+
+    private suspend fun runHandlers(event: MaxEvent) {
         for (sub in handlers.value) {
             if (!sub.type.isInstance(event)) continue
             // a handler may have stopped the router (e.g. logout): skip the rest

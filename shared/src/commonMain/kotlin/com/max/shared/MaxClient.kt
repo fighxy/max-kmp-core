@@ -216,8 +216,11 @@ class MaxClient @Throws(Exception::class) constructor(
     /** Local state (chats, messages, users, presence, typing, read marks). */
     val store: MaxStore = MaxStore(config.messageLimit)
 
-    /** Applies pushes to [store] and runs handlers registered with [EventRouter.on]. */
-    val router: EventRouter = EventRouter(events.all, store)
+    /**
+     * Applies pushes to [store] and runs handlers registered with [EventRouter.on]. It reads the
+     * lossless push stream, so a slow handler never costs the store an event.
+     */
+    val router: EventRouter = EventRouter(MaxEvents(session.reliablePushes).all, store)
 
     /** Phone-code auth, 2FA, registration, QR approval, logout. */
     val auth: AuthApi = AuthApi(session, config.fingerprint)

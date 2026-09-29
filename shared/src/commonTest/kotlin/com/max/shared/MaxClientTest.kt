@@ -381,6 +381,29 @@ class MaxClientTest {
     }
 
     @Test
+    fun blockedHandlerDoesNotCostTheStorePushes() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val c = smsLogin(InMemoryKeyValueStore(), factory)
+        val conn = factory.lastConnection!!
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var handled = 0
+        c.router.on<MaxEvent.NewMessage> {
+            handled++
+            if (handled == 1) release.await()
+        }
+        for (i in 1L..300L) conn.feed(newMessagePush(i))
+        runCurrent()
+        assertEquals(1, handled)
+        // messageLimit is 500 by default: every one of the 300 messages is kept
+        assertEquals((1L..300L).toList(), c.store.state.value.messagesOf(100).map { it.id })
+        assertEquals(300L, c.store.state.value.chats.getValue(100).lastMessage!!.id)
+        release.complete(Unit)
+        runCurrent()
+        assertEquals(300, handled)
+        c.close()
+    }
+
+    @Test
     fun accountChangesUpdateStoredCredentials() = runTest {
         val kv = InMemoryKeyValueStore()
         val factory = ScriptedConnectionFactory()

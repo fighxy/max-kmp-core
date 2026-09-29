@@ -18,6 +18,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -133,6 +134,9 @@ class SessionMachine(
 
     /** Server pushes of every connection (see [MaxTransport.pushes]). */
     val pushes: SharedFlow<TransportPacket> get() = transport.pushes
+
+    /** Lossless pushes of every connection (see [MaxTransport.reliablePushes]). */
+    val reliablePushes: Flow<TransportPacket> get() = transport.reliablePushes()
 
     /** Guards [_state] writes, [generation], [attempt], [connectJob], [watchJob], [reconnectAttempts]. */
     private val lock = Mutex()
