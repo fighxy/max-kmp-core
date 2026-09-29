@@ -63,6 +63,14 @@ class AccountApi(private val sink: RequestSink, private val newFolderId: () -> S
         linkedMapOf("id" to folderId, "title" to title, "include" to chatIds, "filters" to filters, "options" to options),
     )
 
+    /**
+     * Sets the pinned chats: `FOLDERS_UPDATE` 274 on the "all chats" [folder] with
+     * [ChatFolders.favoritesPayload] (`favorites` = [chatIds], top first; everything else as the
+     * server sent it). Pin, unpin and reorder are all this one request with the whole new list.
+     */
+    suspend fun setFolderFavorites(folder: Folder, chatIds: List<Long>): FolderUpdate =
+        folderUpdate(Opcode.FOLDERS_UPDATE, ChatFolders.favoritesPayload(folder, chatIds))
+
     /** Deletes a folder (`FOLDERS_DELETE` 276, `{folderIds: [id]}`). */
     suspend fun deleteFolder(folderId: String): FolderUpdate =
         folderUpdate(Opcode.FOLDERS_DELETE, linkedMapOf("folderIds" to listOf(folderId)))
@@ -110,7 +118,11 @@ data class Profile(val contact: MaxUser, val profileOptions: List<Int>, val raw:
     }
 }
 
-/** A chat folder (PyMax `Folder`; missing fields default like PyMax). */
+/**
+ * A chat folder (PyMax `Folder`; missing fields default like PyMax). [favorites] are the chats
+ * pinned in this folder, top first (Komet `ChatFolder.favorites`); the "all chats" folder's list is
+ * the pinned block of the chat list, see [ChatFolders].
+ */
 data class Folder(
     val id: String,
     val title: String,
@@ -120,6 +132,7 @@ data class Folder(
     val sourceId: Long,
     val updateTime: Long,
     val raw: Map<*, *>,
+    val favorites: List<Long> = emptyList(),
 ) {
     companion object {
         fun from(value: Any?): Folder? {
@@ -133,6 +146,7 @@ data class Folder(
                 sourceId = m["sourceId"].asLong() ?: 0,
                 updateTime = m["updateTime"].asLong() ?: 0,
                 raw = m,
+                favorites = (m["favorites"] as? List<*>).orEmpty().mapNotNull { it.asLong() },
             )
         }
     }

@@ -1,6 +1,9 @@
 package com.max.core.state
 
 import com.max.core.api.Chat
+import com.max.core.api.ChatFolders
+import com.max.core.api.FolderList
+import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.PresenceInfo
@@ -29,6 +32,8 @@ import com.max.core.events.MaxEvent
  *   moved ahead of the loaded tail). Cleared only when a history page contains that id
  *   ([StateReducer.putHistoryPage]), or when the server has nothing older
  *   ([MaxStore.closeHistoryGap]); edits, pushes and single inserts of the anchor keep it.
+ * @property chatFolders the account's chat folders (with the pinned chats), `null` until a `LOGIN`
+ *   config, a `FOLDERS_GET` reply or a `NOTIF_FOLDERS` push brought them.
  */
 data class MaxState(
     val me: Long? = null,
@@ -40,10 +45,27 @@ data class MaxState(
     val typing: Map<Long, Map<Long, Long>> = emptyMap(),
     val readMarks: Map<Long, Map<Long, Long>> = emptyMap(),
     val gapAnchors: Map<Long, Long> = emptyMap(),
+    val chatFolders: ChatFolders? = null,
 ) {
-    /** Chats ordered like a chat list: latest activity first (`lastEventTime`, then last message time). */
+    /**
+     * Pinned chat ids, top first, as the server keeps them (`favorites` of the "all chats" folder,
+     * see [ChatFolders]). `null` while unknown: no folder list yet, or no "all chats" folder in it.
+     * May name chats that are not in [chats] yet.
+     */
+    val pinnedChatIds: List<Long>?
+        get() = chatFolders?.pinnedChatIds
+
+    /**
+     * Chats ordered like a chat list: pinned chats first in the server's order ([pinnedChatIds]),
+     * then latest activity first (`lastEventTime`, then last message time).
+     */
     val chatList: List<Chat>
-        get() = chats.values.sortedWith(compareByDescending<Chat> { activity(it) }.thenByDescending { it.id })
+        get() {
+            val pins = pinnedChatIds.orEmpty().withIndex().associate { (i, id) -> id to i }
+            return chats.values.sortedWith(
+                compareBy<Chat> { pins[it.id] ?: Int.MAX_VALUE }.thenByDescending { activity(it) }.thenByDescending { it.id },
+            )
+        }
 
     /** Messages of [chatId] (empty when unknown). */
     fun messagesOf(chatId: Long): List<MaxMessage> = messages[chatId].orEmpty()
@@ -94,6 +116,8 @@ data class MaxState(
  * - [MaxEvent.Presence] — replaces the user's presence (a push without `status` clears it).
  * - [MaxEvent.ReactionsChanged] — replaces counters / total of the stored message, keeping
  *   `yourReaction`.
+ * - [MaxEvent.FoldersChanged] — merged into [MaxState.chatFolders] ([ChatFolders.merge]); this is
+ *   how pins made on another device arrive.
  * - everything else (attachment signals, calls, unknown pushes) — no change.
  */
 object StateReducer {
@@ -107,6 +131,9 @@ object StateReducer {
         is MaxEvent.MessageRead -> read(state, event)
         is MaxEvent.Presence -> state.copy(presence = state.presence + (event.userId to PresenceInfo(event.seen, event.status)))
         is MaxEvent.ReactionsChanged -> reactions(state, event)
+        is MaxEvent.FoldersChanged -> state.copy(
+            chatFolders = (state.chatFolders ?: ChatFolders(emptyList())).merge(event.folders, event.foldersOrder, event.folderSync),
+        )
         is MaxEvent.AttachmentReady, is MaxEvent.CallStart, is MaxEvent.Unknown -> state
     }
 
@@ -114,11 +141,14 @@ object StateReducer {
      * Seeds the state from a `LOGIN` reply (PyMax `App.start`): `me`, `chats`, `contacts`
      * (→ [MaxState.users], including the own profile contact, and [MaxState.contactIds]) and `messages` (`{chatId: [message]}`,
      * keys may be integers or decimal strings). A different user replaces the snapshot; the same
-     * user is merged, then holes against `lastMessage` are recorded.
+     * user is merged, then holes against `lastMessage` are recorded. `config.chatFolders` replaces
+     * [MaxState.chatFolders] when present ([ChatFolders.fromLoginConfig]); a reply without it keeps
+     * the known folders.
      */
     fun login(state: MaxState, result: LoginResult, messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT): MaxState {
         val base = if (result.userId != null && state.me != null && result.userId != state.me) MaxState() else state
         var s = base.copy(me = result.userId ?: base.me)
+        ChatFolders.fromLoginConfig(result.raw)?.let { s = s.copy(chatFolders = it) }
         s = putChats(s, result.chats.mapNotNull(Chat::from))
         val contacts = (result.raw["contacts"] as? List<*>)?.mapNotNull(MaxUser::from)
         val users = contacts.orEmpty() + listOfNotNull(MaxUser.from(result.profile?.get("contact")))
@@ -156,6 +186,23 @@ object StateReducer {
     }
 
     fun putChat(state: MaxState, chat: Chat): MaxState = putChats(state, listOf(chat))
+
+    /** A full folder list (`FOLDERS_GET` reply): replaces [MaxState.chatFolders]. */
+    fun putFolders(state: MaxState, list: FolderList): MaxState = state.copy(chatFolders = ChatFolders.from(list))
+
+    /**
+     * A `FOLDERS_UPDATE` reply that set the pinned chats to [pinned]: its `folder` is merged in
+     * ([ChatFolders.merge]). A reply without `folder` still means the server accepted the request,
+     * so the "all chats" folder then gets [pinned] locally.
+     */
+    fun putPinnedUpdate(state: MaxState, update: FolderUpdate, pinned: List<Long>): MaxState {
+        val current = state.chatFolders ?: ChatFolders(emptyList())
+        val order = update.foldersOrder.takeIf { "foldersOrder" in update.raw }
+        val sync = update.folderSync.takeIf { "folderSync" in update.raw }
+        val next = update.folder?.let { current.merge(listOf(it), order, sync) }
+            ?: current.withPinned(pinned).merge(emptyList(), order, sync)
+        return state.copy(chatFolders = next)
+    }
 
     /** Removes a chat and its messages, typing, read marks and history hole (after leaving / deleting it). */
     fun removeChat(state: MaxState, chatId: Long): MaxState = state.copy(

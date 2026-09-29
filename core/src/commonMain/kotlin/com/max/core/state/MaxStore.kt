@@ -2,6 +2,8 @@ package com.max.core.state
 
 import com.max.core.api.Chat
 import com.max.core.api.ChatHistory
+import com.max.core.api.FolderList
+import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.PresenceInfo
@@ -41,6 +43,9 @@ class MaxStore(
     /** Chat list, latest activity first ([MaxState.chatList]). */
     val chatList: Flow<List<Chat>> get() = state.map { it.chatList }.distinctUntilChanged()
 
+    /** Pinned chat ids, top first; `null` while unknown ([MaxState.pinnedChatIds]). */
+    val pinnedChats: Flow<List<Long>?> get() = state.map { it.pinnedChatIds }.distinctUntilChanged()
+
     /** Messages of one chat. */
     fun messages(chatId: Long): Flow<List<MaxMessage>> = state.map { it.messagesOf(chatId) }.distinctUntilChanged()
 
@@ -54,6 +59,12 @@ class MaxStore(
     fun applyLogin(result: LoginResult) = _state.update { StateReducer.login(it, result, messageLimit) }
 
     fun putChats(chats: List<Chat>) = _state.update { StateReducer.putChats(it, chats) }
+
+    /** A `FOLDERS_GET` reply ([StateReducer.putFolders]). */
+    fun putFolders(list: FolderList) = _state.update { StateReducer.putFolders(it, list) }
+
+    /** A `FOLDERS_UPDATE` reply for new pins ([StateReducer.putPinnedUpdate]). */
+    fun putPinnedUpdate(update: FolderUpdate, pinned: List<Long>) = _state.update { StateReducer.putPinnedUpdate(it, update, pinned) }
 
     fun putUsers(users: List<MaxUser>) = _state.update { StateReducer.putUsers(it, users) }
 

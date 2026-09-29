@@ -53,12 +53,13 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | 2FA | `107`–`113` | `TwoFactorApi` (`MaxApi.twoFactor`) |
 | пользователи | `32`, `34`, `46`, `21`, `96` | `UsersApi` (`MaxApi.users`) |
 | аккаунт | `16`, `22`, `97`, `272`, `274`, `276` | `AccountApi` (`MaxApi.account`); `MaxClient` сохраняет новый токен (97) и `configHash` (22) |
+| закреплённые чаты | `274` (`favorites` папки «Все чаты»), `272`, `277` (push), `config.chatFolders` в `19` | `ChatFolders`, `MaxClient.setPinnedChats` / `loadFolders`, схема Komet (protocol.md, «Закреплённые чаты») |
 | чаты | `48`, `49`, `50`, `52`, `53`, `55`, `57`, `58`, `59`, `75`, `77`, `89` | `ChatsApi` (группы, ссылки, заявки, админы) |
 | сообщения | `64` (текст, вложения, отложенная отправка, опросы, комментарии), `66`, `67`, `71`, `91`, `94`, `178`, `179`, `180`, `304` | `MessagesApi` |
 | медиа | `80`, `82`, `83`, `87`, `88` | `MediaApi` (потоковая загрузка с диска через `UploadSource`) |
 | боты | `118`, `160` | `BotsApi` (`MaxApi.bots`) |
 | звонки | `137` (push), `158` | `MaxEvent.CallStart`, `CallsApi` |
-| push | `128`, `129`, `130`, `132`, `135`, `136`, `137`, `142`, `155` и др. | `EventParser` → `MaxEvents` → `EventRouter` → `MaxStore` |
+| push | `128`, `129`, `130`, `132`, `135`, `136`, `137`, `142`, `155`, `277` и др. | `EventParser` → `MaxEvents` → `EventRouter` → `MaxStore` |
 
 ## Блокеры: нужен снятый трафик
 

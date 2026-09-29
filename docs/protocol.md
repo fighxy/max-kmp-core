@@ -566,6 +566,28 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 275 | `FOLDERS_REORDER` | `FOLDERS_REORDER` |  |
 | 276 | `FOLDERS_DELETE` | `FOLDERS_DELETE` |  |
 
+#### Закреплённые чаты (схема KometTeam/Komet, `folders.dart` / `chats.dart`; только факты, код не брали)
+
+Отдельного опкода «закрепить чат» нет. Закреплённые чаты списка — это `favorites` системной папки
+«Все чаты» (`id = "all.chat.folder"`; сервер помечает её не всегда, Komet узнаёт её и по названию
+«Все» / «Все чаты» / «All» / «All chats»): массив id чатов, сверху вниз.
+
+- Приём: ответ `LOGIN` 19 → `config.chatFolders = {FOLDERS: [folder], foldersOrder: [id], folderSync}`;
+  ответ `FOLDERS_GET` 272 `{folderSync: 0}` → `{folders, foldersOrder, folderSync, allFilterExcludeFolders}`.
+  Папка: `{id, title, include, filters, options, favorites, updateTime, sourceId, ...}`.
+- В `config.chats.{chatId}` есть ещё `favIndex` (с 1, `0` = не задан); Komet считает главным список
+  папки, ядро тоже его не использует.
+- Изменение с другого устройства: пуш `NOTIF_FOLDERS` 277 с `folders` и / или `folder`, иногда
+  `foldersOrder` и `folderSync` (слияние по `id`; новый `foldersOrder` убирает папки вне него).
+- Отправка: закрепить, открепить и переставить — один и тот же `FOLDERS_UPDATE` 274 со всем новым
+  списком: `{id, title, include, filters, options, favorites}` папки «Все чаты». Ядро отправляет
+  `include` / `filters` / `options` ровно такими, какими их прислал сервер. Ответ
+  `{folder, foldersOrder?, folderSync}`. Куда встаёт новый закреплённый (начало или конец списка),
+  решает клиент: Komet дописывает в конец, Orbitl ставит первым.
+- В ядре: `ChatFolders`, `AccountApi.setFolderFavorites`, `MaxEvent.FoldersChanged`,
+  `MaxState.chatFolders` / `pinnedChatIds`, `MaxClient.loadFolders` / `setPinnedChats`,
+  `MaxIosClient.setPinnedChats` / `watchPinnedChats`. На живом сервере не проверено.
+
 ### Stories
 
 | code | kolibri | PyMax | note |

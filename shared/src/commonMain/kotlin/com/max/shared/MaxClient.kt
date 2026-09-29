@@ -2,6 +2,7 @@ package com.max.shared
 
 import com.max.core.MaxError
 import com.max.core.api.Chat
+import com.max.core.api.ChatFolders
 import com.max.core.api.ChatHistory
 import com.max.core.api.ChatsApi
 import com.max.core.api.MaxApi
@@ -567,6 +568,40 @@ class MaxClient @Throws(Exception::class) constructor(
         return store.state.value.chats.values.toList()
     }
 
+    /**
+     * The full folder list (`FOLDERS_GET` 272, `{folderSync: 0}`) into [store]; it carries the
+     * pinned chats (`favorites` of the "all chats" folder, see [ChatFolders]). The `LOGIN` config
+     * usually has the same list already; this is the explicit resync.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun loadFolders(): ChatFolders {
+        val t = ticket()
+        val list = api.account.getFolders(0)
+        commit(t) { store.putFolders(list) }
+        return ChatFolders.from(list)
+    }
+
+    /**
+     * Sets the pinned chats of the chat list to [chatIds], top first (duplicates dropped). Pinning,
+     * unpinning and reordering are all this call with the whole new list: `FOLDERS_UPDATE` 274 on
+     * the "all chats" folder with the new `favorites` ([com.max.core.api.AccountApi.setFolderFavorites]).
+     * The folder comes from [store]; without one the list is fetched first ([loadFolders]), and if
+     * the server has no such folder the call fails with an [IllegalStateException] ("not found").
+     * [store] changes only after the server accepted the request, so a failure leaves the previous
+     * pins in place. Returns the pinned ids now in [store].
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setPinnedChats(chatIds: List<Long>): List<Long> {
+        val wanted = chatIds.distinct()
+        val folder = store.state.value.chatFolders?.allChats
+            ?: loadFolders().allChats
+            ?: throw IllegalStateException("all-chats folder not found")
+        val t = ticket()
+        val update = api.account.setFolderFavorites(folder, wanted)
+        commit(t) { store.putPinnedUpdate(update, wanted) }
+        return store.state.value.pinnedChatIds ?: wanted
+    }
+
     /** A history page (`CHAT_HISTORY`, the latest [backward] messages before [from]) into [store]. */
     @Throws(CancellationException::class, Exception::class)
     suspend fun loadHistory(chatId: Long, from: Long? = null, backward: Int = 40): ChatHistory {
@@ -690,6 +725,9 @@ class MaxClient @Throws(Exception::class) constructor(
     fun watchState(onEach: (ClientState) -> Unit): Watcher = state.watch(scope, onEach = onEach)
     fun watchEvents(onEach: (MaxEvent) -> Unit): Watcher = events.all.watch(scope, onEach = onEach)
     fun watchStore(onEach: (MaxState) -> Unit): Watcher = store.state.watch(scope, onEach = onEach)
+
+    /** Pinned chat ids ([MaxStore.pinnedChats]) whenever they change; `null` while unknown. */
+    fun watchPinnedChats(onEach: (List<Long>?) -> Unit): Watcher = store.pinnedChats.watch(scope, onEach = onEach)
 }
 
 /** Drops exceptions that escape a coroutine of a client-owned scope (on iOS they would abort the app). */

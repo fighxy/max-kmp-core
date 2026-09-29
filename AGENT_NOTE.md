@@ -31,6 +31,7 @@
 - Контакты и журнал звонков для iOS: `MaxState.contactIds` (список `contacts` из `LOGIN`, без себя; дельта-`LOGIN` без поля его не трогает), `CallsApi.history()` (79 по схеме Komet), `MaxIosClient.loadContacts` / `loadCallHistory` (`IosContact`, `IosCall`). У диалога в `IosChat` имя и аватар собеседника (из `participants` и `users`, недостающие догружаются `CONTACT_INFO`), плюс `avatarUrl` и `lastAuthorId`.
 
 - Полный список чатов: `LOGIN` отдаёт только первые чаты и `chatMarker`, остальное — страницы `CHATS_LIST {marker, count: 50}` с `marker` следующей страницы (как Komet `paginateChats`). `ChatsApi.fetchChatsPage`, `MaxClient.loadAllChats()`; `MaxIosClient.loadChats` листает всё один раз после входа, потом обновляет только первую страницу.
+- Закреплённые чаты (схема Komet, код не брали): это `favorites` папки «Все чаты» (`all.chat.folder`). Приходят в `LOGIN` (`config.chatFolders`), в ответе `FOLDERS_GET` 272 и пушем `NOTIF_FOLDERS` 277 (`MaxEvent.FoldersChanged`); лежат в `MaxState.chatFolders`, наружу — `pinnedChatIds`, закреплённые первыми в `chatList`. Закрепить, открепить и переставить — один `FOLDERS_UPDATE` 274 со всем списком (`MaxClient.setPinnedChats`; стор меняется только после ответа сервера). iOS: `MaxIosClient.setPinnedChats` / `watchPinnedChats`, первый `loadChats` после входа ещё и делает `FOLDERS_GET`. На живом сервере не проверено.
 - Контакты из ответа опкода 8 (`contactInfos` у PyMax, `contacts` у Komet) тоже попадают в `MaxState.contactIds` (`StateReducer.putContacts`).
 
 ## 3. Совместимость с чужими коммитами

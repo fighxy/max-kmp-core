@@ -1,6 +1,7 @@
 package com.max.core.events
 
 import com.max.core.api.Chat
+import com.max.core.api.Folder
 import com.max.core.api.MaxMessage
 import com.max.core.api.ReactionInfo
 import com.max.core.calls.ConversationParams
@@ -22,6 +23,7 @@ import com.max.core.transport.TransportPacket
  * | `NOTIF_MSG_REACTIONS_CHANGED` 155 | [MaxEvent.ReactionsChanged] |
  * | `NOTIF_ATTACH` 136 | [MaxEvent.AttachmentReady] (`fileId` / `videoId` / `audioId`) |
  * | `NOTIF_CALL_START` 137 | [MaxEvent.CallStart] (`callerId` + `conversationId`; `vcp` decoded when present) |
+ * | `NOTIF_FOLDERS` 277 | [MaxEvent.FoldersChanged] (`folders` / `folder`, `foldersOrder`, `folderSync`; at least one of them) |
  *
  * Everything else — including an empty
  * payload (PyMax passes such frames on raw), a payload missing a required field, and
@@ -109,7 +111,19 @@ object EventParser {
                 )
             }
         }
+        Opcode.NOTIF_FOLDERS.value -> folders(opcode, map, raw)
         else -> null
+    }
+
+    /** `NOTIF_FOLDERS`: `null` (→ unknown) when none of the folder keys is present. */
+    private fun folders(opcode: Int, map: Map<*, *>, raw: Any?): MaxEvent? {
+        val list = map["folders"] as? List<*>
+        val single = map["folder"] as? Map<*, *>
+        val order = (map["foldersOrder"] as? List<*>)?.mapNotNull { it?.toString() }
+        val sync = map["folderSync"].long()
+        if (list == null && single == null && order == null && sync == null) return null
+        val folders = list.orEmpty().mapNotNull { Folder.from(it) } + listOfNotNull(Folder.from(single))
+        return MaxEvent.FoldersChanged(folders, order, sync, opcode, raw)
     }
 
     /** PyMax `resolve_message`: EDITED → edit, REMOVED → delete (`MessageDeleteEvent` from the envelope), else new. */

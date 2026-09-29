@@ -1,6 +1,7 @@
 package com.max.core.events
 
 import com.max.core.api.Chat
+import com.max.core.api.Folder
 import com.max.core.api.MaxMessage
 import com.max.core.api.ReactionCounter
 import com.max.core.calls.ConversationParams
@@ -102,6 +103,21 @@ sealed interface MaxEvent {
         val isContact: Boolean?,
         val vcp: String?,
         val params: ConversationParams?,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent
+
+    /**
+     * Chat folders changed on the server, e.g. chats pinned, unpinned or reordered on another
+     * device (`NOTIF_FOLDERS` 277). The payload carries `folders` (a list) and / or `folder` (one),
+     * both merged into [folders], plus optional `foldersOrder` and `folderSync` (schema as used by
+     * KometTeam/Komet `FoldersModule`). The pinned chats are the `favorites` of the "all chats"
+     * folder, see `com.max.core.api.ChatFolders`.
+     */
+    data class FoldersChanged(
+        val folders: List<Folder>,
+        val foldersOrder: List<String>?,
+        val folderSync: Long?,
         override val opcode: Int,
         override val raw: Any?,
     ) : MaxEvent
