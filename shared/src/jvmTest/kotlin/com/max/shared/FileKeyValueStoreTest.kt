@@ -6,6 +6,7 @@ import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -52,6 +53,35 @@ class FileKeyValueStoreTest {
             assertEquals(rwxrxrx, Files.getPosixFilePermissions(shared.toPath()))
             assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(file.toPath()))
             assertEquals("t", FileKeyValueStore(file).get("token"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun failedWriteLeavesNoFalseCache() {
+        val dir = Files.createTempDirectory("maxkv4").toFile()
+        try {
+            val file = File(dir, "default.properties")
+            val store = FileKeyValueStore(file)
+            store.put("keep", "1")
+            // a non-empty directory where the temp file goes: the write fails before the move
+            val obstacle = File(dir, "default.properties.tmp").also { it.mkdir() }
+            File(obstacle, "x").writeText("x")
+            assertFails { store.put("token", "t1") }
+            assertNull(store.get("token"))
+            assertNull(FileKeyValueStore(file).get("token"))
+            assertFails { store.remove("keep") }
+            assertEquals("1", store.get("keep"))
+
+            // access restored: the same calls are not short-circuited by a stale cache
+            obstacle.deleteRecursively()
+            store.put("token", "t1")
+            store.remove("keep")
+            val fresh = FileKeyValueStore(file)
+            assertEquals("t1", fresh.get("token"))
+            assertNull(fresh.get("keep"))
+            assertTrue(!File(dir, "default.properties.tmp").exists())
         } finally {
             dir.deleteRecursively()
         }

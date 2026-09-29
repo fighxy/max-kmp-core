@@ -11,7 +11,11 @@ import java.util.Properties
 
 /**
  * [KeyValueStore] backed by a `java.util.Properties` file. Every write replaces the file
- * atomically (temp file + move). On POSIX the file is created owner-read/write before any token
+ * atomically (temp file + move). [put] / [remove] change a copy of the cached content, and the
+ * copy becomes the cache only once the move has put it on disk: a write that fails before the
+ * move leaves both the file and the cache as they were (the call throws, a retry writes again).
+ * If the move succeeded but the owner-only check of the file fails afterwards, the call throws
+ * while the cache already matches the new file content. On POSIX the file is created owner-read/write before any token
  * bytes are written; if that permission does not stick, the write fails. A missing parent
  * directory is created owner-only (`rwx------`); an existing one is used as it is and its
  * permissions are never changed (it may be shared, e.g. an app data directory).
@@ -29,16 +33,18 @@ class FileKeyValueStore(val file: File) : KeyValueStore {
     override fun get(key: String): String? = synchronized(lock) { props().getProperty(key) }
 
     override fun put(key: String, value: String): Unit = synchronized(lock) {
-        val p = props()
-        if (p.getProperty(key) == value) return
-        p.setProperty(key, value)
-        write(p)
+        val current = props()
+        if (current.getProperty(key) == value) return
+        write(copyOf(current).apply { setProperty(key, value) })
     }
 
     override fun remove(key: String): Unit = synchronized(lock) {
-        val p = props()
-        if (p.remove(key) != null) write(p)
+        val current = props()
+        if (!current.containsKey(key)) return
+        write(copyOf(current).apply { remove(key) })
     }
+
+    private fun copyOf(p: Properties): Properties = Properties().also { it.putAll(p) }
 
     private fun props(): Properties = cache ?: Properties().also { p ->
         if (file.isFile) file.inputStream().use(p::load)
@@ -54,13 +60,21 @@ class FileKeyValueStore(val file: File) : KeyValueStore {
         }
         val tmp = File(parent, file.name + ".tmp")
         val tmpPath = tmp.toPath()
-        Files.deleteIfExists(tmpPath)
-        if (posixSupported(parent?.toPath() ?: tmpPath.toAbsolutePath().parent)) {
-            Files.createFile(tmpPath, PosixFilePermissions.asFileAttribute(filePerms))
-        }
-        tmp.outputStream().use { p.store(it, "max-kmp credentials") }
         val dest = file.toPath()
-        Files.move(tmpPath, dest, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        try {
+            Files.deleteIfExists(tmpPath)
+            if (posixSupported(parent?.toPath() ?: tmpPath.toAbsolutePath().parent)) {
+                Files.createFile(tmpPath, PosixFilePermissions.asFileAttribute(filePerms))
+            }
+            tmp.outputStream().use { p.store(it, "max-kmp credentials") }
+            Files.move(tmpPath, dest, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } catch (e: Throwable) {
+            // nothing reached the file: the cache keeps the old content, a retry writes again
+            runCatching { Files.deleteIfExists(tmpPath) }
+            throw e
+        }
+        // the new content is on disk: publish it, then report a permission failure (if any)
+        cache = p
         ownerOnly(dest, filePerms)
     }
 
