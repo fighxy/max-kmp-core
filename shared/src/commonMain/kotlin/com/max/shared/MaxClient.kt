@@ -16,6 +16,7 @@ import com.max.core.auth.CodeRequestType
 import com.max.core.auth.InvalidTokenException
 import com.max.core.auth.LoginResult
 import com.max.core.auth.QrApproval
+import com.max.core.auth.SyncState
 import com.max.core.auth.TokenLogin
 import com.max.core.auth.VerifyResult
 import com.max.core.events.EventRouter
@@ -145,7 +146,10 @@ val ClientState.error: MaxError?
  * Credentials (device id, `mt_instanceid`, login token, sync markers) are loaded from and saved
  * to [keyValueStore] (by default [PlatformSession.defaultStore]); a refreshed token from `LOGIN`
  * is saved automatically, a rejected one is cleared ([ClientState.TokenRejected]). Every
- * reconnect re-runs the handshake and `LOGIN` with the current token and markers.
+ * reconnect re-runs the handshake and `LOGIN` with the current token and markers. [store] lives
+ * only in memory, so the first `LOGIN` of a new client sends reset markers (`-1`, default
+ * `configHash`) to get a full snapshot; the saved markers are used only once this client holds
+ * the snapshot they belong to (reconnects).
  *
  * The device profile is always Android ([MaxClientConfig.userAgent], checked with
  * [DeviceProfile.requireAndroid]); nothing about the host device is sent.
@@ -174,6 +178,8 @@ class MaxClient @Throws(Exception::class) constructor(
     private val lifecycle = Mutex()
     /** Bumped on login, logout and token rejection so an in-flight gap fill cannot write afterwards. */
     private var sessionEpoch = 0
+    /** `true` while [store] holds a `LOGIN` snapshot of this process; guarded by [lifecycle]. */
+    private var snapshotLoaded = false
     private var gapJob: Job? = null
 
     init {
@@ -264,7 +270,10 @@ class MaxClient @Throws(Exception::class) constructor(
         lifecycle.withLock {
             val c = credentials.load() ?: stored
             if (tokenLogin.value == null && c.token != null) {
-                tokenLogin.value = TokenLogin(c.token, device, config.fingerprint, c.sync)
+                // [store] is not persisted: saved markers describe a snapshot this process does not
+                // have, and a LOGIN with them would return only the delta. Ask for everything instead.
+                val sync = if (snapshotLoaded) c.sync else SyncState()
+                tokenLogin.value = TokenLogin(c.token, device, config.fingerprint, sync)
             }
         }
         try {
@@ -361,7 +370,10 @@ class MaxClient @Throws(Exception::class) constructor(
         }
         gap?.cancelAndJoin()
         router.stop()
-        lifecycle.withLock { store.clear() }
+        lifecycle.withLock {
+            store.clear()
+            snapshotLoaded = false
+        }
         session.disconnect()
         router.start(scope)
     }
@@ -382,6 +394,7 @@ class MaxClient @Throws(Exception::class) constructor(
             val relogin = loginCount.value > 0
             loginCount.value += 1
             store.applyLogin(r)
+            snapshotLoaded = true
             login.login2Result.value?.let { r2 -> r2.contacts.mapNotNull(com.max.core.api.MaxUser::from).let(store::putUsers) }
             val uid = r.userId ?: loggedIn.value
             credentials.save(StoredCredentials(device.deviceId, device.instanceId, login.token, uid, login.sync))
@@ -524,7 +537,7 @@ class MaxClient @Throws(Exception::class) constructor(
     suspend fun updateProfile(firstName: String, lastName: String? = null, description: String? = null, photoToken: String? = null): Profile =
         api.account.updateProfile(firstName, lastName, description, photoToken).also { store.putUsers(listOf(it.contact)) }
 
-    private fun saveCredentials(token: String? = null, sync: com.max.core.auth.SyncState? = null) {
+    private fun saveCredentials(token: String? = null, sync: SyncState? = null) {
         val current = credentials.load() ?: stored
         credentials.save(
             StoredCredentials(

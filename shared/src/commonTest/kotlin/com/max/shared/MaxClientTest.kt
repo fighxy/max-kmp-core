@@ -131,11 +131,21 @@ class MaxClientTest {
         assertTrue(!c.hasStoredToken)
     }
 
+    /** Fake server: markers > 0 get only the delta (nothing changed here), -1 gets everything. */
+    private fun syncAwareLogin(request: Map<*, *>): Map<String, Any?> {
+        val delta = ((request["chatsSync"] as Number).toLong()) > 0
+        val contacts = listOf(mapOf("id" to 7, "names" to listOf(mapOf("name" to "Ann"))))
+        return if (delta) loginReply(null) - "chats" + ("chats" to emptyList<Any>())
+        else loginReply(null) + ("contacts" to contacts)
+    }
+
     @Test
-    fun storedTokenLogsInOnStartAndReconnectUsesSyncMarkers() = runTest {
+    fun storedTokenLogsInOnStartWithFullSnapshotAndReconnectUsesSyncMarkers() = runTest {
         val kv = InMemoryKeyValueStore()
         smsLogin(kv, ScriptedConnectionFactory()).disconnect()
+        assertEquals(1700L, CredentialStore(kv, "max.default").load()!!.sync.chatsSync)
 
+        // client B, same storage, empty in-memory store
         val factory = ScriptedConnectionFactory()
         val c = client(kv, factory, backgroundScope)
         assertTrue(c.hasStoredToken)
@@ -144,11 +154,35 @@ class MaxClientTest {
         val conn = factory.lastConnection!!
         conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
         runCurrent()
-        val login = conn.answer(Opcode.LOGIN, loginReply(null))!!
+        val (header, payload) = decodePayloadPacket(conn.takeWritten()!!)
+        assertEquals(Opcode.LOGIN.value, header.opcodeValue)
+        val login = payload as Map<*, *>
         assertEquals("login-2", login["token"])
-        assertEquals(1700L, (login["chatsSync"] as Number).toLong())
-        assertEquals("cfg-1", login["configHash"])
+        // reset markers: the saved ones belong to client A's snapshot
+        assertEquals(-1L, (login["chatsSync"] as Number).toLong())
+        assertEquals(-1L, (login["contactsSync"] as Number).toLong())
+        assertEquals(com.max.core.auth.DEFAULT_CONFIG_HASH, login["configHash"])
+        conn.feed(ok(header.seq, Opcode.LOGIN.value, syncAwareLogin(login)))
         assertEquals(ClientState.Ready(5), starting.await())
+        // unchanged chats and contacts are there although nothing changed on the server
+        assertEquals(setOf(100L), c.store.state.value.chats.keys)
+        assertEquals("Ann", c.store.state.value.users.getValue(7).displayName)
+        assertEquals(1700L, CredentialStore(kv, "max.default").load()!!.sync.chatsSync)
+
+        // a reconnect of the same client keeps its snapshot and asks only for changes
+        c.disconnect()
+        val again = async { c.start() }
+        runCurrent()
+        val conn2 = factory.lastConnection!!
+        conn2.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        val (h2, p2) = decodePayloadPacket(conn2.takeWritten()!!)
+        val relogin = p2 as Map<*, *>
+        assertEquals(1700L, (relogin["chatsSync"] as Number).toLong())
+        assertEquals("cfg-1", relogin["configHash"])
+        conn2.feed(ok(h2.seq, Opcode.LOGIN.value, syncAwareLogin(relogin)))
+        assertEquals(ClientState.Ready(5), again.await())
+        assertEquals(setOf(100L), c.store.state.value.chats.keys)
         c.close()
     }
 
