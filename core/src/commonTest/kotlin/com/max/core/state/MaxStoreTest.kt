@@ -215,6 +215,34 @@ class MaxStoreTest {
     }
 
     @Test
+    fun partialReadMarkDoesNotRecountFromAnIncompleteCache() {
+        val st = store(limit = 20)
+        val history = (1L..30L).map { msg(it, 1000 + it, chatId = 2) }
+        st.applyLogin(
+            LoginResult.from(
+                mapOf(
+                    "profile" to mapOf("contact" to mapOf("id" to me)),
+                    // chat 1: nothing cached; chat 2: 30 messages, 20 kept
+                    "chats" to listOf(chat(1, 500, 1000, msg(99, 500)), chat(2, 1030, 1000, msg(30, 1030, chatId = 2))),
+                    "messages" to mapOf("2" to history),
+                ),
+            ),
+        )
+        assertEquals(20, st.state.value.messagesOf(2).size)
+        // a read mark before the last message: the server's 1000 must not become 0 or 20
+        st.apply(push(130, mapOf("setAsUnread" to false, "chatId" to 1, "userId" to me, "mark" to 100)))
+        assertEquals(1000, st.state.value.chats.getValue(1).newMessages)
+        st.apply(push(130, mapOf("setAsUnread" to false, "chatId" to 2, "userId" to me, "mark" to 500)))
+        assertEquals(1000, st.state.value.chats.getValue(2).newMessages)
+        // inside the cached range the recount is exact
+        st.apply(push(130, mapOf("setAsUnread" to false, "chatId" to 2, "userId" to me, "mark" to 1025)))
+        assertEquals(5, st.state.value.chats.getValue(2).newMessages)
+        // read up to the last message: 0 even with an incomplete cache
+        st.apply(push(130, mapOf("setAsUnread" to false, "chatId" to 1, "userId" to me, "mark" to 500)))
+        assertEquals(0, st.state.value.chats.getValue(1).newMessages)
+    }
+
+    @Test
     fun readMarksPresenceAndChatUpdates() {
         val st = loggedIn()
         st.apply(newMessage(msg(6, 300)))

@@ -82,9 +82,12 @@ data class MaxState(
  * - [MaxEvent.ChatUpdated] — replaces the chat, keeping the previous `lastMessage` when the push
  *   has none.
  * - [MaxEvent.Typing] — records `now` for (chat, user).
- * - [MaxEvent.MessageRead] — records the mark. For [MaxState.me]: `setAsUnread = false` recounts
- *   `newMessages` as the stored messages from others newer than the mark (0 if the last message is
- *   not newer); `setAsUnread = true` makes it at least 1.
+ * - [MaxEvent.MessageRead] — records the mark. For [MaxState.me]: `setAsUnread = false` gives 0
+ *   if the last message is not newer than the mark; otherwise it recounts `newMessages` as the
+ *   stored messages from others newer than the mark, but only when the stored messages cover
+ *   everything after the mark (no hole, last message stored, oldest stored message not newer than
+ *   the mark). With an incomplete cache the server's counter is kept (at least the stored count).
+ *   `setAsUnread = true` makes it at least 1.
  * - [MaxEvent.Presence] — replaces the user's presence (a push without `status` clears it).
  * - [MaxEvent.ReactionsChanged] — replaces counters / total of the stored message, keeping
  *   `yourReaction`.
@@ -277,11 +280,27 @@ object StateReducer {
             } else if ((chat.lastMessage?.time ?: Long.MIN_VALUE) <= e.mark) {
                 0
             } else {
-                s.messagesOf(e.chatId).count { it.time > e.mark && (it.sender == null || it.sender != s.me) }
+                val cached = s.messagesOf(e.chatId)
+                val counted = cached.count { it.time > e.mark && (it.sender == null || it.sender != s.me) }
+                // a recount is exact only if the cache holds every message after the mark; otherwise
+                // keep the server's counter (the cache is bounded by messageLimit and may be empty)
+                if (coversSince(s, e.chatId, cached, e.mark)) counted else maxOf(chat.newMessages, counted)
             }
             s = s.copy(chats = s.chats + (e.chatId to chat.copy(newMessages = unread)))
         }
         return s
+    }
+
+    /**
+     * `true` when [cached] (the chat's stored messages) holds every message newer than [mark]:
+     * no open hole, the chat's `lastMessage` is stored, and the oldest stored message is not
+     * newer than [mark] (nothing after the mark was trimmed or never loaded).
+     */
+    private fun coversSince(state: MaxState, chatId: Long, cached: List<MaxMessage>, mark: Long): Boolean {
+        if (cached.isEmpty() || chatId in state.gapAnchors) return false
+        val last = state.chats[chatId]?.lastMessage ?: return false
+        if (cached.last().id != last.id && cached.none { it.id == last.id }) return false
+        return cached.first().time <= mark
     }
 
     private fun reactions(state: MaxState, e: MaxEvent.ReactionsChanged): MaxState {
