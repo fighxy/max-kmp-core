@@ -1,5 +1,6 @@
 package com.max.core.media
 
+import com.max.core.api.ClientIdGenerator
 import com.max.core.api.MaxMessage
 import com.max.core.api.MessagesApi
 import com.max.core.api.replyMap
@@ -68,14 +69,20 @@ class MediaApi(
     /**
      * Over [session]: its `request`, its pushes for readiness and
      * `session.config.device.userAgent.httpUserAgent`. Collecting starts per upload, before the
-     * POST, so the session must be connected.
+     * POST, so the session must be connected. Use the overload with `cids` to share the session's
+     * `MaxApi.cids`, so media and text messages draw `cid`s from one generator.
      */
-    constructor(session: SessionMachine, http: MediaHttp = defaultMediaHttp(), clock: () -> Long = ::epochMillis) : this(
-        RequestSink { opcode, payload -> session.request(opcode, payload) },
-        http,
-        session.config.device.userAgent.httpUserAgent,
-        MaxEvents(session).all,
-        clock,
+    constructor(session: SessionMachine, http: MediaHttp = defaultMediaHttp(), clock: () -> Long = ::epochMillis) :
+        this(session, http, ClientIdGenerator(clock), clock)
+
+    /** Like the constructor above, drawing `cid`s from [cids] (the session's `MaxApi.cids`). */
+    constructor(session: SessionMachine, http: MediaHttp, cids: ClientIdGenerator, clock: () -> Long = ::epochMillis) : this(
+        sink = RequestSink { opcode, payload -> session.request(opcode, payload) },
+        http = http,
+        userAgent = session.config.device.userAgent.httpUserAgent,
+        events = MaxEvents(session).all,
+        clock = clock,
+        messages = MessagesApi(RequestSink { opcode, payload -> session.request(opcode, payload) }, clock, cids),
     )
 
     // ---- upload slots -------------------------------------------------------------------------

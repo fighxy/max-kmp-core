@@ -230,8 +230,8 @@ class MaxClient @Throws(Exception::class) constructor(
     /** Messages, chats, users, calls requests. */
     val api: MaxApi = MaxApi(session)
 
-    /** Uploads, download links, messages with attachments. */
-    val media: MediaApi = MediaApi(session, mediaHttp ?: defaultMediaHttp(config.media))
+    /** Uploads, download links, messages with attachments; shares [api]'s `cid` generator. */
+    val media: MediaApi = MediaApi(session, mediaHttp ?: defaultMediaHttp(config.media), api.cids)
 
     /** High-level state. */
     val state: StateFlow<ClientState> = combine(session.state, loggedInFlag) { s, logged -> map(s, logged) }

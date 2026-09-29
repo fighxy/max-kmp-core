@@ -446,6 +446,31 @@ class MaxClientTest {
     }
 
     @Test
+    fun textAndMediaSendsOfOneClientNeverShareACid() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val c = smsLogin(InMemoryKeyValueStore(), factory)
+        val conn = factory.lastConnection!!
+        val cids = ArrayList<Long>()
+        suspend fun answerSend(id: Long) {
+            val payload = conn.answer(Opcode.MSG_SEND, mapOf("chatId" to 100, "message" to mapOf("id" to id, "time" to 1L, "type" to "USER", "sender" to 5, "text" to "x")))!!
+            cids += ((payload["message"] as Map<*, *>)["cid"] as Number).toLong()
+        }
+        val photo = listOf(com.max.core.media.OutgoingAttachment.Photo("tok"))
+        for (i in 0 until 3) {
+            val text = async { c.sendText(100, "t$i") }
+            val media = async { c.media.sendMessage(100, photo, "m$i") }
+            runCurrent()
+            answerSend(10L + 2 * i)
+            answerSend(11L + 2 * i)
+            text.await()
+            media.await()
+        }
+        assertEquals(6, cids.toSet().size)
+        assertEquals(cids.sorted(), cids)
+        c.close()
+    }
+
+    @Test
     fun accountChangesUpdateStoredCredentials() = runTest {
         val kv = InMemoryKeyValueStore()
         val factory = ScriptedConnectionFactory()

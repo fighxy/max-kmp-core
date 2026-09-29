@@ -14,13 +14,20 @@ import com.max.core.session.SessionMachine
  * (`com.max.core.media`) have their own entry points; push is not covered.
  *
  * @param clock wall-clock milliseconds, used for `cid`, `from`, `mark`, `marker` defaults.
+ * @param cids the session's `cid` generator; pass the same one to every other sender of the
+ *   session (e.g. `MediaApi`) so text and media messages never share an id.
  */
-class MaxApi(sink: RequestSink, clock: () -> Long = ::epochMillis) {
-    /** Over [session]'s `request`. */
-    constructor(session: SessionMachine, clock: () -> Long = ::epochMillis) :
-        this(RequestSink { opcode, payload -> session.request(opcode, payload) }, clock)
+class MaxApi(sink: RequestSink, clock: () -> Long, val cids: ClientIdGenerator) {
+    constructor(sink: RequestSink, clock: () -> Long = ::epochMillis) : this(sink, clock, ClientIdGenerator(clock))
 
-    val messages: MessagesApi = MessagesApi(sink, clock)
+    /** Over [session]'s `request`. */
+    constructor(session: SessionMachine, clock: () -> Long = ::epochMillis) : this(session, clock, ClientIdGenerator(clock))
+
+    /** Over [session]'s `request`, drawing `cid`s from [cids]. */
+    constructor(session: SessionMachine, clock: () -> Long, cids: ClientIdGenerator) :
+        this(RequestSink { opcode, payload -> session.request(opcode, payload) }, clock, cids)
+
+    val messages: MessagesApi = MessagesApi(sink, clock, cids)
     val chats: ChatsApi = ChatsApi(sink, clock, messages)
     val users: UsersApi = UsersApi(sink)
     val account: AccountApi = AccountApi(sink)

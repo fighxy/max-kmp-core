@@ -20,7 +20,10 @@ import com.max.core.transport.TransportConfig
 import com.max.core.transport.TransportPacket
 import com.max.core.transport.errorReply
 import com.max.core.transport.ok
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -123,6 +126,38 @@ class MaxApiTest {
         t = 20_000
         assertEquals(20_000, gen.next())
         assertEquals(20_001, gen.next())
+    }
+
+    @Test
+    fun textAndMediaSendsShareOneCidGenerator() = runTest {
+        val fixed = { 5_000L }
+        val sink = FakeSink(msg(1, 1, "a"), msg(2, 1, "b"), msg(3, 1, "c"), msg(4, 1, "d"))
+        val gen = ClientIdGenerator(fixed)
+        val api = MaxApi(sink, fixed, gen)
+        val media = com.max.core.media.MediaApi(
+            sink,
+            http = com.max.core.media.MediaHttp { _, _, _, _, _ -> com.max.core.media.HttpResponse(500, ByteArray(0)) },
+            clock = fixed,
+            messages = MessagesApi(sink, fixed, api.cids),
+        )
+        val photo = listOf(com.max.core.media.OutgoingAttachment.Photo("tok"))
+        api.messages.sendMessage(1, "a")
+        media.sendMessage(1, photo, "b")
+        api.messages.sendMessage(1, "c")
+        media.sendMessage(1, photo, "d")
+        val cids = sink.sent.map { ((it.second as Map<*, *>)["message"] as Map<*, *>)["cid"] as Long }
+        // one frozen clock, two senders: still four different, increasing ids
+        assertEquals(listOf(5_001L, 5_002L, 5_003L, 5_004L), cids)
+    }
+
+    @Test
+    fun concurrentClientIdsAreUnique() = runTest {
+        val gen = ClientIdGenerator { 7_000L }
+        val ids = withContext(Dispatchers.Default) {
+            (1..8).map { async { List(2_000) { gen.next() } } }.awaitAll().flatten()
+        }
+        assertEquals(16_000, ids.toSet().size)
+        assertEquals(7_000L + 16_000L, ids.max())
     }
 
     @Test

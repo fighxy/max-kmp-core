@@ -4,18 +4,23 @@ import com.max.core.auth.RequestSink
 import com.max.core.epochMillis
 import com.max.core.protocol.Opcode
 import com.max.core.transport.TransportPacket
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.updateAndGet
 
 /**
  * Client message ids (`cid`) as PyMax `MessageService._next_cid`: the current time in ms, but
  * always greater than the previous id (starts from the clock at construction).
+ *
+ * Thread-safe (lock-free compare-and-set), so concurrent sends never get the same id. Use one
+ * generator per session for every sender: `MaxApi.cids` is passed to its [MessagesApi] and
+ * [ChatsApi], and `MaxClient` hands the same instance to its `MediaApi`.
  */
 class ClientIdGenerator(private val clock: () -> Long = ::epochMillis) {
-    private var prev = clock()
+    private val prev = MutableStateFlow(clock())
 
     fun next(): Long {
-        val id = maxOf(clock(), prev + 1)
-        prev = id
-        return id
+        val now = clock()
+        return prev.updateAndGet { maxOf(now, it + 1) }
     }
 }
 
