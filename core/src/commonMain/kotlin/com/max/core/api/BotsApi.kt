@@ -10,6 +10,21 @@ import com.max.core.protocol.Opcode
  */
 class BotsApi(private val sink: RequestSink, private val clock: () -> Long = ::epochMillis) {
     /**
+     * Bot card (`BOT_INFO` 145, `{botId}`) as KometTeam/Komet reads it: reply `{commands:
+     * [{name, description?}], contact}`. Commands without a name are dropped; a missing list is
+     * empty.
+     */
+    suspend fun getBotInfo(botId: Long): BotInfo {
+        val map = replyMap(sink.request(Opcode.BOT_INFO, linkedMapOf("botId" to botId)), Opcode.BOT_INFO)
+        val commands = (map["commands"] as? List<*>).orEmpty().mapNotNull { item ->
+            val c = item as? Map<*, *> ?: return@mapNotNull null
+            val name = c["name"]?.toString()?.trim().orEmpty()
+            if (name.isEmpty()) null else BotCommand(name, (c["description"] as? String)?.trim()?.takeIf { it.isNotEmpty() })
+        }
+        return BotInfo(botId, commands, MaxUser.from(map["contact"]), map)
+    }
+
+    /**
      * Mini-app launch data (`WEB_APP_INIT_DATA` 160, `{botId, chatId?, startParam?}`); reply
      * `{queryId, url}` (required, PyMax `InitData`).
      */
@@ -49,6 +64,12 @@ class BotsApi(private val sink: RequestSink, private val clock: () -> Long = ::e
 }
 
 /** PyMax `InitData`: the web-app `queryId` and the `url` to open. */
+/** One `/command` of a bot menu. */
+data class BotCommand(val name: String, val description: String?)
+
+/** [BotsApi.getBotInfo] reply: the menu and the bot's contact card (description, link). */
+data class BotInfo(val botId: Long, val commands: List<BotCommand>, val contact: MaxUser?, val raw: Map<*, *>)
+
 data class WebAppInitData(val queryId: String, val url: String, val raw: Map<*, *>)
 
 /** PyMax `CallbackResponse`. */

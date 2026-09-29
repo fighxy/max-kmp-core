@@ -133,6 +133,30 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /**
+     * The card of a chat for the profile screen: a user or a bot for a dialog (`CONTACT_INFO` 32,
+     * plus `BOT_INFO` 145 for bots), a group or a channel otherwise (`CHAT_INFO` 48). A dialog
+     * that is not in the store yet (opened from contacts) is resolved as `chatId xor ownId`.
+     */
+    fun loadProfile(chatId: String, onResult: (IosProfile?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val id = parseId(chatId)
+            val me = c.userId.value
+            val stored = c.store.state.value.chats[id]
+            val chat = if (stored == null || stored.type != "DIALOG") fetchChatOrNull(c, id) ?: stored else stored
+            if (chat != null && chat.type != "DIALOG") {
+                chatProfile(chat)
+            } else {
+                val peer = chat?.let { dialogPeer(it, me) } ?: me?.let { id xor it }
+                if (peer == null || peer == me || peer == 0L) {
+                    IosProfile(kind = "saved", chatId = chatId)
+                } else {
+                    userProfile(c, chatId, peer)
+                }
+            }
+        }
+    }
+
     /** The account's contact list from the last `LOGIN` reply, with the last known presence. */
     fun loadContacts(onResult: (List<IosContact>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
@@ -193,6 +217,44 @@ class MaxIosClient internal constructor(
                 scope.cancel()
             }
         }
+    }
+
+    /** `CHAT_INFO` for [id]; `null` when the server does not know the chat (a new dialog). */
+    private suspend fun fetchChatOrNull(c: MaxClient, id: Long): Chat? = try {
+        c.api.chats.getChat(id)
+    } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+        throw e
+    } catch (t: Throwable) {
+        null
+    }
+
+    private suspend fun userProfile(c: MaxClient, chatId: String, peer: Long): IosProfile {
+        val fresh = c.loadUsers(listOf(peer)).firstOrNull { it.id == peer }
+        val user = fresh ?: c.store.state.value.users[peer] ?: throw IllegalStateException("user $peer not found")
+        val isBot = "BOT" in user.options
+        val bot = if (!isBot) null else try {
+            c.api.bots.getBotInfo(peer)
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            null // the card still shows the contact without the command list
+        }
+        val card = bot?.contact ?: user
+        val presence = c.store.state.value.presence[peer]
+        return IosProfile(
+            kind = if (isBot) "bot" else "user",
+            chatId = chatId,
+            peerId = peer.toString(),
+            title = user.displayName.orEmpty(),
+            avatarUrl = user.baseUrl.orEmpty(),
+            description = card.description?.trim().orEmpty(),
+            link = card.link.orEmpty(),
+            phone = user.phone?.takeIf { it > 0 }?.toString().orEmpty(),
+            lastSeenMs = presence?.seen?.let { if (it < 100_000_000_000L) it * 1000 else it } ?: 0L,
+            online = presence?.status == 1,
+            official = "OFFICIAL" in user.options,
+            commands = bot?.commands.orEmpty().map { IosBotCommand(it.name, it.description.orEmpty()) },
+        )
     }
 
     /** Loads profiles of [ids] missing from the store. Best effort: names are cosmetic here. */
@@ -324,6 +386,31 @@ class IosChat(
 )
 
 /**
+ * A chat card for the profile screen. [kind] is `user`, `bot`, `group`, `channel` or `saved`.
+ * Unknown strings are empty and unknown numbers 0. [phone] is digits without `+`; [link] is what
+ * the server sent (a short name or a full URL); [participants] counts members or subscribers.
+ */
+class IosProfile(
+    val kind: String,
+    val chatId: String,
+    val peerId: String = "",
+    val title: String = "",
+    val avatarUrl: String = "",
+    val description: String = "",
+    val link: String = "",
+    val phone: String = "",
+    val participants: Int = 0,
+    val lastSeenMs: Long = 0,
+    val online: Boolean = false,
+    val official: Boolean = false,
+    val isPublic: Boolean = false,
+    val commands: List<IosBotCommand> = emptyList(),
+)
+
+/** One bot menu command, [name] without the slash. */
+class IosBotCommand(val name: String, val description: String)
+
+/**
  * One contact of the account. [phone] is digits without `+`, empty when hidden.
  * [lastSeenMs] is the last presence time (0 when unknown); [online] is the current presence.
  */
@@ -442,6 +529,21 @@ private fun dialogPeer(chat: Chat, me: Long?): Long? {
         }
     }
     return ids.firstOrNull { it != me }
+}
+
+private fun chatProfile(chat: Chat): IosProfile {
+    val options = chat.raw["options"] as? Map<*, *>
+    return IosProfile(
+        kind = if (chat.type == "CHANNEL") "channel" else "group",
+        chatId = chat.id.toString(),
+        title = chat.title.orEmpty(),
+        avatarUrl = (chat.raw["baseIconUrl"] as? String).orEmpty(),
+        description = (chat.raw["description"] as? String)?.trim().orEmpty(),
+        link = (chat.raw["link"] as? String).orEmpty(),
+        participants = chat.participantsCount,
+        official = options?.get("OFFICIAL") == true,
+        isPublic = chat.raw["access"] == "PUBLIC",
+    )
 }
 
 private fun contactSnapshot(user: MaxUser, state: MaxState): IosContact {

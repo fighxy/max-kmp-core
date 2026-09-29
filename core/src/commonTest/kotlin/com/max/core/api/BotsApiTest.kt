@@ -44,4 +44,29 @@ class BotsApiTest {
         assertEquals("84aa63616c6c6261636b4964a463622d31a474797065a843414c4c4241434ba77061796c6f6164a170a974696d657374616d70cf000001999287d700", sink.hex(0))
         assertEquals("83aa63616c6c6261636b4964a463622d31a474797065a843414c4c4241434ba974696d657374616d70cf000001999287d700", sink.hex(1))
     }
+
+    @Test
+    fun botInfoParsesCommandsAndContact() = runTest {
+        val sink = ScriptSink(
+            mapOf(
+                "commands" to listOf(
+                    mapOf("name" to "start", "description" to " Начать "),
+                    mapOf("name" to "help"),
+                    mapOf("name" to "  "),
+                ),
+                "contact" to mapOf("id" to 77, "names" to listOf(mapOf("name" to "Бот")), "description" to "Помощник", "link" to "helper_bot", "options" to listOf("BOT")),
+            ),
+            mapOf("x" to 1),
+        )
+        val api = BotsApi(sink)
+        val info = api.getBotInfo(77)
+        kotlin.test.assertEquals(com.max.core.protocol.Opcode.BOT_INFO, sink.sent[0].first)
+        kotlin.test.assertEquals(mapOf<String, Any>("botId" to 77L), sink.sent[0].second)
+        kotlin.test.assertEquals(listOf(BotCommand("start", "Начать"), BotCommand("help", null)), info.commands)
+        kotlin.test.assertEquals("helper_bot", info.contact?.link)
+        kotlin.test.assertEquals("Помощник", info.contact?.description)
+        val empty = api.getBotInfo(78)
+        kotlin.test.assertEquals(emptyList<BotCommand>(), empty.commands)
+        kotlin.test.assertEquals(null, empty.contact)
+    }
 }
