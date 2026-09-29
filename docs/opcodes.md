@@ -10,7 +10,7 @@
 
 | code | имя в ядре | другое имя | проблема |
 |------|------------|------------|----------|
-| 8 | `CONTACTS_GET` | PyMax `LOGIN2` | [K11](protocol.md): семантика не снята; payload unknown |
+| 8 | `CONTACTS_GET` | PyMax `LOGIN2` | ядро шлёт форму PyMax `LOGIN2` `{needProfile, contactsSync, configHash}` через `AuthApi.login2`; [K11](protocol.md) остаётся: kolibri называет опкод `CONTACTS_GET` и сам его не шлёт |
 | 158 | `OK_TOKEN` | PyMax `CALLS_TOKEN` | [K12](protocol.md): нет call site в kolibri и PyMax |
 | 166 | `VIDEO_CHAT_JOIN_BY_LINK` | PyMax `VIDEO_CHAT_JOIN` | [K13](protocol.md): join-by-link vs generic join не снято; payload unknown |
 | cmd `2` | — | PyMax `EVENT` / kolibri `NOT_FOUND` | не opcode; [protocol.md §B.3](protocol.md) |

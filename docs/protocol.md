@@ -898,7 +898,7 @@ fun interface MediaHttp {
 | Приоритет | Состав |
 |-----------|--------|
 | **P0** | Framing, Compression, Opcodes, MessagePackCodec, TlsTransport + Dispatcher, SessionMachine, AuthService (SMS + password), ChatCacheFingerprint, shared.Session, парсинг `NOTIF_MESSAGE` и `MSG_SEND` |
-| **P1** | MediaUploader (photo/file), proxy, Минцифры CA opt-in, хранение токена/sync markers, `LOGIN2` при `login2Flags` |
+| **P1** | MediaUploader (photo/file), proxy, Минцифры CA opt-in, хранение токена/sync markers (`LOGIN2` при `login2Flags` уже вызывается) |
 | **P2** | video parallel upload, CallSignaling (vcp + ws2), QR, folders/stories/polls, iOS/desktop |
 
 ### J.4 Итоговое состояние API и фасада
@@ -924,7 +924,7 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
   `twoFactor` (107–113), `bots` (118/160), `calls` (158). Схемы — PyMax, векторы в тестах.
 - События: `MaxEvents.all` → `EventRouter` (применяет к `MaxStore`, затем обработчики `on<T>`).
 - Reconnect: `SessionMachine` повторяет handshake и `LOGIN` с sync-маркерами; `MaxClient` после
-  re-login догружает `CHAT_HISTORY` для чатов из `MaxState.historyGaps()`.
+  re-login догружает `CHAT_HISTORY` страницами назад, пока страница не перекроет локальный хвост или история не кончится; дыра из `MaxState.historyGaps()` одной короткой страницей не закрывается.
 - Ошибки: `Throwable.toMaxError()` (`com.max.core.MaxError`) — вид и признак повтора.
 - Не реализовано из-за неизвестного payload — список в [opcodes.md](opcodes.md#блокеры-нужен-снятый-трафик).
 

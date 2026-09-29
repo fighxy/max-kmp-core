@@ -1,6 +1,6 @@
 # AGENT_NOTE: служебная записка для агента, который подхватит работу
 
-> Состояние на 2026-09-29, 07:20 (UTC+7). Файл не закоммичен, он лежит только в локальной копии.
+> Состояние на 2026-09-29. Файл в git, вместе с остальным ядром. Хеш HEAD здесь не фиксирую: коммит этой записки сам его сдвигает.
 
 ## 1. Проект и цель
 
@@ -12,25 +12,21 @@
 - `core/src/commonMain/kotlin/com/max/core/`: `transport`, `protocol`, `session`, `auth`, `api`, `events`, `state`, `media`, `calls`, `MaxError.kt`.
 - Платформенный код: `core/src/iosMain` (Network.framework, NSURLSession) и `core/src/jvmAndroidShared` (сокеты, OkHttp).
 - `shared/`: `MaxClient` и `PlatformSession` с хранилищами учётных данных (iOS Keychain, Android SharedPreferences, JVM файл).
+- `android/`, `ios/`, `desktop/` — оболочки приложений. У `android/` Java и Kotlin JVM target — 17.
 - Документация: `README.md`, `docs/protocol.md`, `docs/opcodes.md`, `docs/architecture.md`, `docs/ios-plan.md`.
 
 ## 2. Что сделано
 
-- Ветка `main`, всё запушено. Последний коммит — `ebf3356`.
-- **Пять чужих коммитов** `f58f3bc..d9fc461` (2026-09-29, 03:23–03:42, подписаны как Ivan K). Это 10 файлов и около 620 строк, только звонки:
-  - разбор `vcp` (LZ4 + JSON) в `calls/Vcp.kt`, `ConversationParams`, сборка ws2 URL;
-  - событие `MaxEvent.CallStart` для опкода 137;
-  - `CallsApi.requestCallsToken` (опкод 158), доступен через `MaxApi.calls`;
-  - раздел про звонки в `docs/opcodes.md`.
-  - Схема **ответа** на 158 взята из сторонних заметок (`icyfalc0n/maxcalls`), а не из kolibri или PyMax. В коде это помечено как observed-not-ref.
-- **19 ночных коммитов** `2968afb..38d7497` построены поверх них линейно:
-  - `MaxStore` и `EventRouter`: события и ответы API применяются к локальному состоянию, после переподключения ядро находит пропуски в истории;
-  - фасад `MaxClient` в `shared`, хранилища токенов по платформам, проверка, что профиль устройства Android;
-  - потоковая загрузка медиа с диска (`UploadSource`, на iOS через `NSURLSession fromFile`);
-  - новые API: пользователи, аккаунт, 2FA, группы, опросы, отложенная отправка, комментарии, боты;
-  - `MaxError`: виды ошибок и подсказки о повторе;
-  - документация и расширенный CI.
-- Тестов 258, локальный запуск через `/workspace/tools/run-tests.sh` (kotlinc + JUnit).
+- Ветка `main`, всё запушено.
+- Звонки: разбор `vcp`, `MaxEvent.CallStart` (137), `CallsApi.requestCallsToken` (158, ответ observed-not-ref, `icyfalc0n/maxcalls`), сборка ws2 URL. В query уходит профиль Android Pixel 8 (`UserAgentInfo`: Pixel 8, 26.25.0, Android 14), не строки kolibri-net SDK. `capabilities` и `clientType` остаются константами сигналинга.
+- `ConversationParams.decode` отклоняет заявленную длину LZ4 больше 64 КиБ до Base64 и распаковки. Потолок пакета 32 МиБ не менялся. Битый `vcp` по-прежнему оставляет `CallStart` с `params = null`.
+- Дыра истории хранится якорем (id локального хвоста на момент дыры). Страница `CHAT_HISTORY` закрывает её, только если содержит этот id; пустая страница тоже закрывает. Одна более новая страница дыру не закрывает.
+- `MaxClient.logout` отменяет догрузку, останавливает `EventRouter` и дожидается текущего события, затем чистит снимок и снова запускает роутер. Сохранение токена и его очистка идут под одним mutex. Чужой аккаунт при `LOGIN` заменяет снимок целиком, а не сливает его с остатком.
+- `fillGaps` листает историю назад (`gapFillCount` 40, не больше `gapFillPageLimit` страниц, по умолчанию 16). Если упёрлись в лимит или самая старая id не сдвигается, дыра остаётся открытой.
+- Модуль `android/` есть. Java и Kotlin JVM target — 17. CI компилирует `:core`, `:shared` и `:android`, на устройстве не запускает.
+- JVM-файл токена на POSIX создаётся сразу как `rw-------`, каталог — `rwx------`. Если права не встали, запись падает.
+- Опкод 8 ядро шлёт как PyMax `LOGIN2` `{needProfile, contactsSync, configHash}`. Вопрос K11 (имя kolibri `CONTACTS_GET`) открыт.
+- Локальный прогон тестов — Gradle (`:core:jvmTest`, `:shared:jvmTest`). Скрипт `/workspace/tools/run-tests.sh` относится к среде, где ядро писали, на этой машине его нет.
 
 ## 3. Совместимость с чужими коммитами
 
@@ -41,17 +37,16 @@
 
 ## 4. Состояние CI (`.github/workflows/ios-core.yml`, джоба `ios-and-jvm`)
 
-- На `38d7497` (прогон 36501924674): JVM-тесты зелёные, компиляция Kotlin/Native для iOS Simulator зелёная, iOS Simulator тесты зелёные. **Упал шаг «Compile Android (core + shared)»**:
-  `Inconsistent JVM-target compatibility detected for tasks 'compileDebugJavaWithJavac' (1.8) and 'compileDebugKotlinAndroid' (17)`.
-  Java по умолчанию собиралась под 1.8, Kotlin под 17, и Gradle отказывается собирать.
-- **Уже исправлено** в `ebf3356`: в блоки `android {}` файлов `core/build.gradle.kts` и `shared/build.gradle.kts` добавлен `compileOptions` с `JavaVersion.VERSION_17`. На `ebf3356` (прогон 36502212295) CI **полностью зелёный**, включая Android.
+- macos-14: JVM-тесты `:core` и `:shared`, компиляция и тесты Kotlin/Native для iOS Simulator, `compileDebugKotlinAndroid` для `:core` и `:shared`, `compileDebugKotlin` для `:android`. На устройстве Android не запускается.
+- Рассинхрон Java 1.8 и Kotlin 17 на KMP-модулях закрыт `compileOptions` Java 17 в `core` и `shared`. У `:android` то же самое: `compileOptions` и `jvmTarget` 17.
+- Предупреждение `kotlin.mpp.enableCInteropCommonization` безвредно.
 
 ## 5. Что глянуть в первую очередь
 
-1. **Сборка Android:** `compileOptions` в `core` и `shared`. Если появятся новые Android-модули (`android/`), им нужна та же Java 17. Надёжнее перейти на `jvmToolchain(17)`.
-2. **Версии:** Gradle 8.10.2, Kotlin JVM target 17, `okhttp = "4.12.0"` в version catalog. Движки Ktor удалены как неиспользуемые.
-3. **Звонки:** `core/.../calls/` (`Vcp.kt`, `CallsApi.kt`), `MaxEvent.CallStart`. Ответ на 158 не подтверждён референсами.
-4. **Что проверить на живом сервере:** догрузку истории после переподключения, параллельную загрузку видео по частям на `VIDEO_UPLOAD`, ответ на 158.
+1. **Сборка Android:** `android/build.gradle.kts` уже на Java 17, модуль компилируется в CI и не запускается на устройстве. SharedPreferences по-прежнему нужен один вызов `PlatformSession.init(context)` в приложении.
+2. **Версии:** Gradle 8.10.2, Kotlin 2.1.10, JVM target 17, `okhttp = "4.12.0"` в version catalog. Движки Ktor удалены как неиспользуемые.
+3. **Звонки:** `core/.../calls/` (`Vcp.kt`, `CallsApi.kt`), `MaxEvent.CallStart`. Ответ на 158 не подтверждён референсами. Заявленная длина `vcp` ограничена 64 КиБ.
+4. **Что проверить на живом сервере:** догрузку истории после переподключения, когда пропуск больше одной страницы в 40 сообщений; параллельную загрузку видео по частям на `VIDEO_UPLOAD`; ответ на 158.
 5. **Android на устройстве:** хранилище SharedPreferences только компилируется, его не запускали. Нужен один вызов `PlatformSession.init(context)`.
 6. **Предупреждение в логах CI** про `kotlin.mpp.enableCInteropCommonization` безвредно.
 
