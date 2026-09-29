@@ -22,6 +22,7 @@
 | code | имя | слой | источник payload |
 |------|-----|------|------------------|
 | 137 | `NOTIF_CALL_START` | `MaxEvent.CallStart` + `ConversationParams.decode` | kolibri `kolibri-net/src/calls/` (vcp: `<rawLen>:<base64(LZ4-block(JSON))>`). `callerId` + строковый `conversationId` обязательны; битый `vcp` оставляет `params = null` |
+| 79 | `VIDEO_CHAT_HISTORY` | `CallsApi.history` → `CallLogEntry` | KometTeam/Komet `CallsModule.fetchHistory`: **request** `{}`; **reply** `{history: [{message: {id, time, sender, attaches: [{_type: "CALL", contactIds?, duration, hangupType, callType?}]}}]}`. Пункты без `CALL`-вложения пропускаются |
 | 158 | `OK_TOKEN` | `CallsApi.requestCallsToken` / `MaxApi.calls` | **request** — пустой map `{}` (msgpack `80`). **reply** `{token, token_lifetime_ts?, token_refresh_ts?}` — observed-not-ref (заметки third-party, не kolibri/PyMax) |
 
 Не реализовано — в обоих референсах нет payload-builder / call site, либо схема не согласована:
@@ -31,7 +32,6 @@
 | 76 | `VIDEO_CHAT_START` | нет вектора в этом слайсе |
 | 77 | `CHAT_MEMBERS_UPDATE` | не calls-control в нашем смысле |
 | 78 | `VIDEO_CHAT_START_ACTIVE` | нет payload-builder в kolibri и PyMax |
-| 79 | `VIDEO_CHAT_HISTORY` | нет вектора в этом слайсе |
 | 84 | `VIDEO_CHAT_CREATE_JOIN_LINK` | нет вектора в этом слайсе |
 | 103 | `GET_INBOUND_CALLS` | нет вектора в этом слайсе |
 | 164 | `VIDEO_CHAT_DELETE_HISTORY` | только kolibri (в PyMax нет) |

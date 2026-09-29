@@ -79,4 +79,47 @@ class CallsApiTest {
         )
         assertSame(err, assertFailsWith<ServerErrorException> { CallsApi(FakeSink(err)).requestCallsToken() })
     }
+
+    private fun call(id: Long, sender: Long, time: Long, attach: Map<String, Any?>?, chatId: Long? = null): Map<String, Any?> = buildMap {
+        chatId?.let { put("chatId", it) }
+        put("message", mapOf("id" to id, "sender" to sender, "time" to time, "attaches" to listOfNotNull(attach)))
+    }
+
+    @Test
+    fun historySendsEmptyMapAndParsesCallAttaches() = runTest {
+        val me = 10L
+        val sink = FakeSink(
+            mapOf(
+                "history" to listOf(
+                    // outgoing answered video call to 20
+                    call(1, me, 1000, mapOf("_type" to "CALL", "contactIds" to listOf(20), "duration" to 65000, "hangupType" to "HUNGUP", "callType" to "VIDEO"), chatId = 7),
+                    // incoming missed audio call from 30
+                    call(2, 30, 900, mapOf("_type" to "CALL", "hangupType" to "MISSED", "callType" to "AUDIO")),
+                    // not a call: skipped
+                    call(3, 30, 800, mapOf("_type" to "PHOTO")),
+                    mapOf("message" to null),
+                ),
+            ),
+        )
+        val calls = CallsApi(sink).history()
+        assertEquals<List<Pair<Opcode, Any?>>>(listOf(Opcode.VIDEO_CHAT_HISTORY to emptyMap<String, Any?>()), sink.sent)
+        assertEquals(listOf(1L, 2L), calls.map { it.messageId })
+        val out = calls[0]
+        assertEquals(7L, out.chatId)
+        assertEquals(20L, out.peerId(me))
+        assertEquals(true, out.isVideo)
+        assertEquals(false, out.isMissed(me))
+        assertEquals(65000L, out.duration)
+        val missed = calls[1]
+        assertNull(missed.chatId)
+        assertEquals(30L, missed.peerId(me))
+        assertEquals(true, missed.isMissed(me))
+        assertEquals(false, missed.isVideo)
+    }
+
+    @Test
+    fun historyWithoutListIsEmptyAndRejectsNonMap() = runTest {
+        assertEquals(emptyList<CallLogEntry>(), CallsApi(FakeSink(mapOf("x" to 1))).history())
+        assertFailsWith<MalformedReplyException> { CallsApi(FakeSink(null)).history() }
+    }
 }

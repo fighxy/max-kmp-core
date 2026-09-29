@@ -19,6 +19,8 @@ import com.max.core.events.MaxEvent
  * @property chats chats by id.
  * @property messages known messages per chat id, ascending by (`time`, `id`), no duplicate ids.
  * @property users users / contacts by id.
+ * @property contactIds ids of the account's contact list (`contacts` of the `LOGIN` reply,
+ *   without the own profile). Their profiles are in [users].
  * @property presence last presence per user id.
  * @property typing per chat id: user id → local clock time (ms) of the last `NOTIF_TYPING`.
  *   The protocol has no "stopped typing" push; see [typingUsers].
@@ -33,6 +35,7 @@ data class MaxState(
     val chats: Map<Long, Chat> = emptyMap(),
     val messages: Map<Long, List<MaxMessage>> = emptyMap(),
     val users: Map<Long, MaxUser> = emptyMap(),
+    val contactIds: Set<Long> = emptySet(),
     val presence: Map<Long, PresenceInfo> = emptyMap(),
     val typing: Map<Long, Map<Long, Long>> = emptyMap(),
     val readMarks: Map<Long, Map<Long, Long>> = emptyMap(),
@@ -109,7 +112,7 @@ object StateReducer {
 
     /**
      * Seeds the state from a `LOGIN` reply (PyMax `App.start`): `me`, `chats`, `contacts`
-     * (→ [MaxState.users], including the own profile contact) and `messages` (`{chatId: [message]}`,
+     * (→ [MaxState.users], including the own profile contact, and [MaxState.contactIds]) and `messages` (`{chatId: [message]}`,
      * keys may be integers or decimal strings). A different user replaces the snapshot; the same
      * user is merged, then holes against `lastMessage` are recorded.
      */
@@ -117,9 +120,11 @@ object StateReducer {
         val base = if (result.userId != null && state.me != null && result.userId != state.me) MaxState() else state
         var s = base.copy(me = result.userId ?: base.me)
         s = putChats(s, result.chats.mapNotNull(Chat::from))
-        val users = (result.raw["contacts"] as? List<*>).orEmpty().mapNotNull(MaxUser::from) +
-            listOfNotNull(MaxUser.from(result.profile?.get("contact")))
+        val contacts = (result.raw["contacts"] as? List<*>)?.mapNotNull(MaxUser::from)
+        val users = contacts.orEmpty() + listOfNotNull(MaxUser.from(result.profile?.get("contact")))
         s = putUsers(s, users)
+        // A delta LOGIN may omit `contacts`; then the known list stays.
+        if (contacts != null) s = s.copy(contactIds = contacts.map { it.id }.filter { it != s.me }.toSet())
         val byChat = result.raw["messages"] as? Map<*, *>
         byChat?.forEach { (k, v) ->
             val chatId = k.asLong() ?: return@forEach

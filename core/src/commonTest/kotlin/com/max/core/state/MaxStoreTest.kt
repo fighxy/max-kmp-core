@@ -52,8 +52,19 @@ class MaxStoreTest {
         assertEquals("Ann Lee", s.users.getValue(20).displayName)
         assertEquals(79990000000, s.users.getValue(20).phone)
         assertEquals("Me", s.users.getValue(me).displayName)
+        // the contact list is the LOGIN `contacts`, without the own profile
+        assertEquals(setOf(20L), s.contactIds)
         // chat 2 has the later activity
         assertEquals(listOf(2L, 1L), s.chatList.map { it.id })
+    }
+
+    @Test
+    fun deltaLoginWithoutContactsKeepsTheContactList() {
+        val store = loggedIn()
+        store.applyLogin(LoginResult.from(mapOf("chats" to emptyList<Any?>())))
+        assertEquals(setOf(20L), store.state.value.contactIds)
+        store.applyLogin(LoginResult.from(mapOf("contacts" to emptyList<Any?>())))
+        assertEquals(emptySet<Long>(), store.state.value.contactIds)
     }
 
     @Test
