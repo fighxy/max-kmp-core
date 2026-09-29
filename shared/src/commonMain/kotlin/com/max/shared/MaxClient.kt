@@ -30,6 +30,7 @@ import com.max.core.protocol.DefaultMessagePackCodec
 import com.max.core.session.DEFAULT_HOST
 import com.max.core.session.DeviceInfo
 import com.max.core.session.HandshakeInfo
+import com.max.core.session.SessionClosedException
 import com.max.core.session.SessionConfig
 import com.max.core.session.SessionMachine
 import com.max.core.session.SessionState
@@ -178,6 +179,8 @@ class MaxClient @Throws(Exception::class) constructor(
     private val lifecycle = Mutex()
     /** Bumped on login, logout and token rejection so an in-flight gap fill cannot write afterwards. */
     private var sessionEpoch = 0
+    /** Bumped on logout, token rejection and close; with the [TokenLogin] identity it names an account session. */
+    private var accountGen = 0
     /** `true` while [store] holds a `LOGIN` snapshot of this process; guarded by [lifecycle]. */
     private var snapshotLoaded = false
     private var gapJob: Job? = null
@@ -288,6 +291,7 @@ class MaxClient @Throws(Exception::class) constructor(
     private suspend fun rejectToken() {
         lifecycle.withLock {
             sessionEpoch += 1
+            accountGen += 1
             credentials.clearToken()
             tokenLogin.value = null
             loggedInFlag.value = false
@@ -359,6 +363,7 @@ class MaxClient @Throws(Exception::class) constructor(
         runCatching { if (loggedInFlag.value) auth.logout() }
         val gap = lifecycle.withLock {
             sessionEpoch += 1
+            accountGen += 1
             tokenLogin.value = null
             credentials.clearToken()
             loggedInFlag.value = false
@@ -489,18 +494,54 @@ class MaxClient @Throws(Exception::class) constructor(
     /** Caller holds [lifecycle]. */
     private fun sessionOpen(epoch: Int): Boolean = sessionEpoch == epoch && tokenLogin.value != null
 
-    /** One page of the chat list (`CHATS_LIST`) into [store]. */
+    /** The account session an operation starts in: the current [TokenLogin] and [accountGen]. */
+    private class Ticket(val login: TokenLogin?, val gen: Int)
+
+    private suspend fun ticket(): Ticket = lifecycle.withLock { Ticket(tokenLogin.value, accountGen) }
+
+    /**
+     * Runs [mutation] under [lifecycle] only while [ticket] is still the current account session.
+     * A reply that arrives after logout, token rejection, [close] or a switch to another login
+     * must not touch [store] or the credentials of the new session: the operation fails with
+     * [SessionClosedException] instead.
+     */
+    private suspend fun <T> commit(ticket: Ticket, mutation: () -> T): T = lifecycle.withLock {
+        if (ticket.gen != accountGen || ticket.login !== tokenLogin.value) {
+            throw SessionClosedException("the account session ended before the reply was applied")
+        }
+        mutation()
+    }
+
+    /**
+     * One page of the chat list (`CHATS_LIST`) into [store]. Like every store-backed helper below,
+     * it fails with [SessionClosedException] (and changes nothing) when the account session ended
+     * while the request was in flight.
+     */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun loadChats(marker: Long? = null): List<Chat> = api.chats.fetchChats(marker).also(store::putChats)
+    suspend fun loadChats(marker: Long? = null): List<Chat> {
+        val t = ticket()
+        val chats = api.chats.fetchChats(marker)
+        commit(t) { store.putChats(chats) }
+        return chats
+    }
 
     /** A history page (`CHAT_HISTORY`, the latest [backward] messages before [from]) into [store]. */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun loadHistory(chatId: Long, from: Long? = null, backward: Int = 40): ChatHistory =
-        api.messages.getChatHistory(chatId, from = from, backward = backward).also { store.putHistory(chatId, it) }
+    suspend fun loadHistory(chatId: Long, from: Long? = null, backward: Int = 40): ChatHistory {
+        val t = ticket()
+        val history = api.messages.getChatHistory(chatId, from = from, backward = backward)
+        commit(t) { store.putHistory(chatId, history) }
+        return history
+    }
 
     /** Users by id (`CONTACT_INFO`) into [store]. */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun loadUsers(userIds: List<Long>): List<MaxUser> = api.users.getUsers(userIds).also(store::putUsers)
+    suspend fun loadUsers(userIds: List<Long>): List<MaxUser> {
+        val t = ticket()
+        val users = api.users.getUsers(userIds)
+        commit(t) { store.putUsers(users) }
+        return users
+    }
 
     /**
      * Closes every other session (`SESSIONS_CLOSE` 97). The server issues a new token for this
@@ -509,9 +550,10 @@ class MaxClient @Throws(Exception::class) constructor(
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun closeOtherSessions(): Boolean {
+        val t = ticket()
         val token = api.account.closeOtherSessions() ?: return false
-        lifecycle.withLock {
-            tokenLogin.value?.replaceToken(token)
+        commit(t) {
+            t.login?.replaceToken(token)
             saveCredentials(token = token)
         }
         return true
@@ -523,9 +565,10 @@ class MaxClient @Throws(Exception::class) constructor(
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun updatePrivacy(settings: PrivacySettings): String? {
+        val t = ticket()
         val hash = api.account.updatePrivacy(settings) ?: return null
-        lifecycle.withLock {
-            val login = tokenLogin.value
+        commit(t) {
+            val login = t.login
             login?.updateSync { it.copy(configHash = hash) }
             saveCredentials(sync = login?.sync ?: (credentials.load() ?: stored).sync.copy(configHash = hash))
         }
@@ -534,8 +577,12 @@ class MaxClient @Throws(Exception::class) constructor(
 
     /** Changes the own profile (`PROFILE` 16) and updates the own user in [store]. */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun updateProfile(firstName: String, lastName: String? = null, description: String? = null, photoToken: String? = null): Profile =
-        api.account.updateProfile(firstName, lastName, description, photoToken).also { store.putUsers(listOf(it.contact)) }
+    suspend fun updateProfile(firstName: String, lastName: String? = null, description: String? = null, photoToken: String? = null): Profile {
+        val t = ticket()
+        val profile = api.account.updateProfile(firstName, lastName, description, photoToken)
+        commit(t) { store.putUsers(listOf(profile.contact)) }
+        return profile
+    }
 
     private fun saveCredentials(token: String? = null, sync: SyncState? = null) {
         val current = credentials.load() ?: stored
@@ -548,8 +595,12 @@ class MaxClient @Throws(Exception::class) constructor(
 
     /** Sends a text message and adds the server's copy to [store] (own messages are not pushed back). */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun sendText(chatId: Long, text: String, replyTo: Long? = null): MaxMessage =
-        api.messages.sendMessage(chatId, text, replyTo).also { store.putMessages(chatId, listOf(it)) }
+    suspend fun sendText(chatId: Long, text: String, replyTo: Long? = null): MaxMessage {
+        val t = ticket()
+        val message = api.messages.sendMessage(chatId, text, replyTo)
+        commit(t) { store.putMessages(chatId, listOf(message)) }
+        return message
+    }
 
     // ---- Session (raw access) ------------------------------------------------------------------
 
@@ -573,6 +624,7 @@ class MaxClient @Throws(Exception::class) constructor(
     override suspend fun close() {
         val gap = lifecycle.withLock {
             sessionEpoch += 1
+            accountGen += 1
             val running = gapJob
             gapJob = null
             running?.cancel()

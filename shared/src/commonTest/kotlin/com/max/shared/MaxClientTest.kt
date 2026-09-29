@@ -16,7 +16,9 @@ import com.max.core.transport.TransportConfig
 import com.max.core.transport.errorReply
 import com.max.core.transport.ok
 import com.max.core.transport.push
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -28,6 +30,8 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 
 class MaxClientTest {
@@ -228,6 +232,96 @@ class MaxClientTest {
         runCurrent()
         assertEquals(listOf(1L, 2L, 3L, 4L), c.store.state.value.messagesOf(100).map { it.id })
         assertTrue(c.store.state.value.historyGaps().isEmpty())
+    }
+
+    /** Parks dispatched continuations while closed, so a reply can be received but not yet processed. */
+    private class Gate(private val target: CoroutineDispatcher) : CoroutineDispatcher() {
+        private var closed = false
+        private val parked = ArrayList<Pair<CoroutineContext, Runnable>>()
+        fun close() {
+            closed = true
+        }
+        fun release() {
+            closed = false
+            val queued = parked.toList()
+            parked.clear()
+            queued.forEach { (context, block) -> target.dispatch(context, block) }
+        }
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            if (closed) parked += context to block else target.dispatch(context, block)
+        }
+    }
+
+    /** SMS flow on an existing, logged-out [c] as user [id] with login token [token]. */
+    private suspend fun TestScope.loginAgain(c: MaxClient, factory: ScriptedConnectionFactory, id: Int, token: String) {
+        val starting = async { c.start() }
+        runCurrent()
+        val conn = factory.lastConnection!!
+        conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        assertIs<ClientState.AwaitingAuth>(starting.await())
+        val code = async { c.requestCode("+79990000001") }
+        runCurrent()
+        conn.answer(Opcode.AUTH_REQUEST, mapOf("token" to "tmp-b", "codeLength" to 6))
+        code.await()
+        val verify = async { c.verifyCode("tmp-b", "654321") }
+        runCurrent()
+        conn.answer(Opcode.AUTH, mapOf("tokenAttrs" to mapOf("LOGIN" to mapOf("token" to token))))
+        runCurrent()
+        val reply = mapOf(
+            "profile" to mapOf("contact" to mapOf("id" to id, "names" to listOf(mapOf("name" to "B")))),
+            "chats" to listOf(mapOf("id" to 300, "type" to "DIALOG", "status" to "ACTIVE", "owner" to id, "lastEventTime" to 10)),
+            "time" to 2800L,
+        )
+        conn.answer(Opcode.LOGIN, reply)
+        assertIs<VerifyResult.LoggedIn>(verify.await())
+        runCurrent()
+    }
+
+    @Test
+    fun lateRepliesOfAFinishedSessionDoNotTouchTheNextAccount() = runTest {
+        val kv = InMemoryKeyValueStore()
+        val factory = ScriptedConnectionFactory()
+        val c = smsLogin(kv, factory)
+        val connA = factory.lastConnection!!
+        val gate = Gate(coroutineContext[ContinuationInterceptor] as CoroutineDispatcher)
+        fun m(id: Long) = mapOf("id" to id, "time" to 50L, "type" to "USER", "sender" to 5, "text" to "late")
+
+        val chats = async(gate) { runCatching { c.loadChats() } }
+        val sessions = async(gate) { runCatching { c.closeOtherSessions() } }
+        val sent = async(gate) { runCatching { c.sendText(100, "late") } }
+        val profile = async(gate) { runCatching { c.updateProfile("Stale") } }
+        runCurrent()
+        // A's replies arrive, but their continuations do not run yet
+        gate.close()
+        connA.answer(Opcode.CHATS_LIST, mapOf("chats" to listOf(mapOf("id" to 999, "type" to "CHAT", "status" to "ACTIVE", "lastEventTime" to 1))))
+        connA.answer(Opcode.SESSIONS_CLOSE, mapOf("token" to "stale-token"))
+        connA.answer(Opcode.MSG_SEND, mapOf("chatId" to 100, "message" to m(77)))
+        connA.answer(Opcode.PROFILE, mapOf("profile" to mapOf("contact" to mapOf("id" to 5, "names" to listOf(mapOf("name" to "Stale"))))))
+        runCurrent()
+
+        // logout A, log in as B
+        val out = async { c.logout() }
+        runCurrent()
+        connA.answer(Opcode.LOGOUT, null)
+        out.await()
+        loginAgain(c, factory, id = 6, token = "login-b")
+        val before = c.store.state.value
+        assertEquals(6L, before.me)
+
+        // A's continuations run now: every one fails and nothing of B changes
+        gate.release()
+        runCurrent()
+        for (r in listOf(chats.await(), sessions.await(), sent.await(), profile.await())) {
+            assertIs<com.max.core.session.SessionClosedException>(r.exceptionOrNull())
+        }
+        assertEquals(before, c.store.state.value)
+        assertTrue(999L !in c.store.state.value.chats)
+        assertTrue(5L !in c.store.state.value.users)
+        val saved = CredentialStore(kv, "max.default").load()!!
+        assertEquals("login-b", saved.token)
+        assertEquals(6L, saved.userId)
+        assertEquals(ClientState.Ready(6), c.state.value)
+        c.close()
     }
 
     @Test
