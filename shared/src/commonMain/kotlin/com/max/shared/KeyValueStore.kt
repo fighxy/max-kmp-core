@@ -10,12 +10,19 @@ import kotlinx.coroutines.flow.update
  * Small string key-value persistence used for credentials. Platform implementations
  * ([PlatformSession.defaultStore]): Keychain on iOS, `SharedPreferences` on Android, a
  * properties file on JVM. Implementations must be safe to call from any thread.
+ *
+ * [put] and [remove] return only once the change is stored; when it could not be stored they
+ * throw (e.g. [KeyValueStoreException], `KeychainException`, `IOException`) instead of reporting
+ * success.
  */
 interface KeyValueStore {
     fun get(key: String): String?
     fun put(key: String, value: String)
     fun remove(key: String)
 }
+
+/** A [KeyValueStore] could not persist a change. */
+class KeyValueStoreException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /** Non-persistent [KeyValueStore] (tests, or when nothing should survive the process). */
 class InMemoryKeyValueStore(initial: Map<String, String> = emptyMap()) : KeyValueStore {

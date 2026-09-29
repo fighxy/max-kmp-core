@@ -73,6 +73,10 @@ jobs:
         # androidMain of :core and :shared (SharedPreferencesStore, OkHttp media). Compiled here, not run on a device.
         run: ./gradlew :core:compileDebugKotlinAndroid :shared:compileDebugKotlinAndroid --no-daemon --stacktrace
 
+      - name: Android unit tests (shared)
+        # androidMain logic on the local JVM (fake SharedPreferences) plus the common tests. No device.
+        run: ./gradlew :shared:testDebugUnitTest --no-daemon --stacktrace
+
       - name: Compile Android library module
         # :android is a plain Android library (kotlin.android), Java 17. Compiled here, not run on a device.
         run: ./gradlew :android:compileDebugKotlin --no-daemon --stacktrace

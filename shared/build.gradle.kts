@@ -29,6 +29,11 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.test)
             }
         }
+        // Local JVM unit tests of androidMain (SharedPreferencesStore with a fake SharedPreferences).
+        // They also run the common tests. CI: :shared:testDebugUnitTest.
+        androidUnitTest.dependencies {
+            implementation(kotlin("test-junit"))
+        }
     }
 }
 
