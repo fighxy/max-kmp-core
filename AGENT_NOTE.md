@@ -30,6 +30,9 @@
 
 - Контакты и журнал звонков для iOS: `MaxState.contactIds` (список `contacts` из `LOGIN`, без себя; дельта-`LOGIN` без поля его не трогает), `CallsApi.history()` (79 по схеме Komet), `MaxIosClient.loadContacts` / `loadCallHistory` (`IosContact`, `IosCall`). У диалога в `IosChat` имя и аватар собеседника (из `participants` и `users`, недостающие догружаются `CONTACT_INFO`), плюс `avatarUrl` и `lastAuthorId`.
 
+- Полный список чатов: `LOGIN` отдаёт только первые чаты и `chatMarker`, остальное — страницы `CHATS_LIST {marker, count: 50}` с `marker` следующей страницы (как Komet `paginateChats`). `ChatsApi.fetchChatsPage`, `MaxClient.loadAllChats()`; `MaxIosClient.loadChats` листает всё один раз после входа, потом обновляет только первую страницу.
+- Контакты из ответа опкода 8 (`contactInfos` у PyMax, `contacts` у Komet) тоже попадают в `MaxState.contactIds` (`StateReducer.putContacts`).
+
 ## 3. Совместимость с чужими коммитами
 
 Ночные изменения ничего в них не ломают и не переписывают:

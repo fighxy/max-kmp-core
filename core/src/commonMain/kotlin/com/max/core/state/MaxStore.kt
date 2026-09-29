@@ -57,6 +57,9 @@ class MaxStore(
 
     fun putUsers(users: List<MaxUser>) = _state.update { StateReducer.putUsers(it, users) }
 
+    /** Contact-list users ([StateReducer.putContacts]). */
+    fun putContacts(contacts: List<MaxUser>) = _state.update { StateReducer.putContacts(it, contacts) }
+
     /** Inserts / replaces messages; never closes a history hole (use [putHistory] for pages). */
     fun putMessages(chatId: Long, messages: List<MaxMessage>) = _state.update { StateReducer.putMessages(it, chatId, messages, messageLimit) }
 

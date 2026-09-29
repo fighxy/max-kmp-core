@@ -3,6 +3,7 @@ package com.max.shared
 import com.max.core.MaxError
 import com.max.core.api.Chat
 import com.max.core.api.ChatHistory
+import com.max.core.api.ChatsApi
 import com.max.core.api.MaxApi
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
@@ -412,7 +413,7 @@ class MaxClient @Throws(Exception::class) constructor(
             loginCount.value += 1
             store.applyLogin(r)
             snapshotLoaded = true
-            login.login2Result.value?.let { r2 -> r2.contacts.mapNotNull(com.max.core.api.MaxUser::from).let(store::putUsers) }
+            login.login2Result.value?.let { r2 -> r2.contacts.mapNotNull(com.max.core.api.MaxUser::from).let(store::putContacts) }
             // r already carries the LOGIN2 profile; a reconnect without a profile keeps this login's id
             val uid = r.userId ?: loggedIn.value.takeIf { lastLogin === login }
             lastLogin = login
@@ -537,6 +538,33 @@ class MaxClient @Throws(Exception::class) constructor(
         val chats = api.chats.fetchChats(marker)
         commit(t) { store.putChats(chats) }
         return chats
+    }
+
+    /**
+     * The whole chat list: the `LOGIN` reply carries only the first chats and a `chatMarker`, the
+     * rest comes in `CHATS_LIST` pages of [ChatsApi.CHATS_PAGE_SIZE] (KometTeam/Komet
+     * `paginateChats`). Stops on an empty or short page, a repeated marker or [maxPages]. Without
+     * a `chatMarker` it is one [loadChats]. Returns every chat now in [store].
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun loadAllChats(maxPages: Int = 200): List<Chat> {
+        val start = lifecycle.withLock { lastLogin?.result?.value?.raw?.get("chatMarker").asMarker() }
+        if (start == null || start <= 0) {
+            loadChats()
+            return store.state.value.chats.values.toList()
+        }
+        var marker: Long = start
+        var pages = 0
+        while (pages < maxPages) {
+            pages += 1
+            val t = ticket()
+            val page = api.chats.fetchChatsPage(marker)
+            commit(t) { store.putChats(page.chats) }
+            val next = page.nextMarker
+            if (page.chats.size < ChatsApi.CHATS_PAGE_SIZE || next == null || next == marker) break
+            marker = next
+        }
+        return store.state.value.chats.values.toList()
     }
 
     /** A history page (`CHAT_HISTORY`, the latest [backward] messages before [from]) into [store]. */
@@ -666,3 +694,10 @@ class MaxClient @Throws(Exception::class) constructor(
 
 /** Drops exceptions that escape a coroutine of a client-owned scope (on iOS they would abort the app). */
 private val swallowUncaught = CoroutineExceptionHandler { _, _ -> }
+
+/** `chatMarker` of a `LOGIN` reply: a number, sometimes a decimal string. */
+private fun Any?.asMarker(): Long? = when (this) {
+    is Number -> toLong()
+    is String -> toLongOrNull()
+    else -> null
+}

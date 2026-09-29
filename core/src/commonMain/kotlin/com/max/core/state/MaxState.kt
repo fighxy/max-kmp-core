@@ -169,6 +169,13 @@ object StateReducer {
     fun putUsers(state: MaxState, users: List<MaxUser>): MaxState =
         if (users.isEmpty()) state else state.copy(users = state.users + users.associateBy { it.id })
 
+    /** Users that belong to the contact list (the opcode-8 reply): profiles plus [MaxState.contactIds]. */
+    fun putContacts(state: MaxState, contacts: List<MaxUser>): MaxState {
+        if (contacts.isEmpty()) return state
+        val withUsers = putUsers(state, contacts)
+        return withUsers.copy(contactIds = withUsers.contactIds + contacts.map { it.id }.filter { it != withUsers.me })
+    }
+
     /**
      * Merges [list] into the chat's messages (insert or replace by id). It never closes a history
      * hole: an edit, a replayed push or a single inserted message that happens to be the anchor

@@ -49,6 +49,8 @@ class MaxIosClient internal constructor(
     private val clientLock = NSLock()
     private var created: MaxClient? = null
     private val watches = mutableListOf<Watcher>()
+    /** The user whose whole chat list was already paged in ([loadChats]). */
+    private var pagedUser: Long? = null
 
     /** The client, created on the first call; throws what the constructor threw (retried next time). */
     private fun client(): MaxClient = clientLock.locked { created ?: factory(scope).also { created = it } }
@@ -96,12 +98,26 @@ class MaxIosClient internal constructor(
     }
 
     fun logout(onResult: (String?, String?) -> Unit) {
-        runUnit(onResult) { it.logout() }
+        runUnit(onResult) {
+            it.logout()
+            // The store is empty now: the next login pages the whole chat list again.
+            clientLock.locked { pagedUser = null }
+        }
     }
 
+    /**
+     * The chat list. The first call after each login pages through the whole list
+     * ([MaxClient.loadAllChats]); later calls (polls) refresh only the newest page.
+     */
     fun loadChats(onResult: (List<IosChat>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
-            c.loadChats()
+            val user = c.userId.value
+            if (user != null && clientLock.locked { pagedUser } != user) {
+                c.loadAllChats()
+                clientLock.locked { pagedUser = user }
+            } else {
+                c.loadChats()
+            }
             val chats = c.store.state.value.chats.values
             resolveUsers(c, chats.mapNotNull { dialogPeer(it, c.userId.value) })
             val state = c.store.state.value

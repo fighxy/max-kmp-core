@@ -37,6 +37,23 @@ class ChatsApi(
     suspend fun fetchChats(marker: Long? = null): List<Chat> = chatList(Opcode.CHATS_LIST, linkedMapOf("marker" to (marker ?: clock())))
 
     /**
+     * One page of the full chat list (`CHATS_LIST`, 53) as KometTeam/Komet pages it after login:
+     * `{marker, count}`, starting from the `chatMarker` of the `LOGIN` reply. Reply: `chats` and
+     * the `marker` of the next page ([ChatsPage.nextMarker] is `null` when the reply has none).
+     */
+    suspend fun fetchChatsPage(marker: Long, count: Int = CHATS_PAGE_SIZE): ChatsPage {
+        val map = replyMap(sink.request(Opcode.CHATS_LIST, linkedMapOf("marker" to marker, "count" to count)), Opcode.CHATS_LIST)
+        val items = map["chats"] as? List<*> ?: emptyList<Any?>()
+        val chats = items.map { Chat.from(it) ?: throw MalformedReplyException(Opcode.CHATS_LIST, "invalid chat in chats", map) }
+        return ChatsPage(chats, map["marker"].asLong(), map)
+    }
+
+    companion object {
+        /** Chats per [fetchChatsPage] request (KometTeam/Komet `paginateChats`). */
+        const val CHATS_PAGE_SIZE = 50
+    }
+
+    /**
      * Members of a group/channel (`CHAT_MEMBERS`, 59; PyMax `get_chat_members`,
      * `GetChatMembersPayload`): `{type: "MEMBER", chatId, marker, count}` (marker `0` for the
      * first page, count `50`). Reply: `members` and the next `marker`.
@@ -201,6 +218,9 @@ class ChatsApi(
         return list.map { Chat.from(it) ?: throw MalformedReplyException(opcode, "invalid chat in chats", map) }
     }
 }
+
+/** One [ChatsApi.fetchChatsPage] reply. */
+data class ChatsPage(val chats: List<Chat>, val nextMarker: Long?, val raw: Map<*, *>)
 
 /** Result of [ChatsApi.createGroup]: the chat and the service message that created it. */
 data class CreatedGroup(val chat: Chat, val message: MaxMessage)

@@ -125,7 +125,8 @@ data class Login2Result(val profile: Map<*, *>?, val contacts: List<Any?>, val c
             val map = payload as? Map<*, *> ?: emptyMap<Any?, Any?>()
             return Login2Result(
                 profile = map["profile"] as? Map<*, *>,
-                contacts = map["contactInfos"] as? List<Any?> ?: emptyList(),
+                // PyMax names the list `contactInfos`, KometTeam/Komet reads `contacts`.
+                contacts = map["contactInfos"] as? List<Any?> ?: map["contacts"] as? List<Any?> ?: emptyList(),
                 configHash = configHashOf(map),
                 raw = map,
             )
