@@ -1,7 +1,7 @@
 # Compiles and tests :core and :shared for iOS Simulator arm64 (and JVM, Android compile of
-# :core, :shared and :android) on macOS. The Linux agent that authors the Network.framework code
-# cannot run Kotlin/Native for iOS; this workflow is the compile check. None of the Android
-# targets are run on a device.
+# :core, :shared and :android, plus the :ios MaxIos simulator framework) on macOS. The Linux agent
+# that authors the Network.framework code cannot run Kotlin/Native for iOS; this workflow is the
+# compile check. None of the targets are run on a device.
 name: iOS core
 
 on:
@@ -12,6 +12,7 @@ on:
       - 'core/**'
       - 'shared/**'
       - 'android/**'
+      - 'ios/**'
       - 'gradle/**'
       - 'gradlew'
       - 'gradlew.bat'
@@ -25,6 +26,7 @@ on:
       - 'core/**'
       - 'shared/**'
       - 'android/**'
+      - 'ios/**'
       - 'gradle/**'
       - 'gradlew'
       - 'gradlew.bat'
@@ -41,7 +43,7 @@ concurrency:
 jobs:
   ios-and-jvm:
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v4
 
@@ -74,3 +76,7 @@ jobs:
       - name: Compile Android library module
         # :android is a plain Android library (kotlin.android), Java 17. Compiled here, not run on a device.
         run: ./gradlew :android:compileDebugKotlin --no-daemon --stacktrace
+
+      - name: Link iOS facade framework
+        # MaxIosClient in :ios. Simulator debug link only; the app builds the release XCFramework.
+        run: ./gradlew :ios:linkDebugFrameworkIosSimulatorArm64 --no-daemon --stacktrace

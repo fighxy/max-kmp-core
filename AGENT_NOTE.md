@@ -12,7 +12,7 @@
 - `core/src/commonMain/kotlin/com/max/core/`: `transport`, `protocol`, `session`, `auth`, `api`, `events`, `state`, `media`, `calls`, `MaxError.kt`.
 - Платформенный код: `core/src/iosMain` (Network.framework, NSURLSession) и `core/src/jvmAndroidShared` (сокеты, OkHttp).
 - `shared/`: `MaxClient` и `PlatformSession` с хранилищами учётных данных (iOS Keychain, Android SharedPreferences, JVM файл).
-- `android/`, `ios/`, `desktop/` — оболочки приложений. У `android/` Java и Kotlin JVM target — 17.
+- `android/`, `ios/`, `desktop/` — оболочки. У `android/` Java и Kotlin JVM target — 17. `ios/` собирает статический XCFramework `MaxIos` (`assembleMaxIosReleaseXCFramework`). Для Swift наружу только `MaxIosClient` и плоские `Ios*`; `MaxClient` и токен Keychain остаются внутри.
 - Документация: `README.md`, `docs/protocol.md`, `docs/opcodes.md`, `docs/architecture.md`, `docs/ios-plan.md`.
 
 ## 2. Что сделано
@@ -37,7 +37,7 @@
 
 ## 4. Состояние CI (`.github/workflows/ios-core.yml`, джоба `ios-and-jvm`)
 
-- macos-14: JVM-тесты `:core` и `:shared`, компиляция и тесты Kotlin/Native для iOS Simulator, `compileDebugKotlinAndroid` для `:core` и `:shared`, `compileDebugKotlin` для `:android`. На устройстве Android не запускается.
+- macos-14: JVM-тесты `:core` и `:shared`, компиляция и тесты Kotlin/Native для iOS Simulator, `compileDebugKotlinAndroid` для `:core` и `:shared`, `compileDebugKotlin` для `:android`, линковка `:ios:linkDebugFrameworkIosSimulatorArm64`. На устройстве ничего из этого не запускается. Release XCFramework собирает приложение Orbitl.
 - Рассинхрон Java 1.8 и Kotlin 17 на KMP-модулях закрыт `compileOptions` Java 17 в `core` и `shared`. У `:android` то же самое: `compileOptions` и `jvmTarget` 17.
 - Предупреждение `kotlin.mpp.enableCInteropCommonization` безвредно.
 

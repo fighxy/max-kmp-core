@@ -1,15 +1,18 @@
+import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
+
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
 }
 
 kotlin {
+    val xcframework = XCFramework("MaxIos")
     listOf(
         iosArm64(),
         iosSimulatorArm64(),
     ).forEach { target ->
         target.compilations.getByName("main") {
             cinterops {
-                // TODO: point at a C header / static lib (C ABI), e.g. from a native core.
+                // Optional C ABI (maxc.def). Headers are not set; this does not export the core.
                 val maxc by creating {
                     defFile(project.file("src/nativeInterop/cinterop/maxc.def"))
                 }
@@ -18,6 +21,8 @@ kotlin {
         target.binaries.framework {
             baseName = "MaxIos"
             isStatic = true
+            binaryOption("bundleId", "com.max.ios.MaxIos")
+            xcframework.add(this)
         }
     }
 
