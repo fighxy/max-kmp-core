@@ -158,7 +158,7 @@ class MaxIosClient internal constructor(
     fun watchState(onEach: (String) -> Unit): IosWatch = watch { c -> c.watchState { guarded { onEach(phaseOf(it)) } } }
 
     fun watchEvents(onEach: (IosEvent) -> Unit): IosWatch = watch { c ->
-        c.watchEvents { event -> guarded { flatten(event).forEach(onEach) } }
+        c.watchEvents { event -> guarded { flatten(event, c.store.state.value).forEach(onEach) } }
     }
 
     /** Disconnects and releases the client. It cannot be used afterwards; [onDone] is always called once. */
@@ -470,13 +470,13 @@ private fun messageSnapshot(message: MaxMessage, fallbackChatId: String): IosMes
     timeMs = message.time,
 )
 
-private fun flatten(event: MaxEvent): List<IosEvent> = when (event) {
+private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (event) {
     is MaxEvent.NewMessage -> listOf(messageEvent("message", event.message))
     is MaxEvent.MessageEdited -> listOf(messageEvent("edited", event.message))
     is MaxEvent.MessagesDeleted -> event.messageIds.map { id ->
         iosEvent(kind = "deleted", chatId = event.chatId.toString(), messageId = id.toString())
     }
-    is MaxEvent.ChatUpdated -> listOf(chatEvent(event.chat))
+    is MaxEvent.ChatUpdated -> listOf(chatEvent(event.chat, state))
     is MaxEvent.Typing -> listOf(iosEvent(kind = "typing", chatId = event.chatId.toString(), authorId = event.userId.toString()))
     is MaxEvent.MessageRead -> listOf(
         iosEvent(
@@ -499,8 +499,8 @@ private fun messageEvent(kind: String, message: MaxMessage): IosEvent = iosEvent
     timeMs = message.time,
 )
 
-private fun chatEvent(chat: Chat): IosEvent {
-    val snap = chatSnapshot(chat)
+private fun chatEvent(chat: Chat, state: MaxState): IosEvent {
+    val snap = chatSnapshot(chat, state)
     return iosEvent(
         kind = "chat",
         chatId = snap.id,
