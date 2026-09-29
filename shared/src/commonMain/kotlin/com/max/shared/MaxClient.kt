@@ -1,15 +1,19 @@
 package com.max.shared
 
 import com.max.core.MaxError
+import com.max.core.api.AccountConfig
 import com.max.core.api.Chat
 import com.max.core.api.ChatFolders
 import com.max.core.api.ChatHistory
 import com.max.core.api.ChatsApi
+import com.max.core.api.Folder
+import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxApi
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.PrivacySettings
 import com.max.core.api.Profile
+import com.max.core.api.SessionInfo
 import com.max.core.toMaxError
 import com.max.core.auth.ApkFingerprint
 import com.max.core.auth.AuthApi
@@ -29,6 +33,7 @@ import com.max.core.media.MediaHttp
 import com.max.core.media.MediaHttpConfig
 import com.max.core.media.defaultMediaHttp
 import com.max.core.protocol.DefaultMessagePackCodec
+import com.max.core.protocol.Opcode
 import com.max.core.session.DEFAULT_HOST
 import com.max.core.session.DeviceInfo
 import com.max.core.session.HandshakeInfo
@@ -53,10 +58,12 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -180,6 +187,7 @@ class MaxClient @Throws(Exception::class) constructor(
     private val loggedIn = MutableStateFlow<Long?>(null)
     private val loggedInFlag = MutableStateFlow(false)
     private val loginCount = MutableStateFlow(0)
+    private val _accountConfig = MutableStateFlow<AccountConfig?>(null)
     private val lifecycle = Mutex()
     /** Bumped on login, logout and token rejection so an in-flight gap fill cannot write afterwards. */
     private var sessionEpoch = 0
@@ -244,6 +252,15 @@ class MaxClient @Throws(Exception::class) constructor(
 
     /** `true` when a login token is stored. */
     val hasStoredToken: Boolean get() = credentials.load()?.token != null
+
+    /**
+     * The account configuration ([AccountConfig]: `config.user` settings, `config.server`
+     * parameters) of the last `LOGIN` that carried one, updated by [updateUserSettings]; `null`
+     * before the first login and after logout. The first `LOGIN` of each process sends empty sync
+     * markers (default `configHash`), so the server always sends the whole config then; a
+     * reconnect whose reply leaves it out keeps the known one.
+     */
+    val accountConfig: StateFlow<AccountConfig?> = _accountConfig.asStateFlow()
 
     init {
         router.start(this.scope)
@@ -357,9 +374,23 @@ class MaxClient @Throws(Exception::class) constructor(
         return login.result.value ?: throw IllegalStateException("LOGIN finished without a result")
     }
 
-    /** Approves a web QR login from this account (`AUTH_QR_APPROVE` 290). */
+    /**
+     * Approves a web / desktop QR login from this account. As in Komet, the approval is preceded by
+     * `PING` 1 `{interactive: true}` and `SESSIONS_INFO` 96 and a [qrApproveDelayMs] pause; the
+     * server rejects `AUTH_QR_APPROVE` 290 `{qrLink}` without them.
+     */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun approveQrLogin(qrLink: String): QrApproval = auth.approveQrLogin(qrLink)
+    suspend fun approveQrLogin(qrLink: String): QrApproval {
+        val link = qrLink.trim()
+        require(link.isNotEmpty()) { "qrLink is blank" }
+        session.request(Opcode.PING, linkedMapOf("interactive" to true))
+        api.users.getSessions()
+        delay(qrApproveDelayMs)
+        return auth.approveQrLogin(link)
+    }
+
+    /** Pause before `AUTH_QR_APPROVE` in [approveQrLogin]; tests set it to 0. */
+    internal var qrApproveDelayMs: Long = 300
 
     /**
      * Logs out on the server (`LOGOUT` 20, best effort), clears the token and the local state,
@@ -391,6 +422,7 @@ class MaxClient @Throws(Exception::class) constructor(
             lifecycle.withLock {
                 store.clear()
                 snapshotLoaded = false
+                _accountConfig.value = null
             }
             session.disconnect()
             router.start(scope)
@@ -414,6 +446,7 @@ class MaxClient @Throws(Exception::class) constructor(
             loginCount.value += 1
             store.applyLogin(r)
             snapshotLoaded = true
+            AccountConfig.fromLoginReply(r.raw)?.let { _accountConfig.value = it }
             login.login2Result.value?.let { r2 -> r2.contacts.mapNotNull(com.max.core.api.MaxUser::from).let(store::putContacts) }
             // r already carries the LOGIN2 profile; a reconnect without a profile keeps this login's id
             val uid = r.userId ?: loggedIn.value.takeIf { lastLogin === login }
@@ -661,6 +694,115 @@ class MaxClient @Throws(Exception::class) constructor(
         return profile
     }
 
+    /**
+     * Changes user settings (`CONFIG` 22 with [values], see [com.max.core.api.AccountApi.updateUserSettings]).
+     * The reply's `user` replaces [accountConfig]'s and its hash goes to the sync markers.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun updateUserSettings(values: Map<String, Any?>): AccountConfig {
+        val t = ticket()
+        val update = api.account.updateUserSettings(values)
+        return commit(t) {
+            // without `user` in the reply the server still accepted these values
+            val user = update.user ?: ((_accountConfig.value?.user ?: emptyMap()) + values)
+            val next = (_accountConfig.value ?: AccountConfig()).withUser(user, update.hash)
+            _accountConfig.value = next
+            update.hash?.let { hash ->
+                val login = t.login
+                login?.updateSync { it.copy(configHash = hash) }
+                saveCredentials(sync = login?.sync ?: (credentials.load() ?: stored).sync.copy(configHash = hash))
+            }
+            next
+        }
+    }
+
+    /** The own user from [store], or `CONTACT_INFO` for it when missing; `null` before login. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun loadMe(): MaxUser? {
+        val me = userId.value ?: return null
+        return store.state.value.users[me] ?: loadUsers(listOf(me)).firstOrNull { it.id == me }
+    }
+
+    /**
+     * Uploads [bytes] (JPEG / PNG) as the new avatar: `PHOTO_UPLOAD` 80 with `profile: true`, the
+     * HTTP upload, then `PROFILE` 16 `{photoToken, avatarType}` without the name. The new own
+     * contact goes to [store].
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun uploadAvatar(bytes: ByteArray, fileName: String = "avatar.jpg"): Profile {
+        val t = ticket()
+        val photo = media.uploadPhoto(bytes, fileName, profile = true)
+        val profile = api.account.setAvatar(photo.photoToken)
+        commit(t) { store.putUsers(listOf(profile.contact)) }
+        return profile
+    }
+
+    /** Removes the current avatar (`REMOVE_CONTACT_PHOTO` 43); `null` when there is none. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun removeAvatar(): Profile? {
+        val photoId = loadMe()?.photoId?.takeIf { it > 0 } ?: return null
+        val t = ticket()
+        val profile = api.account.removePhoto(photoId)
+        commit(t) { store.putUsers(listOf(profile.contact)) }
+        return profile
+    }
+
+    /** The whole contact list (opcode 8 `{contactsSync: 0}`) into [store]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun syncContacts(): List<MaxUser> {
+        val t = ticket()
+        val contacts = api.users.syncContacts()
+        commit(t) { store.putContacts(contacts) }
+        return contacts
+    }
+
+    /** Active sessions (`SESSIONS_INFO` 96). */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun loadSessions(): List<SessionInfo> = api.users.getSessions()
+
+    /** Creates a folder ([com.max.core.api.AccountApi.addFolder]) and merges it into [store]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun createFolder(title: String, chatIds: List<Long> = emptyList(), filters: List<Any?> = emptyList()): Folder? {
+        val t = ticket()
+        val update = api.account.addFolder(title, chatIds, filters)
+        commit(t) { store.putFolderUpdate(update) }
+        return update.folder
+    }
+
+    /**
+     * Changes the folder [folderId] from [store] ([com.max.core.api.AccountApi.editFolder]: `null`
+     * arguments and the pinned chats stay as the server sent them).
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun editFolder(folderId: String, title: String? = null, chatIds: List<Long>? = null, filters: List<Any?>? = null): Folder? {
+        val folder = folderOf(folderId)
+        val t = ticket()
+        val update = api.account.editFolder(folder, title, chatIds, filters)
+        commit(t) { store.putFolderUpdate(update) }
+        return update.folder
+    }
+
+    /** Deletes folders (`FOLDERS_DELETE` 276) and drops them from [store]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun deleteFolders(folderIds: List<String>) {
+        val t = ticket()
+        val update = api.account.deleteFolders(folderIds)
+        commit(t) { store.removeFolders(folderIds, update) }
+    }
+
+    /** Sets the folder order (`FOLDERS_REORDER` 275, the whole list) and applies it to [store]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun reorderFolders(order: List<String>) {
+        val t = ticket()
+        val update = api.account.reorderFolders(order)
+        commit(t) { store.reorderFolders(order, update) }
+    }
+
+    private suspend fun folderOf(folderId: String): Folder =
+        store.state.value.chatFolders?.folders?.firstOrNull { it.id == folderId }
+            ?: loadFolders().folders.firstOrNull { it.id == folderId }
+            ?: throw IllegalStateException("folder $folderId not found")
+
     private fun saveCredentials(token: String? = null, sync: SyncState? = null) {
         val current = credentials.load() ?: stored
         credentials.save(
@@ -725,6 +867,12 @@ class MaxClient @Throws(Exception::class) constructor(
     fun watchState(onEach: (ClientState) -> Unit): Watcher = state.watch(scope, onEach = onEach)
     fun watchEvents(onEach: (MaxEvent) -> Unit): Watcher = events.all.watch(scope, onEach = onEach)
     fun watchStore(onEach: (MaxState) -> Unit): Watcher = store.state.watch(scope, onEach = onEach)
+
+    /** [accountConfig] whenever it changes; `null` while unknown. */
+    fun watchAccountConfig(onEach: (AccountConfig?) -> Unit): Watcher = accountConfig.watch(scope, onEach = onEach)
+
+    /** [MaxState.chatFolders] whenever they change; `null` while unknown. */
+    fun watchFolders(onEach: (ChatFolders?) -> Unit): Watcher = store.chatFolders.watch(scope, onEach = onEach)
 
     /** Pinned chat ids ([MaxStore.pinnedChats]) whenever they change; `null` while unknown. */
     fun watchPinnedChats(onEach: (List<Long>?) -> Unit): Watcher = store.pinnedChats.watch(scope, onEach = onEach)

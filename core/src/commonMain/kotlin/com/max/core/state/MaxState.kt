@@ -204,6 +204,33 @@ object StateReducer {
         return state.copy(chatFolders = next)
     }
 
+    /** A `FOLDERS_UPDATE` reply: its `folder` (and `foldersOrder`, `folderSync` when sent) merged in. */
+    fun putFolderUpdate(state: MaxState, update: FolderUpdate): MaxState {
+        val current = state.chatFolders ?: ChatFolders(emptyList())
+        val order = update.foldersOrder.takeIf { "foldersOrder" in update.raw }
+        val sync = update.folderSync.takeIf { "folderSync" in update.raw }
+        return state.copy(chatFolders = current.merge(listOfNotNull(update.folder), order, sync))
+    }
+
+    /** An accepted `FOLDERS_DELETE`: the folders [ids] are gone, whatever the reply says about the rest. */
+    fun removeFolders(state: MaxState, ids: List<String>, update: FolderUpdate): MaxState {
+        val current = (state.chatFolders ?: return state).without(ids)
+        val order = update.foldersOrder.takeIf { "foldersOrder" in update.raw }?.filter { it !in ids }
+        val sync = update.folderSync.takeIf { "folderSync" in update.raw }
+        return state.copy(chatFolders = current.merge(emptyList(), order, sync))
+    }
+
+    /** An accepted `FOLDERS_REORDER`: the folders sorted by [order] (the reply's order wins when sent). */
+    fun reorderFolders(state: MaxState, order: List<String>, update: FolderUpdate): MaxState {
+        val current = state.chatFolders ?: return state
+        val newOrder = update.foldersOrder.takeIf { "foldersOrder" in update.raw && it.isNotEmpty() } ?: order
+        val sync = update.folderSync.takeIf { "folderSync" in update.raw }
+        val known = current.folders.map { it.id }.toSet()
+        // folders the order does not name stay (at the end): a reorder never deletes
+        val full = newOrder + known.filter { it !in newOrder }
+        return state.copy(chatFolders = current.merge(emptyList(), full, sync))
+    }
+
     /** Removes a chat and its messages, typing, read marks and history hole (after leaving / deleting it). */
     fun removeChat(state: MaxState, chatId: Long): MaxState = state.copy(
         chats = state.chats - chatId,

@@ -45,6 +45,43 @@ class TwoFactorApi(private val sink: RequestSink) {
     }
 
     /**
+     * The cloud password state (`AUTH_2FA_DETAILS` 104, `{trackId}`); reply `{password: {enabled,
+     * email, hint}}` (as Komet reads it). The current password is not needed.
+     */
+    suspend fun details(trackId: String): TwoFactorDetails {
+        val map = replyMap(sink.request(Opcode.AUTH_2FA_DETAILS, linkedMapOf("trackId" to trackId)), Opcode.AUTH_2FA_DETAILS)
+        val password = map["password"] as? Map<*, *>
+        return TwoFactorDetails(
+            enabled = password?.get("enabled") == true,
+            email = (password?.get("email") as? String)?.takeIf { it.isNotBlank() },
+            hint = (password?.get("hint") as? String)?.takeIf { it.isNotBlank() },
+            raw = map,
+        )
+    }
+
+    /** [details] on a new track (`AUTH_CREATE_TRACK` 112 → 104). */
+    suspend fun status(): TwoFactorDetails = details(createTrack())
+
+    /**
+     * Saves the recovery e-mail confirmed on [trackId] (`AUTH_SET_2FA` 111, `{expectedCapabilities:
+     * [4], trackId}`, as Komet). Before it: [createTrack], [checkCurrentPassword],
+     * [requestEmailCode], [confirmEmailCode] on the same track.
+     */
+    suspend fun commitEmail(trackId: String) {
+        sink.request(
+            Opcode.AUTH_SET_2FA,
+            linkedMapOf("expectedCapabilities" to listOf(TwoFactorCapability.EMAIL.code), "trackId" to trackId),
+        )
+    }
+
+    /**
+     * Asks for the e-mail code (`AUTH_VERIFY_EMAIL` 109, `{trackId, email}`); returns the reply's
+     * `blockingDuration` (seconds until a new code may be requested; 60 when absent, as in Komet).
+     */
+    suspend fun sendEmailCode(trackId: String, email: String): Int =
+        rawMap(sink.request(Opcode.AUTH_VERIFY_EMAIL, linkedMapOf("trackId" to trackId, "email" to email)))["blockingDuration"].asLong()?.toInt() ?: 60
+
+    /**
      * `AUTH_SET_2FA` 111 `{expectedCapabilities, trackId, password, hint?}` (PyMax
      * `SetTwoFactorPayload`, this key order).
      */
@@ -114,3 +151,6 @@ class TwoFactorApi(private val sink: RequestSink) {
 enum class TwoFactorCapability(val code: Int) {
     SET_PASSWORD(0), UPDATE_PASSWORD(1), RESTORE_PASSWORD(2), HINT(3), EMAIL(4), REMOVE(5)
 }
+
+/** The cloud password state ([TwoFactorApi.details]); [email] and [hint] are `null` when not set. */
+data class TwoFactorDetails(val enabled: Boolean, val email: String?, val hint: String?, val raw: Map<*, *>)

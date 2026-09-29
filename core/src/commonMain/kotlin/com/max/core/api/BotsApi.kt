@@ -26,17 +26,30 @@ class BotsApi(private val sink: RequestSink, private val clock: () -> Long = ::e
 
     /**
      * Mini-app launch data (`WEB_APP_INIT_DATA` 160, `{botId, chatId?, startParam?}`); reply
-     * `{queryId, url}` (required, PyMax `InitData`).
+     * `{url, queryId?}`. PyMax names the id `queryId`, the server Komet talks to `query_id`, and it
+     * is not always sent, so only `url` is required ([WebAppInitData.queryId] may be `null`).
      */
     suspend fun getWebAppInitData(botId: Long, chatId: Long? = null, startParam: String? = null): WebAppInitData {
         val payload = linkedMapOf<String, Any?>("botId" to botId)
         if (chatId != null) payload["chatId"] = chatId
         if (startParam != null) payload["startParam"] = startParam
         val map = replyMap(sink.request(Opcode.WEB_APP_INIT_DATA, payload), Opcode.WEB_APP_INIT_DATA)
-        val queryId = map["queryId"]?.let { it as? String ?: it.asLong()?.toString() }
-            ?: throw MalformedReplyException(Opcode.WEB_APP_INIT_DATA, "no queryId", map)
-        val url = map["url"] as? String ?: throw MalformedReplyException(Opcode.WEB_APP_INIT_DATA, "no url", map)
+        val queryId = (map["queryId"] ?: map["query_id"])?.let { it as? String ?: it.asLong()?.toString() }
+        val url = (map["url"] as? String)?.takeIf { it.isNotBlank() }
+            ?: throw MalformedReplyException(Opcode.WEB_APP_INIT_DATA, "no url", map)
         return WebAppInitData(queryId, url, map)
+    }
+
+    /**
+     * Finishes an external step of a mini app (`EXTERNAL_CALLBACK` 105, `{url}`), e.g. the return
+     * from the Gosuslugi login of the Digital ID app to a URL with `externalCallback=1` (as in
+     * Komet). The reply names the mini app to relaunch: `botId`/`bot_id` and optional
+     * `startParam`/`start_param`, at the top level or inside `data`, `result` or `response`.
+     */
+    suspend fun externalCallback(url: String): ExternalCallbackResult {
+        require(url.isNotBlank()) { "url is blank" }
+        val map = replyMap(sink.request(Opcode.EXTERNAL_CALLBACK, linkedMapOf("url" to url)), Opcode.EXTERNAL_CALLBACK)
+        return ExternalCallbackResult.from(map) ?: throw MalformedReplyException(Opcode.EXTERNAL_CALLBACK, "no botId", map)
     }
 
     /**
@@ -63,14 +76,29 @@ class BotsApi(private val sink: RequestSink, private val clock: () -> Long = ::e
     }
 }
 
-/** PyMax `InitData`: the web-app `queryId` and the `url` to open. */
 /** One `/command` of a bot menu. */
 data class BotCommand(val name: String, val description: String?)
 
 /** [BotsApi.getBotInfo] reply: the menu and the bot's contact card (description, link). */
 data class BotInfo(val botId: Long, val commands: List<BotCommand>, val contact: MaxUser?, val raw: Map<*, *>)
 
-data class WebAppInitData(val queryId: String, val url: String, val raw: Map<*, *>)
+/** Mini-app launch data: the `url` to open (it carries the launch parameters) and the optional query id. */
+data class WebAppInitData(val queryId: String?, val url: String, val raw: Map<*, *>)
+
+/** [BotsApi.externalCallback] reply: the mini app to relaunch and its start parameter. */
+data class ExternalCallbackResult(val botId: Long, val startParam: String?, val raw: Map<*, *>) {
+    companion object {
+        fun from(map: Map<*, *>): ExternalCallbackResult? {
+            val candidates = listOf<Map<*, *>?>(map, map["data"] as? Map<*, *>, map["result"] as? Map<*, *>, map["response"] as? Map<*, *>)
+            for (m in candidates.filterNotNull()) {
+                val botId = (m["botId"] ?: m["bot_id"]).asLong() ?: continue
+                val start = (m["startParam"] ?: m["start_param"])?.toString()?.takeIf { it.isNotBlank() }
+                return ExternalCallbackResult(botId, start, map)
+            }
+            return null
+        }
+    }
+}
 
 /** PyMax `CallbackResponse`. */
 data class CallbackResult(

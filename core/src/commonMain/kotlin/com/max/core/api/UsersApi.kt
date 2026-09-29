@@ -8,8 +8,8 @@ import com.max.core.protocol.Opcode
  * (`UserService`) and `payloads.py`. PyMax's user cache is not reproduced (the caller can keep
  * results in `com.max.core.state.MaxStore.putUsers`).
  *
- * Contact search by name, presence subscription and the contact list opcodes (35-40) have no
- * payload in the references and are not exposed.
+ * Contact search by name and presence subscription have no payload in the references and are not
+ * exposed; of the contact list opcodes (35-40) only the black list page of `CONTACT_LIST` 36 is.
  */
 class UsersApi(private val sink: RequestSink) {
     /** Users by id (`CONTACT_INFO` 32, `{contactIds}`); reply `contacts`. Unknown ids are absent. */
@@ -45,6 +45,32 @@ class UsersApi(private val sink: RequestSink) {
         return userList(Opcode.SYNC, linkedMapOf("contactList" to list))
     }
 
+    /**
+     * One page of blocked users (`CONTACT_LIST` 36, `{status: "BLOCKED", count, from}`, as Komet
+     * pages the black list); reply `contacts`. An empty page is the end.
+     */
+    suspend fun blockedContacts(from: Int = 0, count: Int = 100): List<MaxUser> {
+        require(from >= 0 && count > 0) { "bad page: from=$from count=$count" }
+        return userList(Opcode.CONTACT_LIST, linkedMapOf("status" to "BLOCKED", "count" to count, "from" to from))
+    }
+
+    /** Blocks or unblocks [userId] (`CONTACT_UPDATE` 34, `{contactId, action: "BLOCK" | "UNBLOCK"}`). */
+    suspend fun setBlocked(userId: Long, blocked: Boolean) {
+        rawMap(sink.request(Opcode.CONTACT_UPDATE, contactAction(userId, if (blocked) "BLOCK" else "UNBLOCK")))
+    }
+
+    /**
+     * The whole contact list (opcode 8, `CONTACTS_GET` in Komet, `{contactsSync: 0}`); reply
+     * `contacts` (PyMax's `LOGIN2` name `contactInfos` is read as well). Komet sends it when the
+     * `LOGIN` reply had no contacts.
+     */
+    suspend fun syncContacts(): List<MaxUser> {
+        val map = replyMap(sink.request(Opcode.CONTACTS_GET, linkedMapOf("contactsSync" to 0)), Opcode.CONTACTS_GET)
+        val items = map["contacts"] ?: map["contactInfos"] ?: return emptyList()
+        val list = items as? List<*> ?: throw MalformedReplyException(Opcode.CONTACTS_GET, "contacts is not a list", map)
+        return list.mapNotNull { MaxUser.from(it) }
+    }
+
     /** Active sessions of the account (`SESSIONS_INFO` 96, `{}`); reply `sessions`. */
     suspend fun getSessions(): List<SessionInfo> {
         val map = replyMap(sink.request(Opcode.SESSIONS_INFO, emptyMap<String, Any?>()), Opcode.SESSIONS_INFO)
@@ -75,7 +101,11 @@ class UsersApi(private val sink: RequestSink) {
 /** A phone-book entry for [UsersApi.importContacts] (PyMax `ContactInfo`; `lastName` is not sent). */
 data class PhoneContact(val phone: String, val firstName: String)
 
-/** An active session of the account (PyMax `Session`, every field optional). */
+/**
+ * An active session of the account (PyMax `Session`, every field optional). The server Komet talks
+ * to sends `client` (app and platform), `info` (device), `location` and `time` (last activity);
+ * [lastSeen] picks whichever time is present.
+ */
 data class SessionInfo(
     val id: String?,
     val deviceId: String?,
@@ -91,7 +121,13 @@ data class SessionInfo(
     val updated: Long?,
     val lastActivity: Long?,
     val raw: Map<*, *>,
+    val client: String? = null,
+    val info: String? = null,
+    val time: Long? = null,
 ) {
+    /** Last activity: `time`, else `lastActivity`, else `updated`; `null` when none is sent. */
+    val lastSeen: Long? get() = time ?: lastActivity ?: updated
+
     companion object {
         fun from(value: Any?): SessionInfo? {
             val m = value as? Map<*, *> ?: return null
@@ -110,6 +146,9 @@ data class SessionInfo(
                 updated = m["updated"].asLong(),
                 lastActivity = m["lastActivity"].asLong(),
                 raw = m,
+                client = m["client"] as? String,
+                info = m["info"] as? String,
+                time = m["time"].asLong(),
             )
         }
     }

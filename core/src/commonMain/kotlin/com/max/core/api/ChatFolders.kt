@@ -63,6 +63,12 @@ data class ChatFolders(
         return ChatFolders(sorted(merged, order), order, newSync ?: folderSync)
     }
 
+    /** This state without the folders [ids] (after `FOLDERS_DELETE`). */
+    fun without(ids: Collection<String>): ChatFolders {
+        val drop = ids.toSet()
+        return copy(folders = folders.filter { it.id !in drop }, order = order.filter { it !in drop })
+    }
+
     /** This state with the "all chats" folder's `favorites` set to [chatIds] (no-op without that folder). */
     fun withPinned(chatIds: List<Long>): ChatFolders {
         val all = allChats ?: return this
@@ -110,6 +116,21 @@ data class ChatFolders(
             "options" to (folder.raw["options"] as? List<*> ?: folder.options),
             "favorites" to favorites.distinct(),
         )
+
+        /**
+         * The `FOLDERS_UPDATE` payload that changes [folder]: `{id, title, include, filters,
+         * options, favorites}` with [title], [chatIds] and [filters] where given and everything
+         * else exactly as the server sent it (from [Folder.raw]).
+         */
+        fun editPayload(folder: Folder, title: String? = null, chatIds: List<Long>? = null, filters: List<Any?>? = null): Map<String, Any?> =
+            linkedMapOf(
+                "id" to folder.id,
+                "title" to (title?.trim() ?: folder.title),
+                "include" to (chatIds ?: folder.raw["include"] as? List<*> ?: folder.include),
+                "filters" to (filters ?: folder.raw["filters"] as? List<*> ?: folder.filters),
+                "options" to (folder.raw["options"] as? List<*> ?: folder.options),
+                "favorites" to (folder.raw["favorites"] as? List<*> ?: folder.favorites),
+            )
 
         private fun sorted(folders: List<Folder>, order: List<String>): List<Folder> {
             if (order.isEmpty()) return folders

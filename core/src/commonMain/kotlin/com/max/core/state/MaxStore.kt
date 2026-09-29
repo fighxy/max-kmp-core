@@ -1,6 +1,7 @@
 package com.max.core.state
 
 import com.max.core.api.Chat
+import com.max.core.api.ChatFolders
 import com.max.core.api.ChatHistory
 import com.max.core.api.FolderList
 import com.max.core.api.FolderUpdate
@@ -46,6 +47,9 @@ class MaxStore(
     /** Pinned chat ids, top first; `null` while unknown ([MaxState.pinnedChatIds]). */
     val pinnedChats: Flow<List<Long>?> get() = state.map { it.pinnedChatIds }.distinctUntilChanged()
 
+    /** Chat folders; `null` while unknown ([MaxState.chatFolders]). */
+    val chatFolders: Flow<ChatFolders?> get() = state.map { it.chatFolders }.distinctUntilChanged()
+
     /** Messages of one chat. */
     fun messages(chatId: Long): Flow<List<MaxMessage>> = state.map { it.messagesOf(chatId) }.distinctUntilChanged()
 
@@ -65,6 +69,15 @@ class MaxStore(
 
     /** A `FOLDERS_UPDATE` reply for new pins ([StateReducer.putPinnedUpdate]). */
     fun putPinnedUpdate(update: FolderUpdate, pinned: List<Long>) = _state.update { StateReducer.putPinnedUpdate(it, update, pinned) }
+
+    /** A `FOLDERS_UPDATE` reply for a created or changed folder ([StateReducer.putFolderUpdate]). */
+    fun putFolderUpdate(update: FolderUpdate) = _state.update { StateReducer.putFolderUpdate(it, update) }
+
+    /** Accepted `FOLDERS_DELETE` of [ids] ([StateReducer.removeFolders]). */
+    fun removeFolders(ids: List<String>, update: FolderUpdate) = _state.update { StateReducer.removeFolders(it, ids, update) }
+
+    /** Accepted `FOLDERS_REORDER` to [order] ([StateReducer.reorderFolders]). */
+    fun reorderFolders(order: List<String>, update: FolderUpdate) = _state.update { StateReducer.reorderFolders(it, order, update) }
 
     fun putUsers(users: List<MaxUser>) = _state.update { StateReducer.putUsers(it, users) }
 

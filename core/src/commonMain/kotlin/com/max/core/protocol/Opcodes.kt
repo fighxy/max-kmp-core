@@ -45,8 +45,8 @@ enum class Opcode(val value: Int) {
     // 2FA: no payload builders in kolibri; PyMax-only schemas. 115 is implemented (AuthApi.checkPassword);
     // TODO: payload unknown for the rest unless noted
     AUTH_LOGIN_RESTORE_PASSWORD(101), // TODO: payload unknown
-    AUTH_2FA_DETAILS(104), // TODO: payload unknown
-    EXTERNAL_CALLBACK(105), // TODO: payload unknown
+    AUTH_2FA_DETAILS(104), // Komet schema: {trackId} -> {password: {enabled, email, hint}}, TwoFactorApi.details
+    EXTERNAL_CALLBACK(105), // Komet schema: {url} -> {botId, startParam}, BotsApi.externalCallback
     AUTH_VALIDATE_PASSWORD(107), // PyMax 2FA management, TwoFactorApi
     AUTH_VALIDATE_HINT(108), // PyMax 2FA management, TwoFactorApi
     AUTH_VERIFY_EMAIL(109), // PyMax 2FA management, TwoFactorApi

@@ -14,12 +14,21 @@ class BotsApiTest {
 
     @Test
     fun initData() = runTest {
-        val sink = ScriptSink(mapOf("queryId" to "q1", "url" to "https://app"), mapOf("queryId" to 5L, "url" to "u"), mapOf("url" to "u"))
+        val sink = ScriptSink(
+            mapOf("queryId" to "q1", "url" to "https://app"),
+            mapOf("queryId" to 5L, "url" to "u"),
+            mapOf("query_id" to "q2", "url" to "u"),
+            mapOf("url" to "u"),
+            mapOf("queryId" to "q3"),
+        )
         val api = MaxApi(sink) { now }.bots
         assertEquals(WebAppInitData("q1", "https://app", mapOf("queryId" to "q1", "url" to "https://app")), api.getWebAppInitData(42, 100, "s"))
         assertEquals("5", api.getWebAppInitData(42).queryId)
+        // Komet's server names it query_id and may leave it out; only the url is required
+        assertEquals("q2", api.getWebAppInitData(42).queryId)
+        assertNull(api.getWebAppInitData(42).queryId)
         assertFailsWith<MalformedReplyException> { api.getWebAppInitData(42) }
-        assertEquals(List(3) { Opcode.WEB_APP_INIT_DATA }, sink.opcodes)
+        assertEquals(List(5) { Opcode.WEB_APP_INIT_DATA }, sink.opcodes)
         assertEquals("83a5626f7449642aa663686174496464aa7374617274506172616da173", sink.hex(0))
         assertEquals("81a5626f7449642a", sink.hex(1))
     }

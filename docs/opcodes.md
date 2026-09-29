@@ -50,14 +50,14 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 |---------|--------|------|
 | сессия | `1`, `6`, `8` (как PyMax `LOGIN2`) | `SessionMachine`, `TokenLogin` |
 | вход | `17`, `18`, `19`, `20`, `23`, `115`, `290` | `AuthApi`, `TokenLogin` |
-| 2FA | `107`–`113` | `TwoFactorApi` (`MaxApi.twoFactor`) |
-| пользователи | `32`, `34`, `46`, `21`, `96` | `UsersApi` (`MaxApi.users`) |
-| аккаунт | `16`, `22`, `97`, `272`, `274`, `276` | `AccountApi` (`MaxApi.account`); `MaxClient` сохраняет новый токен (97) и `configHash` (22) |
+| 2FA | `104` (схема Komet), `107`–`113` | `TwoFactorApi` (`MaxApi.twoFactor`): `details` / `status`, смена почты (`sendEmailCode`, `confirmEmailCode`, `commitEmail`) |
+| пользователи | `8` (`{contactsSync: 0}`, схема Komet), `32`, `34` (в т. ч. `BLOCK` / `UNBLOCK`), `36` (чёрный список, схема Komet), `46`, `21`, `96` | `UsersApi` (`MaxApi.users`), `MaxClient.syncContacts` |
+| аккаунт | `16`, `22`, `43`, `97`, `199`, `272`, `274`, `275`, `276` (43, 199, 275 и общий `22 {settings:{user}}` по схеме Komet) | `AccountApi` (`MaxApi.account`), `AccountConfig` (`config` из `19`); `MaxClient` сохраняет новый токен (97), `configHash` (22) и держит `accountConfig` |
 | закреплённые чаты | `274` (`favorites` папки «Все чаты»), `272`, `277` (push), `config.chatFolders` в `19` | `ChatFolders`, `MaxClient.setPinnedChats` / `loadFolders`, схема Komet (protocol.md, «Закреплённые чаты») |
 | чаты | `48`, `49`, `50`, `52`, `53`, `55`, `57`, `58`, `59`, `75`, `77`, `89` | `ChatsApi` (группы, ссылки, заявки, админы) |
 | сообщения | `64` (текст, вложения, отложенная отправка, опросы, комментарии), `66`, `67`, `71`, `91`, `94`, `178`, `179`, `180`, `304` | `MessagesApi` |
 | медиа | `80`, `82`, `83`, `87`, `88` | `MediaApi` (потоковая загрузка с диска через `UploadSource`) |
-| боты | `118`, `160` | `BotsApi` (`MaxApi.bots`) |
+| боты | `105` (схема Komet), `118`, `160` (`queryId` / `query_id` необязателен) | `BotsApi` (`MaxApi.bots`), `EntryApp` (мини-приложения настроек) |
 | звонки | `137` (push), `158` | `MaxEvent.CallStart`, `CallsApi` |
 | push | `128`, `129`, `130`, `132`, `135`, `136`, `137`, `142`, `155`, `277` и др. | `EventParser` → `MaxEvents` → `EventRouter` → `MaxStore` |
 
@@ -71,13 +71,14 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 - поиск: `37` `CONTACT_SEARCH`, `60` `PUBLIC_SEARCH`, `68` `CHAT_SEARCH`, `73` `MSG_SEARCH`
 - `193` `STICKER_CREATE`, `194` `STICKER_SUGGEST`, `301` `AUDIO_PLAY`
 - звонки: `76`, `78`, `79`, `84`, `103`, `164`, `166` (K13), `195`; семантика ответа `158` (K12)
-- 2FA/пароль: `101`, `104`, `105`, `116`
+- 2FA/пароль: `101`, `116`
 - транскрипция `202`/`293`, stories `208`–`218`, `220`
 - `LOG` (`5`) — телеметрия, намеренно не отправляется
 
 QR-вход на стороне нового устройства (`288`/`289`/`291`) у PyMax требует `deviceType = WEB`; это
 противоречит правилу «клиент всегда Android», поэтому не реализован. Подтверждение QR с телефона
-(`290`) есть.
+(`290`) есть; перед ним `MaxClient.approveQrLogin` шлёт `1 {interactive: true}` и `96` и ждёт 300 мс
+(по Komet, без этого сервер отклоняет подтверждение).
 
 ## Только в одном источнике
 
