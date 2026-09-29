@@ -11,15 +11,19 @@ import com.max.core.protocol.CompressionFormat
 import com.max.core.protocol.encodePacketCompressed
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,8 +48,10 @@ import kotlin.time.Duration
  * - `seq`: [SeqCounter], 1, 2, ... 65535, 0, 1, ..., restarting at 1 on every connection;
  * - replies (`cmd` 1 OK, 2 NOT_FOUND, 3 ERROR) resolve the waiter with the same `seq`; replies
  *   nobody waits for are dropped; everything else goes to [pushes];
- * - requests time out after [TransportConfig.requestTimeout]; the connect (TCP + proxy + TLS)
- *   after [TransportConfig.connectTimeout];
+ * - requests time out after [TransportConfig.requestTimeout], counted from before the write (wait
+ *   for the write lock, the write, the reply); a write still running at the deadline closes the
+ *   connection so a blocked socket cannot hold the caller or later writers. The connect (TCP +
+ *   proxy + TLS) times out after [TransportConfig.connectTimeout];
  * - PING (opcode 1, `{"interactive": true}`) every [TransportConfig.pingInterval], first one after
  *   one interval, fire-and-forget (the reply is dropped);
  * - on a drop every pending request fails with [ConnectionClosedException]; with
@@ -138,7 +144,7 @@ class MaxTransport(
 
     override suspend fun send(bytes: ByteArray) {
         val conn = stateLock.withLock { connection } ?: throw ConnectionClosedException("not connected")
-        write(conn, bytes)
+        writeWithin(conn, bytes, -1, -1)
     }
 
     override suspend fun request(opcode: Opcode, payload: Any?): TransportPacket =
@@ -167,8 +173,13 @@ class MaxTransport(
             Triple(conn, s, pending.register(s))
         }
         try {
-            write(conn, encodeRequest(seqValue, opcode, body))
-            return withTimeout(config.requestTimeout) { waiter.await() }
+            // one deadline for the write lock, the write itself and the reply
+            return withTimeout(config.requestTimeout) {
+                timeoutWins {
+                    write(conn, encodeRequest(seqValue, opcode, body))
+                    waiter.await()
+                }
+            }
         } catch (e: TimeoutCancellationException) {
             throw RequestTimeoutException(
                 opcode, seqValue,
@@ -180,6 +191,20 @@ class MaxTransport(
     }
 
     /**
+     * Runs [block] inside `withTimeout`: if it fails because the deadline closed the connection
+     * (the write then throws a connection error), report the timeout instead of that error.
+     */
+    private suspend inline fun <T> CoroutineScope.timeoutWins(block: () -> T): T = try {
+        block()
+    } catch (e: Throwable) {
+        if (e !is CancellationException) ensureActive()
+        throw e
+    }
+
+    /** Waiters still registered (tests). */
+    internal suspend fun pendingCount(): Int = stateLock.withLock { pending.size }
+
+    /**
      * Fire-and-forget request (typing, ping): sends [opcode] with the next `seq` and does not wait
      * for the reply. Returns the `seq`.
      */
@@ -189,7 +214,7 @@ class MaxTransport(
             val conn = connection ?: throw ConnectionClosedException("not connected")
             conn to seq.next()
         }
-        write(conn, encodeRequest(seqValue, opcode, body))
+        writeWithin(conn, encodeRequest(seqValue, opcode, body), opcode, seqValue)
         return seqValue
     }
 
@@ -341,15 +366,49 @@ class MaxTransport(
         }
     }
 
+    /** [write] bounded by [TransportConfig.requestTimeout] (lock wait included). */
+    private suspend fun writeWithin(conn: RawConnection, bytes: ByteArray, opcode: Int, seqValue: Int) {
+        try {
+            withTimeout(config.requestTimeout) { timeoutWins { write(conn, bytes) } }
+        } catch (e: TimeoutCancellationException) {
+            val what = if (opcode < 0) "raw bytes" else "${Opcode.nameOf(opcode)} (seq $seqValue)"
+            throw RequestTimeoutException(opcode, seqValue, "could not write $what within ${config.requestTimeout}")
+        }
+    }
+
+    /**
+     * Writes under [writeLock]. The caller's deadline covers the wait for the lock and the write.
+     * A platform write may block and ignore cancellation (a JVM `OutputStream.write` is not bounded
+     * by the read timeout), so when the caller is cancelled (timeout) while the write is still
+     * running, [conn] is closed: that unblocks the write, and a half-written frame would corrupt
+     * the stream anyway. The reader then sees the drop and the transport reconnects as usual.
+     */
     private suspend fun write(conn: RawConnection, bytes: ByteArray) {
         try {
-            writeLock.withLock { conn.write(bytes) }
+            writeLock.withLock { abortableWrite(conn, bytes) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: TransportException) {
             throw e
         } catch (e: Throwable) {
             throw ConnectionClosedException("write failed: ${e.message}", e)
+        }
+    }
+
+    private suspend fun abortableWrite(conn: RawConnection, bytes: ByteArray) = coroutineScope {
+        var finished = false
+        val guard = launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                awaitCancellation()
+            } finally {
+                if (!finished) withContext(NonCancellable) { runCatching { conn.close() } }
+            }
+        }
+        try {
+            conn.write(bytes)
+        } finally {
+            finished = true
+            guard.cancel()
         }
     }
 
