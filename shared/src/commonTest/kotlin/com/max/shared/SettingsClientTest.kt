@@ -130,7 +130,8 @@ class SettingsClientTest {
         val sync = async { c.syncContacts() }
         runCurrent()
         val sent = conn.answer(Opcode.CONTACTS_GET, mapOf("contacts" to listOf(mapOf("id" to 7, "names" to listOf(mapOf("name" to "Аня"))))))!!
-        assertEquals(mapOf("contactsSync" to 0L), sent.mapValues { (it.value as Number).toLong() })
+        assertEquals(setOf<Any?>("contactsSync"), sent.keys.toSet())
+        assertEquals(0L, (sent["contactsSync"] as Number).toLong())
         assertEquals(listOf(7L), sync.await().map { it.id })
         assertTrue(7L in c.store.state.value.contactIds)
     }
