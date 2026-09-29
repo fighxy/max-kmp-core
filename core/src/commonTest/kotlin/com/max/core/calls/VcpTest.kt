@@ -79,7 +79,7 @@ class VcpTest {
         )
         val url = params.ws2Url("conv-id")
         assertEquals(
-            "wss://sig.example/websocket?userId=99&entityType=USER&conversationId=conv-id&token=tok%20a&version=5&capabilities=3c03f&device=Kolibri&platform=ANDROID&clientType=ONE_ME&appVersion=sdk-0.1.16.4&osVersion=36",
+            "wss://sig.example/websocket?userId=99&entityType=USER&conversationId=conv-id&token=tok%20a&version=5&capabilities=3c03f&device=Pixel%208&platform=ANDROID&clientType=ONE_ME&appVersion=26.25.0&osVersion=Android%2014",
             url,
         )
     }
@@ -91,6 +91,8 @@ class VcpTest {
         assertTrue(url.contains("userId=1"))
         assertTrue(url.contains("token=abc"))
         assertTrue(url.contains("platform=ANDROID"))
+        assertTrue(url.contains("device=Pixel%208"))
+        assertTrue(url.contains("appVersion=26.25.0"))
         assertTrue(url.contains("tgt=start"))
         assertTrue(url.contains("version=5"))
         assertFalse(url.contains("platform=WEB"))
@@ -108,6 +110,9 @@ class VcpTest {
         assertNull(ConversationParams.decode(":abc"))
         assertNull(ConversationParams.decode("0:abc"))
         assertNull(ConversationParams.decode("4:@@@"))
+        val blob = Base64.encode(byteArrayOf(0))
+        assertNull(ConversationParams.decode("${Int.MAX_VALUE}:$blob"))
+        assertNull(ConversationParams.decode("${ConversationParams.MAX_RAW_BYTES + 1}:$blob"))
         val missingTkn = encodeVcp(buildJsonObject { put("wse", "wss://x") }.toString())
         assertNull(ConversationParams.decode(missingTkn))
         val missingWse = encodeVcp(buildJsonObject { put("tkn", "t") }.toString())

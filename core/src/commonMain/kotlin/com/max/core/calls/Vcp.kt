@@ -1,6 +1,7 @@
 package com.max.core.calls
 
 import com.max.core.protocol.Lz4
+import com.max.core.session.UserAgentInfo
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlinx.serialization.json.Json
@@ -23,7 +24,8 @@ data class IceServer(
 /**
  * ws2 query params that do not come from the server (kolibri `Ws2ClientInfo`).
  *
- * Defaults match kolibri-net, not the web client (`capabilities=603F`, `platform=WEB`).
+ * Device identity is the Android Pixel 8 profile ([UserAgentInfo] defaults), not the kolibri-net
+ * SDK strings. `capabilities` and `clientType` stay the ws2 signaling constants.
  */
 data class Ws2ClientInfo(
     val capabilities: String = DEFAULT.capabilities,
@@ -34,13 +36,15 @@ data class Ws2ClientInfo(
     val osVersion: String = DEFAULT.osVersion,
 ) {
     companion object {
+        private val profile = UserAgentInfo()
+
         val DEFAULT = Ws2ClientInfo(
             capabilities = "3c03f",
-            device = "Kolibri",
+            device = profile.deviceName,
             platform = "ANDROID",
             clientType = "ONE_ME",
-            appVersion = "sdk-0.1.16.4",
-            osVersion = "36",
+            appVersion = profile.appVersion,
+            osVersion = profile.osVersion,
         )
     }
 }
@@ -104,15 +108,21 @@ data class ConversationParams(
 
     companion object {
         /**
-         * Parses a `vcp` string. Returns `null` on a missing colon, a bad length, bad Base64,
-         * a corrupt LZ4 block, invalid JSON, or a missing `tkn` / `wse`.
+         * Advertised decompressed size above this is rejected before Base64 or LZ4 run.
+         * Call JSON is a few kilobytes; the prefix must not choose the allocation size.
+         */
+        const val MAX_RAW_BYTES: Int = 64 * 1024
+
+        /**
+         * Parses a `vcp` string. Returns `null` on a missing colon, a non-positive or oversized
+         * length, bad Base64, a corrupt LZ4 block, invalid JSON, or a missing `tkn` / `wse`.
          */
         @OptIn(ExperimentalEncodingApi::class)
         fun decode(vcp: String): ConversationParams? {
             val sep = vcp.indexOf(':')
             if (sep <= 0) return null
             val rawLen = vcp.substring(0, sep).toIntOrNull() ?: return null
-            if (rawLen <= 0) return null
+            if (rawLen <= 0 || rawLen > MAX_RAW_BYTES) return null
             val compressed = runCatching { Base64.decode(vcp.substring(sep + 1)) }.getOrNull() ?: return null
             val decompressed = runCatching { Lz4.decompressBlock(compressed, rawLen) }.getOrNull() ?: return null
             val bytes = if (decompressed.size > rawLen) decompressed.copyOf(rawLen) else decompressed
