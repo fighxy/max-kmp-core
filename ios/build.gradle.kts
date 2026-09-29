@@ -30,5 +30,14 @@ kotlin {
         iosMain.dependencies {
             implementation(project(":shared"))
         }
+        iosTest {
+            // FakeRawConnection / ScriptedConnectionFactory / packet builders from :core
+            kotlin.srcDir("../core/src/testFixtures/kotlin")
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.coroutines.test)
+            }
+        }
     }
 }

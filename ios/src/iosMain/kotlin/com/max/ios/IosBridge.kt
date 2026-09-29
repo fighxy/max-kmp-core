@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
 package com.max.ios
 
 import com.max.core.ErrorKind
@@ -11,12 +13,14 @@ import com.max.shared.MaxClient
 import com.max.shared.MaxClientConfig
 import com.max.shared.Watcher
 import com.max.shared.ClientState
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import platform.Foundation.NSLock
 
 /**
  * Swift entry of the network core.
@@ -24,35 +28,50 @@ import kotlinx.coroutines.launch
  * The framework exports only the types in this file. [MaxClient] stays inside it: the device
  * profile is still the Android Pixel 8 profile, and the login token stays in the Keychain store
  * `com.max.kmp.<namespace>`. Callbacks run on the core dispatcher, not the main thread.
- * A null error kind means success.
+ *
+ * Error boundary: nothing here throws into Swift. Every asynchronous operation calls its callback
+ * exactly once, with a null error kind on success or an [com.max.core.ErrorKind] name (plus the
+ * server error key, if any) on failure, including cancellation (`CANCELLED`) and calls made after
+ * [close]. The [MaxClient] is created on first use, so a Keychain failure while loading the
+ * device identity becomes an error kind of the failing call instead of an exception in the
+ * initializer. The synchronous getters fall back to `failed` / empty / `false`. Exceptions thrown
+ * by a callback itself are dropped and never abort the process.
  */
-class MaxIosClient(namespace: String) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val client = MaxClient(MaxClientConfig(namespace = namespace), scope = scope)
+class MaxIosClient internal constructor(
+    private val scope: CoroutineScope,
+    private val factory: (CoroutineScope) -> MaxClient,
+) {
+    constructor(namespace: String) : this(newScope(), { scope -> MaxClient(MaxClientConfig(namespace = namespace), scope = scope) })
+
+    private val clientLock = NSLock()
+    private var created: MaxClient? = null
     private val watches = mutableListOf<Watcher>()
 
-    fun phaseName(): String = phaseOf(client.state.value)
+    /** The client, created on the first call; throws what the constructor threw (retried next time). */
+    private fun client(): MaxClient = clientLock.locked { created ?: factory(scope).also { created = it } }
 
-    fun currentUserId(): String = client.userId.value?.toString().orEmpty()
+    fun phaseName(): String = attempt("failed") { phaseOf(client().state.value) }
 
-    fun hasStoredToken(): Boolean = client.hasStoredToken
+    fun currentUserId(): String = attempt("") { client().userId.value?.toString().orEmpty() }
+
+    fun hasStoredToken(): Boolean = attempt(false) { client().hasStoredToken }
 
     fun start(onResult: (String?, String?, String?) -> Unit) {
-        launch(onResult) { phaseOf(client.start()) }
+        perform(onResult, { null }) { phaseOf(it.start()) }
     }
 
     fun requestCode(phone: String, resend: Boolean, onResult: (IosCodeRequest?, String?, String?) -> Unit) {
-        launchValue(onResult) {
+        perform(onResult, { null }) { c ->
             val type = if (resend) CodeRequestType.RESEND else CodeRequestType.START_AUTH
-            val code = client.requestCode(phone, type)
+            val code = c.requestCode(phone, type)
             IosCodeRequest(code.token, code.codeLength ?: 0)
         }
     }
 
     fun verifyCode(token: String, code: String, onResult: (IosAuthStep?, String?, String?) -> Unit) {
-        launchValue(onResult) {
-            when (val result = client.verifyCode(token, code)) {
-                is VerifyResult.LoggedIn -> loggedInStep()
+        perform(onResult, { null }) { c ->
+            when (val result = c.verifyCode(token, code)) {
+                is VerifyResult.LoggedIn -> loggedInStep(c)
                 is VerifyResult.PasswordRequired -> IosAuthStep("password", result.trackId, result.hint.orEmpty(), "", "")
                 is VerifyResult.RegistrationRequired -> IosAuthStep("register", "", "", result.registerToken, "")
             }
@@ -60,140 +79,151 @@ class MaxIosClient(namespace: String) {
     }
 
     fun checkPassword(trackId: String, password: String, onResult: (IosAuthStep?, String?, String?) -> Unit) {
-        launchValue(onResult) {
-            client.checkPassword(trackId, password)
-            loggedInStep()
+        perform(onResult, { null }) { c ->
+            c.checkPassword(trackId, password)
+            loggedInStep(c)
         }
     }
 
     fun register(registerToken: String, firstName: String, lastName: String, onResult: (IosAuthStep?, String?, String?) -> Unit) {
-        launchValue(onResult) {
-            client.register(registerToken, firstName, lastName.takeIf { it.isNotBlank() })
-            loggedInStep()
+        perform(onResult, { null }) { c ->
+            c.register(registerToken, firstName, lastName.takeIf { it.isNotBlank() })
+            loggedInStep(c)
         }
     }
 
     fun logout(onResult: (String?, String?) -> Unit) {
-        scope.launch {
-            try {
-                client.logout()
-                onResult(null, null)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                val (kind, key) = classify(t)
-                onResult(kind, key)
-            }
-        }
+        runUnit(onResult) { it.logout() }
     }
 
     fun loadChats(onResult: (List<IosChat>, String?, String?) -> Unit) {
-        launchList(onResult) {
-            client.loadChats()
-            client.store.state.value.chats.values.map(::chatSnapshot)
+        perform(onResult, { emptyList() }) { c ->
+            c.loadChats()
+            c.store.state.value.chats.values.map(::chatSnapshot)
         }
     }
 
     fun loadChat(chatId: String, onResult: (IosChat?, String?, String?) -> Unit) {
-        launchValue(onResult) { chatSnapshot(client.api.chats.getChat(chatId.toLong())) }
+        perform(onResult, { null }) { c -> chatSnapshot(c.api.chats.getChat(parseId(chatId))) }
     }
 
     fun loadHistory(chatId: String, beforeMs: Long, limit: Int, onResult: (List<IosMessage>, String?, String?) -> Unit) {
-        launchList(onResult) {
-            val history = client.loadHistory(chatId.toLong(), from = beforeMs.takeIf { it > 0 }, backward = limit.coerceIn(1, 100))
+        perform(onResult, { emptyList() }) { c ->
+            val history = c.loadHistory(parseId(chatId), from = beforeMs.takeIf { it > 0 }, backward = limit.coerceIn(1, 100))
             history.messages.map { messageSnapshot(it, chatId) }
         }
     }
 
     fun sendText(chatId: String, text: String, onResult: (IosMessage?, String?, String?) -> Unit) {
-        launchValue(onResult) { messageSnapshot(client.sendText(chatId.toLong(), text), chatId) }
+        perform(onResult, { null }) { c -> messageSnapshot(c.sendText(parseId(chatId), text), chatId) }
     }
 
     fun markRead(chatId: String, messageId: String, onResult: (String?, String?) -> Unit) {
-        scope.launch {
-            try {
-                client.api.messages.markRead(chatId.toLong(), messageId.toLong())
-                onResult(null, null)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                val (kind, key) = classify(t)
-                onResult(kind, key)
-            }
-        }
+        runUnit(onResult) { it.api.messages.markRead(parseId(chatId), parseId(messageId)) }
     }
 
-    fun watchState(onEach: (String) -> Unit): IosWatch = track(client.watchState { onEach(phaseOf(it)) })
+    /** A dead [IosWatch] (no callbacks) when the client cannot be created. */
+    fun watchState(onEach: (String) -> Unit): IosWatch = watch { c -> c.watchState { guarded { onEach(phaseOf(it)) } } }
 
-    fun watchEvents(onEach: (IosEvent) -> Unit): IosWatch = track(client.watchEvents { event ->
-        flatten(event).forEach(onEach)
-    })
+    fun watchEvents(onEach: (IosEvent) -> Unit): IosWatch = watch { c ->
+        c.watchEvents { event -> guarded { flatten(event).forEach(onEach) } }
+    }
 
-    /** Disconnects and releases the client. It cannot be used afterwards. */
+    /** Disconnects and releases the client. It cannot be used afterwards; [onDone] is always called once. */
     fun close(onDone: () -> Unit) {
-        watches.forEach { it.cancel() }
-        watches.clear()
-        scope.launch {
+        clientLock.locked {
+            watches.forEach { it.cancel() }
+            watches.clear()
+        }
+        scope.launch(start = CoroutineStart.ATOMIC) {
             try {
-                client.close()
+                clientLock.locked { created }?.close()
+            } catch (t: Throwable) {
+                // closing is best effort; the scope is cancelled below either way
             } finally {
-                onDone()
+                guarded(onDone)
                 scope.cancel()
             }
         }
     }
 
-    private fun loggedInStep(): IosAuthStep =
-        IosAuthStep("loggedIn", "", "", "", client.userId.value?.toString().orEmpty())
+    private fun loggedInStep(c: MaxClient): IosAuthStep =
+        IosAuthStep("loggedIn", "", "", "", c.userId.value?.toString().orEmpty())
 
-    private fun track(watcher: Watcher): IosWatch {
-        watches += watcher
+    private fun watch(start: (MaxClient) -> Watcher): IosWatch {
+        val watcher = try {
+            start(client())
+        } catch (t: Throwable) {
+            return IosWatch(null)
+        }
+        clientLock.locked { watches += watcher }
         return IosWatch(watcher)
     }
 
-    private fun launch(onResult: (String?, String?, String?) -> Unit, body: suspend () -> String) {
-        scope.launch {
-            try {
-                onResult(body(), null, null)
-            } catch (e: CancellationException) {
-                throw e
+    /**
+     * Runs [body] and calls [onResult] exactly once: `(value, null, null)` on success,
+     * `(fallback, kind, errorKey)` on any failure. ATOMIC start: the body runs (and reports
+     * `CANCELLED`) even when the scope is already cancelled by [close].
+     */
+    private fun <T> perform(onResult: (T, String?, String?) -> Unit, fallback: () -> T, body: suspend (MaxClient) -> T) {
+        scope.launch(start = CoroutineStart.ATOMIC) {
+            val outcome = try {
+                Result.success(body(client()))
             } catch (t: Throwable) {
-                val (kind, key) = classify(t)
-                onResult(null, kind, key)
+                Result.failure(t)
             }
+            outcome.fold(
+                onSuccess = { guarded { onResult(it, null, null) } },
+                onFailure = { t ->
+                    val (kind, key) = classify(t)
+                    guarded { onResult(fallback(), kind, key) }
+                },
+            )
         }
     }
 
-    private fun <T> launchValue(onResult: (T?, String?, String?) -> Unit, body: suspend () -> T) {
-        scope.launch {
-            try {
-                onResult(body(), null, null)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                val (kind, key) = classify(t)
-                onResult(null, kind, key)
-            }
-        }
-    }
-
-    private fun <T> launchList(onResult: (List<T>, String?, String?) -> Unit, body: suspend () -> List<T>) {
-        scope.launch {
-            try {
-                onResult(body(), null, null)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                val (kind, key) = classify(t)
-                onResult(emptyList(), kind, key)
-            }
-        }
+    private fun runUnit(onResult: (String?, String?) -> Unit, body: suspend (MaxClient) -> Unit) {
+        perform<Unit>({ _, kind, key -> onResult(kind, key) }, { }) { body(it) }
     }
 }
 
+/** Scope of a [MaxIosClient]: exceptions that escape anyway are dropped instead of aborting the app. */
+private fun newScope(): CoroutineScope =
+    CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, _ -> })
+
+private inline fun <T> NSLock.locked(block: () -> T): T {
+    lock()
+    try {
+        return block()
+    } finally {
+        unlock()
+    }
+}
+
+private inline fun <T> attempt(fallback: T, block: () -> T): T = try {
+    block()
+} catch (t: Throwable) {
+    fallback
+}
+
+/** Runs a Swift callback; whatever it throws stays here. */
+private inline fun guarded(block: () -> Unit) {
+    try {
+        block()
+    } catch (t: Throwable) {
+        // a callback must not break the core coroutine that calls it
+    }
+}
+
+/** Decimal id from Swift; a malformed one becomes an [IllegalArgumentException] (error kind `UNKNOWN`). */
+private fun parseId(value: String): Long =
+    value.toLongOrNull() ?: throw IllegalArgumentException("not a numeric id: \"$value\"")
+
 /** Cancels one [MaxIosClient.watchState] or [MaxIosClient.watchEvents] subscription. */
-class IosWatch internal constructor(private val watcher: Watcher) {
-    fun cancel() = watcher.cancel()
+class IosWatch internal constructor(private val watcher: Watcher?) {
+    fun cancel() {
+        watcher?.cancel()
+    }
 }
 
 /** `AUTH_REQUEST` reply. [codeLength] is 0 when the server omitted it. */

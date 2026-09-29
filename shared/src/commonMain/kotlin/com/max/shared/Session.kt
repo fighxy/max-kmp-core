@@ -1,6 +1,7 @@
 package com.max.shared
 
 import com.max.core.session.HandshakeInfo
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -11,11 +12,19 @@ import kotlinx.coroutines.flow.Flow
  * - [request] — send [opcode] with a MessagePack [payload] (empty = no body), await the OK reply
  *   body (MessagePack; empty when none). ERROR replies throw `ServerErrorException`.
  * - [pushes] — every server push
+ *
+ * Every suspend member is `@Throws`, so from Swift a failure arrives as an `NSError`.
  */
 interface Session {
+    @Throws(CancellationException::class, Exception::class)
     suspend fun connect(): SessionInfo
+
+    @Throws(CancellationException::class, Exception::class)
     suspend fun request(opcode: Int, payload: ByteArray): ByteArray
+
     val pushes: Flow<Push>
+
+    @Throws(CancellationException::class, Exception::class)
     suspend fun close()
 }
 
@@ -30,4 +39,5 @@ data class SessionInfo(val callsSeed: Long?, val deviceName: String?, val raw: M
 class Push(val opcode: Int, val cmd: Int, val payload: ByteArray)
 
 /** A [MaxClient] with the default settings for [host]; see [MaxClient] for the full API. */
+@Throws(Exception::class)
 fun openSession(host: String, port: Int = 443): MaxClient = MaxClient(MaxClientConfig(host = host, port = port))

@@ -40,6 +40,7 @@ import com.max.core.transport.ProxyConfig
 import com.max.core.transport.TransportConfig
 import com.max.core.transport.defaultConnectionFactory
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -148,8 +149,15 @@ val ClientState.error: MaxError?
  *
  * The device profile is always Android ([MaxClientConfig.userAgent], checked with
  * [DeviceProfile.requireAndroid]); nothing about the host device is sent.
+ *
+ * Swift boundary: every public operation that can fail is annotated `@Throws(CancellationException,
+ * Exception)`, so Kotlin/Native turns any core exception into an `NSError` (the Kotlin exception is in
+ * `userInfo["KotlinException"]`; classify it with `toMaxError`) instead of terminating the process.
+ * The constructor throws as well (invalid profile, unreadable credential store). Coroutines the
+ * client launches in its own scope never let an exception escape uncaught. The Swift app uses the
+ * callback facade `com.max.ios.MaxIosClient`, which never throws at all.
  */
-class MaxClient(
+class MaxClient @Throws(Exception::class) constructor(
     val config: MaxClientConfig = MaxClientConfig(),
     keyValueStore: KeyValueStore = PlatformSession.defaultStore(config.namespace),
     connectionFactory: ConnectionFactory = defaultConnectionFactory(),
@@ -157,7 +165,7 @@ class MaxClient(
     scope: CoroutineScope? = null,
 ) : Session {
     private val ownsScope = scope == null
-    private val scope: CoroutineScope = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope: CoroutineScope = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default + swallowUncaught)
     private val credentials = CredentialStore(keyValueStore, "max.${config.namespace}")
     private val tokenLogin = MutableStateFlow<TokenLogin?>(null)
     private val loggedIn = MutableStateFlow<Long?>(null)
@@ -223,7 +231,16 @@ class MaxClient(
         router.start(this.scope)
         this.scope.launch {
             session.state.collect { s ->
-                if (s is SessionState.Failed && s.cause is InvalidTokenException) rejectToken()
+                if (s is SessionState.Failed && s.cause is InvalidTokenException) {
+                    // a failing credential store must not escape into the scope (uncaught on iOS = crash)
+                    try {
+                        rejectToken()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // the token stays stored; the next start() reports the rejection again
+                    }
+                }
             }
         }
     }
@@ -242,6 +259,7 @@ class MaxClient(
      * [ClientState.TokenRejected] (the token is cleared; call [start] again for the SMS flow).
      * Other failures throw.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun start(): ClientState {
         lifecycle.withLock {
             val c = credentials.load() ?: stored
@@ -272,6 +290,7 @@ class MaxClient(
     private fun currentState(): ClientState = map(session.state.value, loggedInFlag.value)
 
     /** Requests an SMS code (`AUTH_REQUEST` 17); connects first if needed. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun requestCode(phone: String, type: CodeRequestType = CodeRequestType.START_AUTH): CodeRequest {
         session.connect()
         return auth.requestCode(phone, type)
@@ -282,6 +301,7 @@ class MaxClient(
      * token right away (state [ClientState.Ready]); the other results need [checkPassword] or
      * [register].
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun verifyCode(codeToken: String, code: String): VerifyResult {
         val r = auth.verifyCode(codeToken, code)
         if (r is VerifyResult.LoggedIn) loginWithToken(r.loginToken)
@@ -289,10 +309,12 @@ class MaxClient(
     }
 
     /** Answers the 2FA challenge (`AUTH_LOGIN_CHECK_PASSWORD` 115) and logs in. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun checkPassword(trackId: String, password: String): LoginResult =
         loginWithToken(auth.checkPassword(trackId, password).loginToken)
 
     /** Registers the unknown number (`AUTH_CONFIRM` 23) and logs in. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun register(registerToken: String, firstName: String, lastName: String? = null): LoginResult =
         loginWithToken(auth.confirmRegistration(registerToken, firstName, lastName).token)
 
@@ -300,6 +322,7 @@ class MaxClient(
      * Logs in with [token] (`LOGIN` 19) on the current connection (connecting first if needed),
      * saves it, and keeps using it for every reconnect.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun loginWithToken(token: String): LoginResult {
         val login = TokenLogin(token, device, config.fingerprint)
         lifecycle.withLock { tokenLogin.value = login }
@@ -309,10 +332,11 @@ class MaxClient(
             login.hook(session.transport, handshake)
             onLoggedIn(login)
         }
-        return login.result.value!!
+        return login.result.value ?: throw IllegalStateException("LOGIN finished without a result")
     }
 
     /** Approves a web QR login from this account (`AUTH_QR_APPROVE` 290). */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun approveQrLogin(qrLink: String): QrApproval = auth.approveQrLogin(qrLink)
 
     /**
@@ -321,6 +345,7 @@ class MaxClient(
      * is stopped before the snapshot is dropped, then the router is started again so this client
      * can log in once more.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun logout() {
         runCatching { if (loggedInFlag.value) auth.logout() }
         val gap = lifecycle.withLock {
@@ -342,6 +367,7 @@ class MaxClient(
     }
 
     /** Disconnects (the token stays stored); [start] reconnects. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun disconnect() {
         session.disconnect()
         loggedInFlag.value = false
@@ -389,6 +415,7 @@ class MaxClient(
      * oldest id, or the page cap leaves the hole open. Failures are skipped per chat; returns
      * the chats whose holes closed.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun fillGaps(): List<Long> {
         val epoch = lifecycle.withLock { sessionEpoch }
         return fillGapsAt(epoch)
@@ -450,13 +477,16 @@ class MaxClient(
     private fun sessionOpen(epoch: Int): Boolean = sessionEpoch == epoch && tokenLogin.value != null
 
     /** One page of the chat list (`CHATS_LIST`) into [store]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun loadChats(marker: Long? = null): List<Chat> = api.chats.fetchChats(marker).also(store::putChats)
 
     /** A history page (`CHAT_HISTORY`, the latest [backward] messages before [from]) into [store]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun loadHistory(chatId: Long, from: Long? = null, backward: Int = 40): ChatHistory =
         api.messages.getChatHistory(chatId, from = from, backward = backward).also { store.putHistory(chatId, it) }
 
     /** Users by id (`CONTACT_INFO`) into [store]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun loadUsers(userIds: List<Long>): List<MaxUser> = api.users.getUsers(userIds).also(store::putUsers)
 
     /**
@@ -464,6 +494,7 @@ class MaxClient(
      * session; it replaces the stored one and is used for the next reconnects (PyMax
      * `close_all_sessions`). Returns `false` if the reply carried no token.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun closeOtherSessions(): Boolean {
         val token = api.account.closeOtherSessions() ?: return false
         lifecycle.withLock {
@@ -477,6 +508,7 @@ class MaxClient(
      * Changes privacy settings (`CONFIG` 22) and stores the returned config hash in the sync
      * markers sent with the next `LOGIN` (PyMax `change_profile_settings`).
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun updatePrivacy(settings: PrivacySettings): String? {
         val hash = api.account.updatePrivacy(settings) ?: return null
         lifecycle.withLock {
@@ -488,6 +520,7 @@ class MaxClient(
     }
 
     /** Changes the own profile (`PROFILE` 16) and updates the own user in [store]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun updateProfile(firstName: String, lastName: String? = null, description: String? = null, photoToken: String? = null): Profile =
         api.account.updateProfile(firstName, lastName, description, photoToken).also { store.putUsers(listOf(it.contact)) }
 
@@ -501,13 +534,16 @@ class MaxClient(
     }
 
     /** Sends a text message and adds the server's copy to [store] (own messages are not pushed back). */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun sendText(chatId: Long, text: String, replyTo: Long? = null): MaxMessage =
         api.messages.sendMessage(chatId, text, replyTo).also { store.putMessages(chatId, listOf(it)) }
 
     // ---- Session (raw access) ------------------------------------------------------------------
 
+    @Throws(CancellationException::class, Exception::class)
     override suspend fun connect(): SessionInfo = SessionInfo.from(session.connect())
 
+    @Throws(CancellationException::class, Exception::class)
     override suspend fun request(opcode: Int, payload: ByteArray): ByteArray {
         require(opcode in 0..0xFFFF) { "opcode out of range: $opcode" }
         val body = if (payload.isEmpty()) null else DefaultMessagePackCodec.decode(payload)
@@ -520,6 +556,7 @@ class MaxClient(
     }
 
     /** Stops everything: disconnects and, if the client created its own scope, cancels it. */
+    @Throws(CancellationException::class, Exception::class)
     override suspend fun close() {
         val gap = lifecycle.withLock {
             sessionEpoch += 1
@@ -541,3 +578,6 @@ class MaxClient(
     fun watchEvents(onEach: (MaxEvent) -> Unit): Watcher = events.all.watch(scope, onEach = onEach)
     fun watchStore(onEach: (MaxState) -> Unit): Watcher = store.state.watch(scope, onEach = onEach)
 }
+
+/** Drops exceptions that escape a coroutine of a client-owned scope (on iOS they would abort the app). */
+private val swallowUncaught = CoroutineExceptionHandler { _, _ -> }

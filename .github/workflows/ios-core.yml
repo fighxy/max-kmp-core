@@ -77,6 +77,10 @@ jobs:
         # :android is a plain Android library (kotlin.android), Java 17. Compiled here, not run on a device.
         run: ./gradlew :android:compileDebugKotlin --no-daemon --stacktrace
 
+      - name: iOS facade tests
+        # MaxIosClient error boundary (callbacks instead of exceptions), on the simulator.
+        run: ./gradlew :ios:iosSimulatorArm64Test --no-daemon --stacktrace
+
       - name: Link iOS facade framework
         # MaxIosClient in :ios. Simulator debug link only; the app builds the release XCFramework.
         run: ./gradlew :ios:linkDebugFrameworkIosSimulatorArm64 --no-daemon --stacktrace
