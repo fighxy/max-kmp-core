@@ -3,6 +3,7 @@ package com.max.shared
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -36,6 +37,27 @@ class FileKeyValueStoreTest {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun existingParentKeepsItsPermissions() {
+        val dir = Files.createTempDirectory("maxkv3").toFile()
+        try {
+            if (!posix(dir)) return // POSIX-only
+            val shared = File(dir, "shared").also { it.mkdir() }
+            val rwxrxrx = PosixFilePermissions.fromString("rwxr-xr-x")
+            Files.setPosixFilePermissions(shared.toPath(), rwxrxrx)
+            val file = File(shared, "default.properties")
+            FileKeyValueStore(file).put("token", "t")
+            FileKeyValueStore(file).put("userId", "5")
+            assertEquals(rwxrxrx, Files.getPosixFilePermissions(shared.toPath()))
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(file.toPath()))
+            assertEquals("t", FileKeyValueStore(file).get("token"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    private fun posix(dir: File): Boolean = dir.toPath().fileSystem.supportedFileAttributeViews().contains("posix")
 
     @Test
     fun defaultStoreHonoursDirProperty() {

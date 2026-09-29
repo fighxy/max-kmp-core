@@ -12,8 +12,9 @@ import java.util.Properties
 /**
  * [KeyValueStore] backed by a `java.util.Properties` file. Every write replaces the file
  * atomically (temp file + move). On POSIX the file is created owner-read/write before any token
- * bytes are written, and its directory is owner-only. If those permissions do not stick, the
- * write fails.
+ * bytes are written; if that permission does not stick, the write fails. A missing parent
+ * directory is created owner-only (`rwx------`); an existing one is used as it is and its
+ * permissions are never changed (it may be shared, e.g. an app data directory).
  */
 class FileKeyValueStore(val file: File) : KeyValueStore {
     private val lock = Any()
@@ -46,8 +47,9 @@ class FileKeyValueStore(val file: File) : KeyValueStore {
 
     private fun write(p: Properties) {
         val parent = file.parentFile
-        if (parent != null) {
-            parent.mkdirs()
+        if (parent != null && !parent.isDirectory) {
+            // only a directory this store creates is restricted; an existing one is left alone
+            Files.createDirectories(parent.toPath())
             ownerOnly(parent.toPath(), directoryPerms)
         }
         val tmp = File(parent, file.name + ".tmp")
