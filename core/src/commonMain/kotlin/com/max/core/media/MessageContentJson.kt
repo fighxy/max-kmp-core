@@ -1,6 +1,7 @@
 package com.max.core.media
 
 import com.max.core.api.MaxMessage
+import com.max.core.api.ReactionInfo
 import com.max.core.protocol.MsgPackExt
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -34,6 +35,30 @@ fun messageContentJson(message: MaxMessage, senderName: (Long) -> String? = { nu
     message.reactionInfo?.let { fields["reactionInfo"] = toJsonElement(it.raw) }
     if (commentsCount != null) fields["commentsCount"] = toJsonElement(commentsCount)
     if (commentsInfo != null) fields["commentsInfo"] = toJsonElement(commentsInfo)
+    return JsonObject(fields).toString()
+}
+
+/**
+ * Reactions of one message for the app, apart from [messageContentJson]:
+ * `{"counters": [{"reaction", "count"}], "totalCount", "yourReaction"}`.
+ *
+ * `null` [info] is "no reactions" (empty counters). With [mineKnown] `false` the key
+ * `yourReaction` is left out, so the app keeps the own reaction it already has (a
+ * `NOTIF_MSG_REACTIONS_CHANGED` push has only counters); with `true` it is always written,
+ * JSON `null` when there is none. Counters below 1 are dropped.
+ */
+fun reactionsJson(info: ReactionInfo?, mineKnown: Boolean = true): String {
+    val counters = info?.counters.orEmpty().filter { it.count > 0 && it.reaction.isNotEmpty() }
+    val fields = linkedMapOf<String, JsonElement>(
+        "counters" to JsonArray(
+            counters.map { JsonObject(linkedMapOf("reaction" to JsonPrimitive(it.reaction), "count" to JsonPrimitive(it.count))) },
+        ),
+        "totalCount" to JsonPrimitive(if (counters.isEmpty()) 0 else maxOf(info?.totalCount ?: 0, counters.sumOf { it.count })),
+    )
+    if (mineKnown) {
+        val mine = info?.yourReaction?.takeIf { own -> counters.any { it.reaction == own } }
+        fields["yourReaction"] = mine?.let(::JsonPrimitive) ?: JsonNull
+    }
     return JsonObject(fields).toString()
 }
 

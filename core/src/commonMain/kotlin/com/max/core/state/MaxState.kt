@@ -114,8 +114,9 @@ data class MaxState(
  *   the mark). With an incomplete cache the server's counter is kept (at least the stored count).
  *   `setAsUnread = true` makes it at least 1.
  * - [MaxEvent.Presence] — replaces the user's presence (a push without `status` clears it).
- * - [MaxEvent.ReactionsChanged] — replaces counters / total of the stored message, keeping
- *   `yourReaction`.
+ * - [MaxEvent.ReactionsChanged] — replaces counters / total of the stored message. The own
+ *   `yourReaction` is taken from the push when it has one, otherwise the stored one is kept while
+ *   its counter is still in the push.
  * - [MaxEvent.FoldersChanged] — merged into [MaxState.chatFolders] ([ChatFolders.merge]); this is
  *   how pins made on another device arrive.
  * - everything else (attachment signals, calls, unknown pushes) — no change.
@@ -420,15 +421,27 @@ object StateReducer {
 
     private fun reactions(state: MaxState, e: MaxEvent.ReactionsChanged): MaxState {
         val id = e.messageId.toLongOrNull() ?: return state
-        val list = state.messages[e.chatId] ?: return state
-        val idx = list.indexOfFirst { it.id == id }
+        val old = state.messages[e.chatId]?.firstOrNull { it.id == id } ?: return state
+        // The push carries only counters: keep the own reaction while its counter is still there.
+        val mine = e.yourReaction ?: old.reactionInfo?.yourReaction?.takeIf { own -> e.counters.any { it.reaction == own && it.count > 0 } }
+        val raw = LinkedHashMap<Any?, Any?>((e.raw as? Map<*, *>) ?: emptyMap<Any?, Any?>())
+        if (mine != null) raw["yourReaction"] = mine
+        return putReactions(state, e.chatId, id, ReactionInfo(e.totalCount, e.counters, mine, raw))
+    }
+
+    /**
+     * Replaces the reactions of a stored message (and of the chat's `lastMessage` when it is that
+     * message). `null` [info] means the message has no reactions left. An unknown message: no change.
+     */
+    fun putReactions(state: MaxState, chatId: Long, messageId: Long, info: ReactionInfo?): MaxState {
+        val list = state.messages[chatId] ?: return state
+        val idx = list.indexOfFirst { it.id == messageId }
         if (idx < 0) return state
-        val old = list[idx]
-        val info = ReactionInfo(e.totalCount, e.counters, old.reactionInfo?.yourReaction, (e.raw as? Map<*, *>) ?: emptyMap<Any?, Any?>())
-        val updated = list.toMutableList().also { it[idx] = old.copy(reactionInfo = info) }
-        var s = state.copy(messages = state.messages + (e.chatId to updated))
-        val chat = s.chats[e.chatId]
-        if (chat?.lastMessage?.id == id) s = s.copy(chats = s.chats + (e.chatId to chat.copy(lastMessage = updated[idx])))
+        val kept = info?.takeIf { it.counters.isNotEmpty() }
+        val updated = list.toMutableList().also { it[idx] = it[idx].copy(reactionInfo = kept) }
+        var s = state.copy(messages = state.messages + (chatId to updated))
+        val chat = s.chats[chatId]
+        if (chat?.lastMessage?.id == messageId) s = s.copy(chats = s.chats + (chatId to chat.copy(lastMessage = updated[idx])))
         return s
     }
 

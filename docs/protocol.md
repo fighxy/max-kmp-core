@@ -421,6 +421,16 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 257 | `CHAT_REACTIONS_SETTINGS_SET` | `CHAT_REACTIONS_SETTINGS_SET` |  |
 | 258 | `REACTIONS_SETTINGS_GET_BY_CHAT_ID` | `REACTIONS_SETTINGS_GET_BY_CHAT_ID` |  |
 
+Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema; no code taken):
+
+- 178 `{chatId, messageId, reaction: {reactionType: "EMOJI", id}, postId?}` → `{reactionInfo?}`; 179 `{chatId, messageId, postId?}` → `{reactionInfo?}`.
+- `reactionInfo` = `{counters: [{reaction, count}], totalCount, yourReaction?}`; one reaction per account, a new one replaces the old. Messages of `CHAT_HISTORY` carry it too.
+- 180 `{chatId, messageIds}` → `{messagesReactions: {"<id>": reactionInfo}}`.
+- 181 `{chatId, messageId, count}` → `{reactions: [{userId, reaction}]}`.
+- 155 push `{chatId, messageId, counters, totalCount}`: no `yourReaction`, so the own reaction is kept while its counter stays.
+- Catalog: 27 `{type: "ANIMOJI_SET", sync: 0}` → `sections[].animojiSetIds` (else keys of `animojiUpdates` are animoji ids); 28 `{type: "ANIMOJI_SET", ids}` → `animojiSets[].animojis`; 28 `{type: "ANIMOJI", ids}` (≤ 100 ids) → `animojis[{id, emoji, iconUrl?, lottieUrl?}]`.
+- 257 / 258 (per-chat reaction settings): no reference sends them; not implemented.
+
 ### Calls / Video chat
 
 | code | kolibri | PyMax | note |

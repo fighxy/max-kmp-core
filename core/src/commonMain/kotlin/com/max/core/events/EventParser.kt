@@ -78,7 +78,7 @@ object EventParser {
             if (chatId == null || messageId == null) null
             else {
                 val info = ReactionInfo.from(map)!!
-                MaxEvent.ReactionsChanged(chatId, messageId, info.counters, info.totalCount, opcode, raw)
+                MaxEvent.ReactionsChanged(chatId, messageId, info.counters, info.totalCount, opcode, raw, info.yourReaction?.takeIf { it.isNotEmpty() })
             }
         }
         Opcode.NOTIF_ATTACH.value -> {

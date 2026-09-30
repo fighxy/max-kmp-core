@@ -34,4 +34,5 @@ class MaxApi(sink: RequestSink, clock: () -> Long, val cids: ClientIdGenerator) 
     val twoFactor: TwoFactorApi = TwoFactorApi(sink)
     val bots: BotsApi = BotsApi(sink, clock)
     val calls: CallsApi = CallsApi(sink)
+    val assets: AssetsApi = AssetsApi(sink)
 }

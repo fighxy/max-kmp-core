@@ -199,6 +199,23 @@ class MessagesApi(
         return reactions.entries.mapNotNull { (k, v) -> ReactionInfo.from(v)?.let { k.toString() to it } }.toMap()
     }
 
+    /**
+     * Who reacted to a message (`MSG_GET_DETAILED_REACTIONS`, 181; the request KometTeam/Komet
+     * sends for its "read by" list): `{chatId, messageId, count}`. Reply: `reactions`, a list of
+     * `{userId, reaction}`; entries without a numeric `userId` or with an empty reaction are
+     * skipped, a missing list is empty.
+     */
+    suspend fun getDetailedReactions(chatId: Long, messageId: Long, count: Int = 100): List<ReactionUser> {
+        require(count > 0) { "count must be positive" }
+        val map = rawMap(sink.request(Opcode.MSG_GET_DETAILED_REACTIONS, linkedMapOf("chatId" to chatId, "messageId" to messageId, "count" to count)))
+        return (map["reactions"] as? List<*>).orEmpty().mapNotNull { entry ->
+            val m = entry as? Map<*, *> ?: return@mapNotNull null
+            val user = m["userId"].asLong() ?: return@mapNotNull null
+            val reaction = (m["reaction"] as? String)?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            ReactionUser(user, reaction)
+        }
+    }
+
     // ---- delayed sending and polls ------------------------------------------------------------
 
     /**

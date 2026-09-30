@@ -8,6 +8,7 @@ import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.PresenceInfo
+import com.max.core.api.ReactionInfo
 import com.max.core.auth.LoginResult
 import com.max.core.epochMillis
 import com.max.core.events.MaxEvent
@@ -102,6 +103,10 @@ class MaxStore(
     }
 
     fun removeChat(chatId: Long) = _state.update { StateReducer.removeChat(it, chatId) }
+
+    /** Reactions of one stored message after an own change or a reload ([StateReducer.putReactions]). */
+    fun putReactions(chatId: Long, messageId: Long, info: ReactionInfo?) =
+        _state.update { StateReducer.putReactions(it, chatId, messageId, info) }
 
     /** Drops everything (e.g. on logout). */
     fun clear() {

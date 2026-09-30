@@ -96,8 +96,34 @@ data class ReactionInfo(val totalCount: Int, val counters: List<ReactionCounter>
             }
             return ReactionInfo(m["totalCount"].asLong()?.toInt() ?: 0, counters, m["yourReaction"] as? String, m)
         }
+
+        /**
+         * Built from counters, as the store keeps it after a local change. [raw] is the same shape
+         * the server sends (`{counters, totalCount, yourReaction?}`), so it can be stored and exported
+         * like a server value. Counters with a count below 1 are dropped.
+         */
+        fun of(counters: List<ReactionCounter>, yourReaction: String?): ReactionInfo {
+            val kept = counters.filter { it.count > 0 }
+            val total = kept.sumOf { it.count }
+            val own = yourReaction?.takeIf { mine -> kept.any { it.reaction == mine } }
+            val raw = linkedMapOf<String, Any?>(
+                "counters" to kept.map { linkedMapOf("reaction" to it.reaction, "count" to it.count) },
+                "totalCount" to total,
+            )
+            if (own != null) raw["yourReaction"] = own
+            return ReactionInfo(total, kept, own, raw)
+        }
+    }
+
+    /** The same reactions without this account's one: its counter drops by one, [yourReaction] clears. */
+    fun withoutOwn(): ReactionInfo {
+        val own = yourReaction ?: return this
+        return of(counters.map { if (it.reaction == own) it.copy(count = it.count - 1) else it }, null)
     }
 }
+
+/** Who put which reaction on a message (`MSG_GET_DETAILED_REACTIONS` 181, one entry of `reactions`). */
+data class ReactionUser(val userId: Long, val reaction: String)
 
 /**
  * A chat (PyMax `Chat`). PyMax requires `id`, `type`, `status`, `owner`; here only `id` and `type`

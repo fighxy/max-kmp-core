@@ -69,6 +69,8 @@ sealed interface MaxEvent {
     /**
      * Reactions on a message changed (`NOTIF_MSG_REACTIONS_CHANGED` 155 `{messageId, chatId,
      * counters?, totalCount}`; PyMax `ReactionUpdateEvent`, `messageId` is a string there).
+     * Neither PyMax nor KometTeam/Komet read an own reaction from this push; [yourReaction] is
+     * set only if the push happens to carry `yourReaction`, otherwise the stored one is kept.
      */
     data class ReactionsChanged(
         val chatId: Long,
@@ -77,6 +79,7 @@ sealed interface MaxEvent {
         val totalCount: Int,
         override val opcode: Int,
         override val raw: Any?,
+        val yourReaction: String? = null,
     ) : MaxEvent
 
     /**

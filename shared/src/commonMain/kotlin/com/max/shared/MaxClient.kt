@@ -13,6 +13,9 @@ import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.PrivacySettings
 import com.max.core.api.Profile
+import com.max.core.api.Animoji
+import com.max.core.api.ReactionInfo
+import com.max.core.api.ReactionUser
 import com.max.core.toMaxError
 import com.max.core.auth.ApkFingerprint
 import com.max.core.auth.AuthApi
@@ -821,6 +824,89 @@ class MaxClient @Throws(Exception::class) constructor(
         val message = api.messages.sendMessage(chatId, text, replyTo)
         commit(t) { store.putSentMessage(chatId, message) }
         return message
+    }
+
+    // ---- Reactions ------------------------------------------------------------------------------
+
+    /**
+     * Sets this account's reaction on a message to [reaction], or removes it when [reaction] is
+     * `null` (`MSG_REACTION` 178 / `MSG_CANCEL_REACTION` 179). A comment of channel post [postId]
+     * uses the same requests with `postId`. One account has at most one reaction per message: a
+     * new one replaces the previous.
+     *
+     * Returns the reactions the server sent back, or `null` when the reply had none. For a
+     * message in [store] they are stored; a removal without a reply drops only the own counter.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setReaction(chatId: Long, messageId: Long, reaction: String?, postId: Long? = null): ReactionInfo? {
+        val t = ticket()
+        val info = when {
+            reaction != null && postId != null -> api.messages.addCommentReaction(chatId, postId, messageId, reaction)
+            reaction != null -> api.messages.addReaction(chatId, messageId, reaction)
+            postId != null -> api.messages.removeCommentReaction(chatId, postId, messageId)
+            else -> api.messages.removeReaction(chatId, messageId)
+        }
+        if (postId == null) {
+            commit(t) {
+                val stored = store.state.value.messages[chatId]?.firstOrNull { it.id == messageId }?.reactionInfo
+                when {
+                    info != null -> store.putReactions(chatId, messageId, info)
+                    reaction == null && stored != null -> store.putReactions(chatId, messageId, stored.withoutOwn())
+                }
+            }
+        }
+        return info
+    }
+
+    /**
+     * Current reactions of several messages (`MSG_GET_REACTIONS` 180), keyed by message id; ids
+     * the server left out are missing. Messages in [store] get the new values.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun loadReactions(chatId: Long, messageIds: List<Long>): Map<Long, ReactionInfo> {
+        val ids = messageIds.distinct()
+        if (ids.isEmpty()) return emptyMap()
+        val t = ticket()
+        val found = api.messages.getReactions(chatId, ids).orEmpty()
+            .mapNotNull { (key, info) -> key.toLongOrNull()?.let { it to info } }
+            .toMap()
+        commit(t) { found.forEach { (id, info) -> store.putReactions(chatId, id, info) } }
+        return found
+    }
+
+    /**
+     * Who reacted to a message (`MSG_GET_DETAILED_REACTIONS` 181), with the users missing from
+     * [store] fetched (`CONTACT_INFO`) so the caller can name them.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun loadReactionUsers(chatId: Long, messageId: Long, count: Int = 100): List<ReactionUser> {
+        val users = api.messages.getDetailedReactions(chatId, messageId, count)
+        val unknown = users.map { it.userId }.distinct().filter { it !in store.state.value.users }
+        if (unknown.isNotEmpty()) {
+            try {
+                loadUsers(unknown)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Names are optional: the list is shown with ids.
+            }
+        }
+        return users
+    }
+
+    private val catalogLock = Mutex()
+    private var catalog: List<Animoji>? = null
+
+    /**
+     * Emoji the server offers for reactions ([com.max.core.api.AssetsApi.reactionCatalog]), in
+     * catalog order. Asked once per client; an empty or failed answer is asked again next time.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun reactionCatalog(): List<Animoji> = catalogLock.withLock {
+        catalog?.let { return@withLock it }
+        val loaded = api.assets.reactionCatalog()
+        if (loaded.isNotEmpty()) catalog = loaded
+        loaded
     }
 
     // ---- Session (raw access) ------------------------------------------------------------------
