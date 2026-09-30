@@ -143,7 +143,8 @@ class MaxIosClient internal constructor(
                 c.loadChats()
             }
             val chats = c.store.state.value.chats.values
-            resolveUsers(c, chats.mapNotNull { dialogPeer(it, c.userId.value) })
+            // Dialog peers and the authors of groups' last messages, so rows can name them.
+            resolveUsers(c, chats.mapNotNull { dialogPeer(it, c.userId.value) } + chats.filter { it.type == "CHAT" }.mapNotNull { it.lastMessage?.sender })
             val state = c.store.state.value
             val config = c.accountConfig.value
             chats.map { chatSnapshot(it, state, config) }
@@ -951,6 +952,13 @@ class IosChat(
     val canWrite: Int = 1,
     /** Notifications off (`config.chats[id].dontDisturbUntil`): `1` muted, `0` on, `-1` unknown. */
     val muted: Int = -1,
+    /** Display name of the last message's author, empty when unknown. */
+    val lastAuthorName: String = "",
+    /** The last message is the account's own: `1` yes, `0` no, `-1` unknown. */
+    val lastFromMe: Int = -1,
+    /** The last message is a forward (`link.type` FORWARD): `1` yes, `0` no. Its text and
+     *  attachment are then the forwarded message's. */
+    val lastForwarded: Int = 0,
 )
 
 /**
@@ -1100,18 +1108,21 @@ private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = n
     val peer = dialogPeer(chat, state.me)?.let { state.users[it] }
     val title = chat.title?.takeIf { it.isNotBlank() } ?: peer?.displayName.orEmpty()
     val avatar = (chat.raw["baseIconUrl"] as? String)?.takeIf { it.isNotBlank() } ?: peer?.baseUrl.orEmpty()
+    val forwarded = forwardedOf(last)
+    val attaches = last?.attaches?.takeIf { it.isNotEmpty() } ?: forwarded?.get("attaches") as? List<*> ?: emptyList<Any?>()
+    val me = state.me
     return IosChat(
         id = chat.id.toString(),
         title = title,
         type = chat.type,
         lastMessageId = last?.id?.toString().orEmpty(),
-        lastText = last?.text.orEmpty(),
+        lastText = last?.text?.takeIf { it.isNotEmpty() } ?: (forwarded?.get("text") as? String).orEmpty(),
         updatedAtMs = updated,
         unread = chat.newMessages,
         avatarUrl = avatar,
         lastAuthorId = last?.sender?.toString().orEmpty(),
-        lastMedia = attachmentKind(last),
-        lastThumbUrl = attachmentThumb(last),
+        lastMedia = attachmentKind(attaches),
+        lastThumbUrl = attachmentThumb(attaches),
         comments = when ((chat.raw["options"] as? Map<*, *>)?.get("COMMENTS")) {
             true -> 1
             false -> 0
@@ -1123,6 +1134,13 @@ private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = n
             false -> 0
             null -> if (config == null) -1 else 0
         },
+        lastAuthorName = last?.sender?.let { state.users[it]?.displayName }.orEmpty(),
+        lastFromMe = when {
+            last?.sender == null || me == null -> -1
+            last.sender == me -> 1
+            else -> 0
+        },
+        lastForwarded = if (forwarded != null) 1 else 0,
     )
 }
 
@@ -1153,8 +1171,15 @@ private fun canWrite(chat: Chat, state: MaxState): Boolean {
  * (`videoType` 1), `voice`, `file`, `sticker`, `contact`, `location`, `poll`, `call` or `gif`.
  * Empty when there is none or its `_type` is unknown (`CONTROL`, `SHARE`, keyboards).
  */
-private fun attachmentKind(message: MaxMessage?): String {
-    val attach = message?.attaches?.firstOrNull() as? Map<*, *> ?: return ""
+/** The forwarded message of a `FORWARD` link, or `null`. */
+private fun forwardedOf(message: MaxMessage?): Map<*, *>? {
+    val link = message?.link ?: return null
+    if ((link["type"] as? String)?.uppercase() != "FORWARD") return null
+    return link["message"] as? Map<*, *>
+}
+
+private fun attachmentKind(attaches: List<*>): String {
+    val attach = attaches.firstOrNull() as? Map<*, *> ?: return ""
     return when ((attach["_type"] as? String)?.uppercase()) {
         "PHOTO" -> if ((attach["gif"] as? Boolean) == true) "gif" else "photo"
         "VIDEO" -> if ((attach["videoType"] as? Number)?.toInt() == 1) "videoMessage" else "video"
@@ -1169,8 +1194,8 @@ private fun attachmentKind(message: MaxMessage?): String {
     }
 }
 
-private fun attachmentThumb(message: MaxMessage?): String {
-    val attach = message?.attaches?.firstOrNull() as? Map<*, *> ?: return ""
+private fun attachmentThumb(attaches: List<*>): String {
+    val attach = attaches.firstOrNull() as? Map<*, *> ?: return ""
     return when ((attach["_type"] as? String)?.uppercase()) {
         "PHOTO" -> attach["baseUrl"] as? String
         "VIDEO" -> attach["thumbnail"] as? String
