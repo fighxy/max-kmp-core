@@ -230,6 +230,43 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /**
+     * Deletes messages (`MSG_DELETE` 66). [forEveryone] `false` removes them only for this
+     * account (`forMe`), `true` for every participant.
+     */
+    fun deleteMessages(chatId: String, messageIds: List<String>, forEveryone: Boolean, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c ->
+            val ids = messageIds.map(::parseId)
+            require(ids.isNotEmpty()) { "no message ids" }
+            c.api.messages.deleteMessages(parseId(chatId), ids, forMe = !forEveryone)
+        }
+    }
+
+    /**
+     * Forwards message [messageId] of chat [fromChatId] to chat [toChatId] (`MSG_SEND` with a
+     * `FORWARD` link). The result is the new message in the target chat.
+     */
+    fun forwardMessage(toChatId: String, fromChatId: String, messageId: String, onResult: (IosMessage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val sent = c.api.messages.forwardMessage(parseId(toChatId), parseId(messageId), sourceChatId = parseId(fromChatId))
+            messageSnapshot(sent, toChatId, c.store.state.value)
+        }
+    }
+
+    /**
+     * Comment counters of channel posts (`MSG_GET_COMMENTS_INFO` 91). Posts the server does not
+     * report are left out; an empty [postIds] asks nothing.
+     */
+    fun loadCommentCounts(chatId: String, postIds: List<String>, onResult: (List<IosCommentCount>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val ids = postIds.mapNotNull { it.toLongOrNull() }.distinct()
+            if (ids.isEmpty()) return@perform emptyList()
+            c.api.messages.getCommentsInfo(parseId(chatId), ids).map { info ->
+                IosCommentCount(postId = info.postId.toString(), count = info.totalCount ?: 0)
+            }
+        }
+    }
+
     /** Posts a comment under [postId]; [replyTo] (a comment id) is optional. */
     fun sendComment(chatId: String, postId: String, text: String, replyTo: String, onResult: (IosMessage?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
@@ -819,6 +856,12 @@ class IosCall(
     val hangupType: String,
     val duration: Long,
     val timeMs: Long,
+)
+
+/** Number of comments under channel post [postId]. */
+class IosCommentCount(
+    val postId: String,
+    val count: Int,
 )
 
 /**
