@@ -337,7 +337,11 @@ class MaxIosClient internal constructor(
             val ids = messageIds.mapNotNull { it.toLongOrNull() }.distinct()
             if (ids.isEmpty()) return@perform emptyList()
             ids.chunked(REACTIONS_PAGE).flatMap { page ->
-                c.loadReactions(parseId(chatId), page).map { (id, info) -> IosReactions(id.toString(), reactionsJson(info)) }
+                c.loadReactions(parseId(chatId), page).map { (id, info) ->
+                    // Без ключа `yourReaction` своя реакция неизвестна, а не «нет».
+                    val mineKnown = info.yourReaction != null || info.raw.containsKey("yourReaction")
+                    IosReactions(id.toString(), reactionsJson(info, mineKnown = mineKnown))
+                }
             }
         }
     }
@@ -1250,8 +1254,22 @@ private fun messageSnapshot(message: MaxMessage, fallbackChatId: String, state: 
         contentJson = messageContentJson(message) { id -> state.users[id]?.displayName },
         authorName = user?.displayName.orEmpty(),
         authorAvatarUrl = user?.baseUrl.orEmpty(),
-        reactionsJson = if (withReactions) reactionsJson(message.reactionInfo) else "",
+        reactionsJson = if (withReactions) historyReactions(message, message.chatId ?: fallbackChatId.toLongOrNull(), state) else "",
     )
+}
+
+/**
+ * Reactions of a history or push message for Swift. Channel posts come without `reactionInfo`
+ * (their reactions are asked with `MSG_GET_REACTIONS`), so there a missing value is unknown
+ * (empty string), not "no reactions"; elsewhere a missing value means none. The own reaction
+ * is known only when the server's map has the `yourReaction` key: without it the app keeps
+ * the one it knows instead of clearing it.
+ */
+private fun historyReactions(message: MaxMessage, chatId: Long?, state: MaxState): String {
+    val info = message.reactionInfo
+    if (info == null && chatId != null && state.chats[chatId]?.type == "CHANNEL") return ""
+    val mineKnown = info == null || info.yourReaction != null || info.raw.containsKey("yourReaction")
+    return reactionsJson(info, mineKnown = mineKnown)
 }
 
 private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (event) {
@@ -1304,7 +1322,7 @@ private fun messageEvent(kind: String, message: MaxMessage, state: MaxState, wit
         contentJson = messageContentJson(message) { id -> state.users[id]?.displayName },
         authorName = user?.displayName.orEmpty(),
         authorAvatarUrl = user?.baseUrl.orEmpty(),
-        reactionsJson = if (withReactions) reactionsJson(message.reactionInfo) else "",
+        reactionsJson = if (withReactions) historyReactions(message, message.chatId, state) else "",
     )
 }
 
