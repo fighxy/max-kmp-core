@@ -70,6 +70,20 @@ object UploadRequests {
     )
 
     /**
+     * Headers of a voice or video-note upload, as Komet sends them through kolibri
+     * (`uploadFilePath` with `contentType: application/octet-stream`, `connection: close` and a
+     * numeric file name without extension); Komet's recordings are the ones the CDN finishes.
+     */
+    fun recordingHeaders(fileName: String, size: Long, userAgent: String): List<Pair<String, String>> = listOf(
+        "Content-Type" to "application/octet-stream",
+        "Content-Disposition" to "attachment; filename=${percentEncode(fileName)}",
+        "Connection" to "close",
+        "User-Agent" to percentEncode(userAgent),
+        "Content-Range" to "bytes 0-${maxOf(size - 1, 0L)}/$size",
+        "Content-Length" to size.toString(),
+    )
+
+    /**
      * Headers of one request of the parallel video upload (kolibri `ok_cdn_request`, used by
      * `upload_video` for the GET handshake and every chunk POST; `Host` is left to the client):
      * `Content-Type`, `Content-Disposition: attachment; fileName="<name>"` (note the capital

@@ -293,6 +293,24 @@ class MediaApiTest {
         assertEquals(pymax["uploadVoice"], bytes(sink.sent.single().second))
         assertEquals(pymax["attachVoice"], bytes(voice.toPayload()))
         assertEquals("bytes 0-1/2", http.posts.single().headers.toMap()["Content-Range"])
+        // As Komet: octet-stream, connection close, a numeric name without extension.
+        val headers = http.posts.single().headers.toMap()
+        assertEquals("application/octet-stream", headers["Content-Type"])
+        assertEquals("close", headers["Connection"])
+        assertTrue(Regex("attachment; filename=\\d+").matches(headers["Content-Disposition"].orEmpty()))
+    }
+
+    @Test
+    fun recordingUploadRejectedInBodyFails() = runTest {
+        val slot = mapOf("info" to listOf(mapOf("url" to "https://vu.test/a", "videoId" to 40, "token" to "t")))
+        val http = FakeHttp(reply = """{"error_code":1,"error_msg":"bad file"}""")
+        val voice = assertFailsWith<UploadException> {
+            MediaApi(FakeSink(slot), http, ua, MutableSharedFlow(), clock).uploadVoice(byteArrayOf(1), "v.ogg", 1000)
+        }
+        assertTrue("bad file" in voice.message.orEmpty())
+        assertFailsWith<UploadException> {
+            MediaApi(FakeSink(slot), http, ua, MutableSharedFlow(), clock).uploadVideoNote(byteArrayOf(1), "n.mp4", 1000)
+        }
     }
 
     // --- sending ---

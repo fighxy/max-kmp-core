@@ -319,7 +319,8 @@ class MediaApi(
     /** [uploadVoice] streamed from [source]. */
     suspend fun uploadVoice(source: UploadSource, fileName: String, durationMs: Long, progress: UploadProgress? = null): OutgoingAttachment.Voice {
         val slot = requestVoiceUpload()
-        post(slot.url, UploadRequests.singlePostHeaders(fileName, source.size, userAgent), UploadBody.of(source), "voice", progress)
+        val response = post(slot.url, UploadRequests.recordingHeaders(defaultUploadName(), source.size, userAgent), UploadBody.of(source), "voice", progress)
+        rejectCdnError(response, "voice")
         return OutgoingAttachment.Voice(slot.id, slot.token, durationMs)
     }
 
@@ -345,8 +346,9 @@ class MediaApi(
         progress: UploadProgress? = null,
     ): OutgoingAttachment.VideoNote {
         val slot = requestVideoNoteUpload()
-        val response = post(slot.url, UploadRequests.singlePostHeaders(fileName, source.size, userAgent), UploadBody.of(source), "video note", progress)
-        val thumb = jsonReply(response, "video note")["thumbhash"]
+        val response = post(slot.url, UploadRequests.recordingHeaders(defaultUploadName(), source.size, userAgent), UploadBody.of(source), "video note", progress)
+        rejectCdnError(response, "video note")
+        val thumb = (if (response.body.isEmpty()) emptyMap<Any?, Any?>() else jsonReply(response, "video note"))["thumbhash"]
         val thumbhash = when (thumb) {
             null -> null
             is String -> if (thumb.isEmpty()) null else decodeThumbhash(thumb, response.status)
@@ -534,6 +536,18 @@ class MediaApi(
         if (response.status != 200) throw UploadException("$what upload failed with status ${response.status}", response.status)
         if (progress != null && last < body.contentLength) progress.onProgress(body.contentLength, body.contentLength)
         return response
+    }
+
+    /**
+     * The CDN answers 200 even when it rejects an upload and puts `error_code` / `error_msg`
+     * into the body (Komet checks the same); such a reply becomes an [UploadException] carrying
+     * the start of the body, so the reason reaches the logs.
+     */
+    private fun rejectCdnError(response: HttpResponse, what: String) {
+        val text = response.text
+        if ("error_code" in text || "error_msg" in text) {
+            throw UploadException("$what upload rejected by CDN: ${text.take(300)}", response.status)
+        }
     }
 
     private fun jsonReply(response: HttpResponse, what: String): Map<*, *> {
