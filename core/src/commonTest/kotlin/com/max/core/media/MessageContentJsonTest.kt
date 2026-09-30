@@ -116,4 +116,12 @@ class MessageContentJsonTest {
         val json = messageContentJson(message)
         assertTrue(json.contains("\"elements\":[{\"type\":\"STRONG\",\"from\":0,\"length\":6}]"), json)
     }
+
+    @Test
+    fun marksEditedMessages() {
+        val message = MaxMessage.from(mapOf("id" to 9L, "time" to 10L, "type" to "USER", "text" to "новый", "status" to "EDITED"))!!
+        assertTrue(messageContentJson(message).contains("\"edited\":true"))
+        val plain = MaxMessage.from(mapOf("id" to 9L, "time" to 10L, "type" to "USER", "text" to "новый"))!!
+        assertEquals("", messageContentJson(plain))
+    }
 }

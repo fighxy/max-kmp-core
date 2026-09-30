@@ -21,12 +21,13 @@ fun messageContentJson(message: MaxMessage, senderName: (Long) -> String? = { nu
     val commentsCount = body["commentsCount"]
     val commentsInfo = body["commentsInfo"]
     if (message.attaches.isEmpty() && message.link == null && message.reactionInfo == null
-        && commentsCount == null && commentsInfo == null && message.elements.isEmpty()
+        && commentsCount == null && commentsInfo == null && message.elements.isEmpty() && message.status != "EDITED"
     ) {
         return ""
     }
     val fields = linkedMapOf<String, JsonElement>()
     if (message.attaches.isNotEmpty()) fields["attaches"] = toJsonElement(message.attaches)
+    if (message.status == "EDITED") fields["edited"] = JsonPrimitive(true)
     // Formatting of the text: `{type, from, length, attributes?}` with UTF-16 offsets.
     if (message.elements.isNotEmpty()) fields["elements"] = toJsonElement(message.elements)
     message.link?.let { fields["link"] = toJsonElement(withSenderName(it, senderName)) }

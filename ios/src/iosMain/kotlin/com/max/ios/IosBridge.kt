@@ -230,6 +230,14 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /** Replaces the text of a sent message (`MSG_EDIT` 67); the edited message comes back. */
+    fun editMessage(chatId: String, messageId: String, text: String, onResult: (IosMessage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val edited = c.api.messages.editMessage(parseId(chatId), parseId(messageId), text)
+            messageSnapshot(edited, chatId, c.store.state.value)
+        }
+    }
+
     /**
      * Deletes messages (`MSG_DELETE` 66). [forEveryone] `false` removes them only for this
      * account (`forMe`), `true` for every participant.
@@ -797,6 +805,8 @@ class IosChat(
     val lastThumbUrl: String = "",
     /** Channel option `COMMENTS`: `1` on, `0` off, `-1` when the chat card does not say. */
     val comments: Int = -1,
+    /** The account may post here: `1` yes, `0` no ([canWrite]). */
+    val canWrite: Int = 1,
 )
 
 /**
@@ -949,7 +959,30 @@ private fun chatSnapshot(chat: Chat, state: MaxState): IosChat {
             false -> 0
             else -> -1
         },
+        canWrite = if (canWrite(chat, state)) 1 else 0,
     )
+}
+
+/**
+ * Whether the account may post to [chat], as Komet decides it: not in a chat it left or was
+ * removed from (`status` other than `ACTIVE`), in a channel only as its owner or an admin
+ * (`owner`, `admins` or the keys of `adminParticipants`), and not in a dialog with an official
+ * service account (a peer with the `OFFICIAL` option that is not a `BOT`).
+ */
+private fun canWrite(chat: Chat, state: MaxState): Boolean {
+    val status = chat.raw["status"] as? String
+    if (!status.isNullOrEmpty() && status != "ACTIVE") return false
+    val me = state.me
+    if (chat.type == "CHANNEL") {
+        if (me == null) return false
+        val owner = (chat.raw["owner"] as? Number)?.toLong() ?: (chat.raw["owner"] as? String)?.toLongOrNull()
+        if (owner == me) return true
+        val admins = (chat.raw["admins"] as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toLong() ?: it?.toString()?.toLongOrNull() } +
+            (chat.raw["adminParticipants"] as? Map<*, *>).orEmpty().keys.mapNotNull { (it as? Number)?.toLong() ?: it?.toString()?.toLongOrNull() }
+        return me in admins
+    }
+    val peer = dialogPeer(chat, me)?.let { state.users[it] } ?: return true
+    return !("OFFICIAL" in peer.options && "BOT" !in peer.options)
 }
 
 /**
