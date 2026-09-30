@@ -18,6 +18,9 @@ import com.max.core.toMaxError
 import com.max.shared.MaxClient
 import com.max.shared.MaxClientConfig
 import com.max.shared.Watcher
+import com.max.shared.watch
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withTimeoutOrNull
 import com.max.shared.ClientState
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -465,8 +468,42 @@ class MaxIosClient internal constructor(
     /** A dead [IosWatch] (no callbacks) when the client cannot be created. */
     fun watchState(onEach: (String) -> Unit): IosWatch = watch { c -> c.watchState { guarded { onEach(phaseOf(it)) } } }
 
+    /**
+     * Pushes in arrival order. A message from a sender the store does not know yet waits up to
+     * [SENDER_WAIT_MS] for `CONTACT_INFO`, so the event carries the sender name and avatar.
+     */
     fun watchEvents(onEach: (IosEvent) -> Unit): IosWatch = watch { c ->
-        c.watchEvents { event -> guarded { flatten(event, c.store.state.value).forEach(onEach) } }
+        c.events.all
+            .map { event ->
+                val sender = when (event) {
+                    is MaxEvent.NewMessage -> event.message.sender
+                    is MaxEvent.MessageEdited -> event.message.sender
+                    else -> null
+                }
+                if (sender != null) withTimeoutOrNull(SENDER_WAIT_MS) { resolveUsers(c, listOf(sender)) }
+                event
+            }
+            .watch(scope) { event -> guarded { flatten(event, c.store.state.value).forEach(onEach) } }
+    }
+
+    /**
+     * Direct address of a video (`VIDEO_PLAY` 83, the best MP4 quality) or a file
+     * (`FILE_DOWNLOAD` 88) of a message. [kind] is `video` or `file`; [attachmentId] is the
+     * `videoId` / `fileId` of the attachment. An external video without an MP4 address fails
+     * with `NOT_FOUND`.
+     */
+    fun mediaLink(chatId: String, messageId: String, kind: String, attachmentId: String, onResult: (String?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val chat = parseId(chatId)
+            val message = parseId(messageId)
+            val id = parseId(attachmentId)
+            when (kind) {
+                "video" -> c.media.getVideoLink(chat, message, id).url
+                    ?: throw IllegalStateException("video link not found")
+                "file" -> c.media.getFileLink(chat, message, id).url
+                else -> throw IllegalArgumentException("unknown media kind \"$kind\"")
+            }
+        }
     }
 
     /** Disconnects and releases the client. It cannot be used afterwards; [onDone] is always called once. */
@@ -590,6 +627,9 @@ class MaxIosClient internal constructor(
         perform<Unit>({ _, kind, key -> onResult(kind, key) }, { }) { body(it) }
     }
 }
+
+/** How long a push from an unknown sender waits for the sender's profile. */
+private const val SENDER_WAIT_MS = 3_000L
 
 /** Ids per `CONTACT_INFO` request when resolving names. */
 private const val USERS_PAGE = 100
