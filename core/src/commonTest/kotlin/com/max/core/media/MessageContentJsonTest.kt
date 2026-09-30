@@ -80,4 +80,25 @@ class MessageContentJsonTest {
         assertTrue(json.contains("commentsCount"))
         assertTrue(json.contains("4"))
     }
+
+    @Test
+    fun namesTheQuotedSenderWhenKnown() {
+        val message = MaxMessage.from(
+            mapOf(
+                "id" to 5L,
+                "time" to 6L,
+                "type" to "USER",
+                "text" to "да",
+                "link" to mapOf(
+                    "type" to "REPLY",
+                    "messageId" to 4L,
+                    "message" to mapOf("id" to 4L, "sender" to 77L, "text" to "вопрос"),
+                ),
+            ),
+        )!!
+        val named = messageContentJson(message) { id -> if (id == 77L) "Анна" else null }
+        assertTrue(named.contains("\"senderName\":\"Анна\""), named)
+        val unknown = messageContentJson(message)
+        assertTrue(!unknown.contains("senderName"), unknown)
+    }
 }

@@ -16,7 +16,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * Attachment maps are copied as decoded. Fields this module does not model (an audio wave, a
  * file address) stay in the JSON. A missing address is left missing; nothing is built from a token.
  */
-fun messageContentJson(message: MaxMessage): String {
+fun messageContentJson(message: MaxMessage, senderName: (Long) -> String? = { null }): String {
     val body = (message.raw["message"] as? Map<*, *>) ?: message.raw
     val commentsCount = body["commentsCount"]
     val commentsInfo = body["commentsInfo"]
@@ -27,11 +27,25 @@ fun messageContentJson(message: MaxMessage): String {
     }
     val fields = linkedMapOf<String, JsonElement>()
     if (message.attaches.isNotEmpty()) fields["attaches"] = toJsonElement(message.attaches)
-    message.link?.let { fields["link"] = toJsonElement(it) }
+    message.link?.let { fields["link"] = toJsonElement(withSenderName(it, senderName)) }
     message.reactionInfo?.let { fields["reactionInfo"] = toJsonElement(it.raw) }
     if (commentsCount != null) fields["commentsCount"] = toJsonElement(commentsCount)
     if (commentsInfo != null) fields["commentsInfo"] = toJsonElement(commentsInfo)
     return JsonObject(fields).toString()
+}
+
+/**
+ * The quoted message of a link carries only the `sender` id. [senderName] adds its display name
+ * as `senderName`, so the app can title the quote; unknown senders stay without one.
+ */
+private fun withSenderName(link: Map<*, *>, senderName: (Long) -> String?): Map<*, *> {
+    val quoted = link["message"] as? Map<*, *> ?: return link
+    if (quoted["senderName"] != null) return link
+    val id = (quoted["sender"] as? Number)?.toLong() ?: return link
+    val name = senderName(id)?.takeIf { it.isNotBlank() } ?: return link
+    val copy = LinkedHashMap<Any?, Any?>(link)
+    copy["message"] = LinkedHashMap<Any?, Any?>(quoted).apply { put("senderName", name) }
+    return copy
 }
 
 private fun toJsonElement(value: Any?): JsonElement = when (value) {

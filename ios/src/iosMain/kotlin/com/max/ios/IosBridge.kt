@@ -199,8 +199,48 @@ class MaxIosClient internal constructor(
     }
 
     fun sendText(chatId: String, text: String, onResult: (IosMessage?, String?, String?) -> Unit) {
+        sendText(chatId, text, "", onResult)
+    }
+
+    /** Sends [text]; a non-empty [replyTo] (server message id) makes it a reply (`link` `REPLY`). */
+    fun sendText(chatId: String, text: String, replyTo: String, onResult: (IosMessage?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
-            messageSnapshot(c.sendText(parseId(chatId), text), chatId, c.store.state.value)
+            val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
+            messageSnapshot(c.sendText(parseId(chatId), text, reply), chatId, c.store.state.value)
+        }
+    }
+
+    /**
+     * Comments of channel post [postId] (`CHAT_HISTORY` with `postId`): up to [limit] comments
+     * before [beforeMs] (the newest when `0`), oldest first, with their authors resolved.
+     */
+    fun loadComments(chatId: String, postId: String, beforeMs: Long, limit: Int, onResult: (List<IosMessage>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val page = c.api.messages.getCommentHistory(
+                parseId(chatId),
+                parseId(postId),
+                from = if (beforeMs > 0) beforeMs else -1,
+                backward = limit.coerceIn(1, 100),
+            )
+            resolveUsers(c, page.mapNotNull { it.sender })
+            val state = c.store.state.value
+            page.filter { beforeMs <= 0 || it.time < beforeMs }
+                .sortedBy { it.time }
+                .map { messageSnapshot(it, chatId, state) }
+        }
+    }
+
+    /** Posts a comment under [postId]; [replyTo] (a comment id) is optional. */
+    fun sendComment(chatId: String, postId: String, text: String, replyTo: String, onResult: (IosMessage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val sent = c.api.messages.sendComment(
+                parseId(chatId),
+                parseId(postId),
+                text,
+                replyTo = replyTo.takeIf { it.isNotBlank() }?.let(::parseId),
+            )
+            resolveUsers(c, listOfNotNull(sent.sender))
+            messageSnapshot(sent, chatId, c.store.state.value)
         }
     }
 
@@ -714,6 +754,12 @@ class IosChat(
     val unread: Int,
     val avatarUrl: String,
     val lastAuthorId: String,
+    /** Kind of the first attachment of the last message ([attachmentKind]); empty for text only. */
+    val lastMedia: String = "",
+    /** Photo address or video cover of that attachment, empty when there is none. */
+    val lastThumbUrl: String = "",
+    /** Channel option `COMMENTS`: `1` on, `0` off, `-1` when the chat card does not say. */
+    val comments: Int = -1,
 )
 
 /**
@@ -853,7 +899,44 @@ private fun chatSnapshot(chat: Chat, state: MaxState): IosChat {
         unread = chat.newMessages,
         avatarUrl = avatar,
         lastAuthorId = last?.sender?.toString().orEmpty(),
+        lastMedia = attachmentKind(last),
+        lastThumbUrl = attachmentThumb(last),
+        comments = when ((chat.raw["options"] as? Map<*, *>)?.get("COMMENTS")) {
+            true -> 1
+            false -> 0
+            else -> -1
+        },
     )
+}
+
+/**
+ * The first attachment of [message] as the chat list names it: `photo`, `video`, `videoMessage`
+ * (`videoType` 1), `voice`, `file`, `sticker`, `contact`, `location`, `poll`, `call` or `gif`.
+ * Empty when there is none or its `_type` is unknown (`CONTROL`, `SHARE`, keyboards).
+ */
+private fun attachmentKind(message: MaxMessage?): String {
+    val attach = message?.attaches?.firstOrNull() as? Map<*, *> ?: return ""
+    return when ((attach["_type"] as? String)?.uppercase()) {
+        "PHOTO" -> if ((attach["gif"] as? Boolean) == true) "gif" else "photo"
+        "VIDEO" -> if ((attach["videoType"] as? Number)?.toInt() == 1) "videoMessage" else "video"
+        "AUDIO" -> "voice"
+        "FILE" -> "file"
+        "STICKER" -> "sticker"
+        "CONTACT" -> "contact"
+        "LOCATION" -> "location"
+        "POLL" -> "poll"
+        "CALL" -> "call"
+        else -> ""
+    }
+}
+
+private fun attachmentThumb(message: MaxMessage?): String {
+    val attach = message?.attaches?.firstOrNull() as? Map<*, *> ?: return ""
+    return when ((attach["_type"] as? String)?.uppercase()) {
+        "PHOTO" -> attach["baseUrl"] as? String
+        "VIDEO" -> attach["thumbnail"] as? String
+        else -> null
+    }.orEmpty()
 }
 
 /**
@@ -929,7 +1012,7 @@ private fun messageSnapshot(message: MaxMessage, fallbackChatId: String, state: 
         authorId = message.sender?.toString().orEmpty(),
         text = message.text,
         timeMs = message.time,
-        contentJson = messageContentJson(message),
+        contentJson = messageContentJson(message) { id -> state.users[id]?.displayName },
         authorName = user?.displayName.orEmpty(),
         authorAvatarUrl = user?.baseUrl.orEmpty(),
     )
@@ -964,7 +1047,7 @@ private fun messageEvent(kind: String, message: MaxMessage, state: MaxState): Io
         authorId = message.sender?.toString().orEmpty(),
         text = message.text,
         timeMs = message.time,
-        contentJson = messageContentJson(message),
+        contentJson = messageContentJson(message) { id -> state.users[id]?.displayName },
         authorName = user?.displayName.orEmpty(),
         authorAvatarUrl = user?.baseUrl.orEmpty(),
     )
