@@ -11,6 +11,7 @@ import com.max.core.api.MaxUser
 import com.max.core.api.ReactionInfo
 import com.max.core.media.OutgoingMedia
 import com.max.core.media.UploadProgress
+import com.max.core.media.fileUploadSource
 import com.max.core.media.messageContentJson
 import com.max.core.media.reactionsJson
 import com.max.core.calls.CallLogEntry
@@ -698,6 +699,61 @@ class MaxIosClient internal constructor(
         },
     )
 
+    /**
+     * Records sent as a voice message: [path] is an Ogg/Opus file (the only format the CDN
+     * finishes, as Komet found), [durationMs] its length, [waveHex] the level bars as hex bytes
+     * (`0..255` each, empty for silence; PyMax sends 80 zero bytes). Voice slot → upload →
+     * `MSG_SEND` with `_type AUDIO`; a non-empty [replyTo] makes it a reply. Cancel with the task.
+     */
+    fun sendVoice(
+        chatId: String,
+        path: String,
+        durationMs: Long,
+        waveHex: String,
+        replyTo: String,
+        onProgress: (IosUploadProgress) -> Unit,
+        onResult: (IosMessage?, String?, String?) -> Unit,
+    ): IosTask = IosTask(
+        perform(onResult, { null }) { c ->
+            val chat = parseId(chatId)
+            val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
+            val source = fileUploadSource(path)
+            val uploaded = try {
+                c.media.uploadVoice(source, fileNameOf(path, "voice.ogg"), durationMs, percentProgress(onProgress))
+            } finally {
+                runCatching { source.close() }
+            }
+            val wave = hexBytes(waveHex)
+            val voice = if (wave.isEmpty()) uploaded else uploaded.copy(wave = wave)
+            messageSnapshot(c.sendAttachments(chat, listOf(voice), null, reply), chatId, c.store.state.value)
+        },
+    )
+
+    /**
+     * A round video message: [path] is a square MP4 (H.264/AAC), [durationMs] its length.
+     * Video-note slot (`type 1`) → upload → `MSG_SEND` with `_type VIDEO, videoType 1`.
+     */
+    fun sendVideoNote(
+        chatId: String,
+        path: String,
+        durationMs: Long,
+        replyTo: String,
+        onProgress: (IosUploadProgress) -> Unit,
+        onResult: (IosMessage?, String?, String?) -> Unit,
+    ): IosTask = IosTask(
+        perform(onResult, { null }) { c ->
+            val chat = parseId(chatId)
+            val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
+            val source = fileUploadSource(path)
+            val note = try {
+                c.media.uploadVideoNote(source, fileNameOf(path, "note.mp4"), durationMs.takeIf { it > 0 }, percentProgress(onProgress))
+            } finally {
+                runCatching { source.close() }
+            }
+            messageSnapshot(c.sendAttachments(chat, listOf(note), null, reply), chatId, c.store.state.value)
+        },
+    )
+
     /** Sends the card of MAX user [contactId] ([MaxClient.sendContact]). */
     fun sendContact(chatId: String, contactId: String, replyTo: String, onResult: (IosMessage?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
@@ -878,6 +934,34 @@ private inline fun guarded(block: () -> Unit) {
 /** Decimal id from Swift; a malformed one becomes an [IllegalArgumentException] (error kind `UNKNOWN`). */
 private fun parseId(value: String): Long =
     value.toLongOrNull() ?: throw IllegalArgumentException("not a numeric id: \"$value\"")
+
+/** Upload progress for Swift, at most once per percent. */
+private fun percentProgress(onProgress: (IosUploadProgress) -> Unit): UploadProgress {
+    var lastPercent = -1L
+    return UploadProgress { sent, total ->
+        val percent = if (total > 0) sent * 100 / total else 0
+        if (percent > lastPercent || sent >= total) {
+            lastPercent = percent
+            guarded { onProgress(IosUploadProgress(sent, total)) }
+        }
+    }
+}
+
+/** The last path component of [path], or [fallback] when it has none. */
+private fun fileNameOf(path: String, fallback: String): String =
+    path.substringAfterLast('/').ifEmpty { fallback }
+
+/** Bytes of a hex string (`"00ff7a"`); malformed pairs are skipped. */
+internal fun hexBytes(hex: String): ByteArray {
+    val clean = hex.trim()
+    val out = ArrayList<Byte>(clean.length / 2)
+    var i = 0
+    while (i + 1 < clean.length) {
+        clean.substring(i, i + 2).toIntOrNull(16)?.let { out += it.toByte() }
+        i += 2
+    }
+    return out.toByteArray()
+}
 
 /** `photo`, `video` or `file` of [IosOutgoingMedia.kind]. */
 private fun mediaKind(kind: String): OutgoingMedia.Kind = when (kind) {
