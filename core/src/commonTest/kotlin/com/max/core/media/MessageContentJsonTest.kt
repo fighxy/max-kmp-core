@@ -101,4 +101,19 @@ class MessageContentJsonTest {
         val unknown = messageContentJson(message)
         assertTrue(!unknown.contains("senderName"), unknown)
     }
+
+    @Test
+    fun keepsTextFormatting() {
+        val message = MaxMessage.from(
+            mapOf(
+                "id" to 7L,
+                "time" to 8L,
+                "type" to "USER",
+                "text" to "жирный текст",
+                "elements" to listOf(mapOf("type" to "STRONG", "from" to 0, "length" to 6)),
+            ),
+        )!!
+        val json = messageContentJson(message)
+        assertTrue(json.contains("\"elements\":[{\"type\":\"STRONG\",\"from\":0,\"length\":6}]"), json)
+    }
 }

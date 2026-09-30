@@ -9,8 +9,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * Fragment the app stores beside the message text: attachments, a reply link, reactions and
- * comment counters. Empty when the message has none of those, so a later text-only echo does
+ * Fragment the app stores beside the message text: attachments, text formatting (`elements`),
+ * a reply link, reactions and comment counters. Empty when the message has none of those, so a later text-only echo does
  * not wipe a fragment the app already kept.
  *
  * Attachment maps are copied as decoded. Fields this module does not model (an audio wave, a
@@ -21,12 +21,14 @@ fun messageContentJson(message: MaxMessage, senderName: (Long) -> String? = { nu
     val commentsCount = body["commentsCount"]
     val commentsInfo = body["commentsInfo"]
     if (message.attaches.isEmpty() && message.link == null && message.reactionInfo == null
-        && commentsCount == null && commentsInfo == null
+        && commentsCount == null && commentsInfo == null && message.elements.isEmpty()
     ) {
         return ""
     }
     val fields = linkedMapOf<String, JsonElement>()
     if (message.attaches.isNotEmpty()) fields["attaches"] = toJsonElement(message.attaches)
+    // Formatting of the text: `{type, from, length, attributes?}` with UTF-16 offsets.
+    if (message.elements.isNotEmpty()) fields["elements"] = toJsonElement(message.elements)
     message.link?.let { fields["link"] = toJsonElement(withSenderName(it, senderName)) }
     message.reactionInfo?.let { fields["reactionInfo"] = toJsonElement(it.raw) }
     if (commentsCount != null) fields["commentsCount"] = toJsonElement(commentsCount)
