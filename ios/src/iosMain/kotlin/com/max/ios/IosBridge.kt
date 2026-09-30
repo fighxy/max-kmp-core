@@ -8,6 +8,7 @@ import com.max.core.api.EntryApp
 import com.max.core.api.Chat
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
+import com.max.core.media.messageContentJson
 import com.max.core.calls.CallLogEntry
 import com.max.core.state.MaxState
 import com.max.core.auth.CodeRequestType
@@ -188,12 +189,16 @@ class MaxIosClient internal constructor(
     fun loadHistory(chatId: String, beforeMs: Long, limit: Int, onResult: (List<IosMessage>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
             val history = c.loadHistory(parseId(chatId), from = beforeMs.takeIf { it > 0 }, backward = limit.coerceIn(1, 100))
-            history.messages.map { messageSnapshot(it, chatId) }
+            resolveUsers(c, history.messages.mapNotNull { it.sender })
+            val state = c.store.state.value
+            history.messages.map { messageSnapshot(it, chatId, state) }
         }
     }
 
     fun sendText(chatId: String, text: String, onResult: (IosMessage?, String?, String?) -> Unit) {
-        perform(onResult, { null }) { c -> messageSnapshot(c.sendText(parseId(chatId), text), chatId) }
+        perform(onResult, { null }) { c ->
+            messageSnapshot(c.sendText(parseId(chatId), text), chatId, c.store.state.value)
+        }
     }
 
     fun markRead(chatId: String, messageId: String, onResult: (String?, String?) -> Unit) {
@@ -730,13 +735,20 @@ class IosCall(
     val timeMs: Long,
 )
 
-/** One message. [authorId] is empty when the server omitted the sender. */
+/**
+ * One message. [authorId] is empty when the server omitted the sender.
+ * [contentJson] is empty when there are no attachments, reply, reactions or comments.
+ * [authorName] and [authorAvatarUrl] stay empty when that user is not in the store.
+ */
 class IosMessage(
     val id: String,
     val chatId: String,
     val authorId: String,
     val text: String,
     val timeMs: Long,
+    val contentJson: String = "",
+    val authorName: String = "",
+    val authorAvatarUrl: String = "",
 )
 
 /**
@@ -756,6 +768,9 @@ class IosEvent(
     val chatType: String,
     val timeMs: Long,
     val unread: Int,
+    val contentJson: String = "",
+    val authorName: String = "",
+    val authorAvatarUrl: String = "",
 )
 
 private fun phaseOf(state: ClientState): String = when (state) {
@@ -866,17 +881,23 @@ private fun callSnapshot(entry: CallLogEntry, me: Long?, state: MaxState): IosCa
     )
 }
 
-private fun messageSnapshot(message: MaxMessage, fallbackChatId: String): IosMessage = IosMessage(
-    id = message.id.toString(),
-    chatId = message.chatId?.toString() ?: fallbackChatId,
-    authorId = message.sender?.toString().orEmpty(),
-    text = message.text,
-    timeMs = message.time,
-)
+private fun messageSnapshot(message: MaxMessage, fallbackChatId: String, state: MaxState): IosMessage {
+    val user = message.sender?.let { state.users[it] }
+    return IosMessage(
+        id = message.id.toString(),
+        chatId = message.chatId?.toString() ?: fallbackChatId,
+        authorId = message.sender?.toString().orEmpty(),
+        text = message.text,
+        timeMs = message.time,
+        contentJson = messageContentJson(message),
+        authorName = user?.displayName.orEmpty(),
+        authorAvatarUrl = user?.baseUrl.orEmpty(),
+    )
+}
 
 private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (event) {
-    is MaxEvent.NewMessage -> listOf(messageEvent("message", event.message))
-    is MaxEvent.MessageEdited -> listOf(messageEvent("edited", event.message))
+    is MaxEvent.NewMessage -> listOf(messageEvent("message", event.message, state))
+    is MaxEvent.MessageEdited -> listOf(messageEvent("edited", event.message, state))
     is MaxEvent.MessagesDeleted -> event.messageIds.map { id ->
         iosEvent(kind = "deleted", chatId = event.chatId.toString(), messageId = id.toString())
     }
@@ -894,14 +915,20 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
     else -> emptyList()
 }
 
-private fun messageEvent(kind: String, message: MaxMessage): IosEvent = iosEvent(
-    kind = kind,
-    chatId = message.chatId?.toString().orEmpty(),
-    messageId = message.id.toString(),
-    authorId = message.sender?.toString().orEmpty(),
-    text = message.text,
-    timeMs = message.time,
-)
+private fun messageEvent(kind: String, message: MaxMessage, state: MaxState): IosEvent {
+    val user = message.sender?.let { state.users[it] }
+    return iosEvent(
+        kind = kind,
+        chatId = message.chatId?.toString().orEmpty(),
+        messageId = message.id.toString(),
+        authorId = message.sender?.toString().orEmpty(),
+        text = message.text,
+        timeMs = message.time,
+        contentJson = messageContentJson(message),
+        authorName = user?.displayName.orEmpty(),
+        authorAvatarUrl = user?.baseUrl.orEmpty(),
+    )
+}
 
 private fun chatEvent(chat: Chat, state: MaxState): IosEvent {
     val snap = chatSnapshot(chat, state)
@@ -927,4 +954,9 @@ private fun iosEvent(
     chatType: String = "",
     timeMs: Long = 0,
     unread: Int = -1,
-): IosEvent = IosEvent(kind, chatId, messageId, authorId, text, title, chatType, timeMs, unread)
+    contentJson: String = "",
+    authorName: String = "",
+    authorAvatarUrl: String = "",
+): IosEvent = IosEvent(
+    kind, chatId, messageId, authorId, text, title, chatType, timeMs, unread, contentJson, authorName, authorAvatarUrl,
+)
