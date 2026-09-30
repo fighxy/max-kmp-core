@@ -455,17 +455,39 @@ class MediaApi(
                 events.filterIsInstance<MaxEvent.AttachmentReady>().collect { e -> seen.value = seen.value + (e.kind to e.id) }
             }
             try {
-                try {
-                    messages.sendPrepared(chatId, payload)
-                } catch (e: ServerErrorException) {
-                    if (e.errorKey != ATTACHMENT_NOT_READY) throw e
-                    withTimeoutOrNull(readyTimeout) { seen.first { pending in it } }
-                        ?: throw UploadException("timed out waiting for attachment processing id=${pending.second}", cause = e)
-                    messages.sendPrepared(chatId, payload)
-                }
+                sendWhenReady(chatId, payload, pending, seen, notReadyDelay)
             } finally {
                 collector.cancel()
             }
+        }
+    }
+
+    /**
+     * `MSG_SEND` of a voice or note [payload]. While the server answers `attachment.not.ready`
+     * (or `errors.process.attachment.video.not.ready`, its key for voice and notes) the frame
+     * goes again after the readiness push for [pending] or [notReadyDelay], whichever comes
+     * first, for [readyTimeout] at most; then [UploadException].
+     */
+    private suspend fun sendWhenReady(
+        chatId: Long,
+        payload: Map<String, Any?>,
+        pending: Pair<MaxEvent.AttachmentReady.Kind, Long>,
+        seen: kotlinx.coroutines.flow.StateFlow<Set<Pair<MaxEvent.AttachmentReady.Kind, Long>>>,
+        notReadyDelay: Duration = 1.seconds,
+    ): MaxMessage {
+        val attempts = maxOf(1, (readyTimeout / notReadyDelay).toInt())
+        var attempt = 1
+        while (true) {
+            try {
+                return messages.sendPrepared(chatId, payload)
+            } catch (e: ServerErrorException) {
+                if (!isNotReady(e.errorKey)) throw e
+                if (attempt >= attempts) {
+                    throw UploadException("timed out waiting for attachment processing id=${pending.second}", cause = e)
+                }
+            }
+            attempt++
+            withTimeoutOrNull(notReadyDelay) { seen.first { pending in it } }
         }
     }
 
@@ -476,7 +498,7 @@ class MediaApi(
             try {
                 return messages.sendPrepared(chatId, payload)
             } catch (e: ServerErrorException) {
-                if (e.errorKey != ATTACHMENT_NOT_READY || attempt >= attempts) throw e
+                if (!isNotReady(e.errorKey) || attempt >= attempts) throw e
             }
             attempt++
             delay(pause)
@@ -561,6 +583,13 @@ class MediaApi(
 
         /** `MSG_SEND` error key for an attachment still being processed (PyMax). */
         const val ATTACHMENT_NOT_READY: String = "attachment.not.ready"
+
+        /**
+         * A "still processing" error: `attachment.not.ready`, and the longer keys the server uses
+         * for some kinds (`errors.process.attachment.video.not.ready` for voice and video notes).
+         * Komet treats every key with `not.ready` this way.
+         */
+        fun isNotReady(errorKey: String?): Boolean = errorKey != null && errorKey.contains("not.ready")
 
         /** PyMax `UploadPayload`: `{count, type, uploaderType, profile}` (defaults 1, 0, 0, false). */
         fun uploadPayload(type: Int = 0, uploaderType: Int = 0, profile: Boolean = false): Map<String, Any?> =

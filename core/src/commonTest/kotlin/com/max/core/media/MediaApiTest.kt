@@ -31,6 +31,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -321,8 +322,8 @@ class MediaApiTest {
         assertEquals(2, sink.sent.size)
         assertEquals(bytes(sink.sent[0].second), bytes(sink.sent[1].second))
 
-        // no signal: UploadException after the timeout
-        val sink2 = FakeSink(serverError(Opcode.MSG_SEND, "attachment.not.ready"))
+        // never ready: the frame goes again every second, UploadException after the timeout
+        val sink2 = FakeSink(*Array(80) { serverError(Opcode.MSG_SEND, "attachment.not.ready") })
         val waiting = async { runCatching { MediaApi(sink2, FakeHttp(), ua, events, clock).sendMessage(100, listOf(voice)) } }
         advanceTimeBy(61_000)
         assertIs<UploadException>(waiting.await().exceptionOrNull())
@@ -339,6 +340,26 @@ class MediaApiTest {
             MediaApi(FakeSink(serverError(Opcode.MSG_SEND, "chat.denied")), FakeHttp(), ua, events).sendMessage(100, listOf(voice))
         }
         assertEquals("chat.denied", e2.errorKey)
+    }
+
+    @Test
+    fun videoNotReadyKeyRetriesWithoutSignal() = runTest {
+        // The server's key for voice and notes is longer; no readiness push comes at all.
+        val events = MutableSharedFlow<MaxEvent>()
+        val voice = OutgoingAttachment.Voice(41, "voice-token", 2600)
+        val sink = FakeSink(
+            serverError(Opcode.MSG_SEND, "errors.process.attachment.video.not.ready"),
+            serverError(Opcode.MSG_SEND, "errors.process.attachment.video.not.ready"),
+            sentMessage(58),
+        )
+        val sending = async { MediaApi(sink, FakeHttp(), ua, events, clock).sendMessage(100, listOf(voice)) }
+        advanceTimeBy(2_500)
+        assertEquals(58L, sending.await().id)
+        assertEquals(3, sink.sent.size)
+        assertTrue(MediaApi.isNotReady("attachment.not.ready"))
+        assertTrue(MediaApi.isNotReady("errors.process.attachment.video.not.ready"))
+        assertFalse(MediaApi.isNotReady("chat.denied"))
+        assertFalse(MediaApi.isNotReady(null))
     }
 
     @Test
@@ -539,7 +560,7 @@ class MediaApiTest {
         assertEquals(60L, MediaApi(sink, FakeHttp(), ua, events, clock).sendMessage(100, listOf(note)).id)
         assertEquals(bytes(sink.sent[0].second), bytes(sink.sent[1].second))
 
-        val sink2 = FakeSink(serverError(Opcode.MSG_SEND, "attachment.not.ready"))
+        val sink2 = FakeSink(*Array(80) { serverError(Opcode.MSG_SEND, "attachment.not.ready") })
         sink2.onRequest = { events.emit(MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.AUDIO, 20, 136, null)) }
         val waiting = async { runCatching { MediaApi(sink2, FakeHttp(), ua, events, clock).sendMessage(100, listOf(note)) } }
         advanceTimeBy(61_000)
