@@ -90,6 +90,15 @@ sealed interface OutgoingAttachment {
     }
 
     /**
+     * A contact card of a MAX user: `{_type: "CONTACT", contactId}` (Komet `sendContactMessage`;
+     * PyMax has no outgoing contact). [contactId] is the user id; no upload is needed. The server
+     * fills in the name, phone and photo of the received copy.
+     */
+    data class Contact(val contactId: Long) : OutgoingAttachment {
+        override fun toPayload(): Map<String, Any?> = linkedMapOf("_type" to "CONTACT", "contactId" to contactId)
+    }
+
+    /**
      * A poll (PyMax `Poll`): `{title, answers: [{text, answerId?}], settings: <PollFlag bits>,
      * _type: "POLL"}`; no upload needed.
      */

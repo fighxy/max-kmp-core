@@ -568,6 +568,44 @@ class MaxClientTest {
     }
 
     @Test
+    fun contactCardIsSentAsAttachmentAndRetriedWhileNotReady() = runTest {
+        val kv = InMemoryKeyValueStore()
+        val factory = ScriptedConnectionFactory()
+        val c = smsLogin(kv, factory)
+        val conn = factory.lastConnection!!
+        val sent = async { c.sendContact(100, 7) }
+        runCurrent()
+        val (h1, p1) = decodePayloadPacket(conn.takeWritten()!!)
+        assertEquals(Opcode.MSG_SEND.value, h1.opcodeValue)
+        val message = (p1 as Map<*, *>)["message"] as Map<*, *>
+        val attach = (message["attaches"] as List<*>).single() as Map<*, *>
+        assertEquals(listOf("_type", "contactId"), attach.keys.toList())
+        assertEquals("CONTACT", attach["_type"])
+        assertEquals(7L, (attach["contactId"] as Number).toLong())
+        assertTrue("text" !in message)
+        // still processing: the same frame again a second later
+        conn.feed(errorReply(h1.seq, Opcode.MSG_SEND.value, mapOf("error" to "attachment.not.ready", "message" to "not ready")))
+        runCurrent()
+        val before = testScheduler.currentTime
+        val (h2, p2) = decodePayloadPacket(conn.takeWritten()!!)
+        assertTrue(testScheduler.currentTime - before >= 1_000, "resent after a second")
+        assertEquals(message["cid"], ((p2 as Map<*, *>)["message"] as Map<*, *>)["cid"])
+        val card = mapOf("_type" to "CONTACT", "contactId" to 7, "name" to "Ann")
+        conn.feed(ok(h2.seq, Opcode.MSG_SEND.value, mapOf("chatId" to 100, "message" to mapOf("id" to 9, "time" to 50, "type" to "USER", "sender" to 5, "attaches" to listOf(card)))))
+        assertEquals(9L, sent.await().id)
+        assertEquals(9L, c.store.state.value.chats.getValue(100).lastMessage!!.id)
+        assertEquals(listOf(9L), c.store.state.value.messagesOf(100).map { it.id })
+
+        // other errors are not retried
+        val denied = async { runCatching { c.sendContact(100, 7) } }
+        runCurrent()
+        conn.fail(Opcode.MSG_SEND, mapOf("error" to "chat.denied", "message" to "denied"))
+        assertTrue(denied.await().isFailure)
+        runCurrent()
+        assertNull(conn.takeWritten())
+    }
+
+    @Test
     fun onlyAndroidProfilesAreAccepted() {
         val ios = UserAgentInfo(deviceType = "IOS", osVersion = "iOS 18.0", deviceName = "iPhone 15", pushDeviceType = "APNS")
         assertFailsWith<IllegalArgumentException> { MaxClient(MaxClientConfig(userAgent = ios), InMemoryKeyValueStore(), ScriptedConnectionFactory(), noHttp) }

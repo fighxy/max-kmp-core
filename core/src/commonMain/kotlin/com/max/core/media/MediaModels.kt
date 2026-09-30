@@ -13,6 +13,16 @@ import com.max.core.protocol.Opcode
 class UploadException(message: String, val status: Int? = null, cause: Throwable? = null) : ApiException(message, cause)
 
 /**
+ * A local file to upload and attach ([MediaApi.uploadAll]). [kind] picks the slot:
+ * [Kind.PHOTO] `PHOTO_UPLOAD` 80 (the server recompresses it), [Kind.VIDEO] `VIDEO_UPLOAD` 82,
+ * [Kind.FILE] `FILE_UPLOAD` 87 (sent as is, a document). [fileName] is what the recipient sees
+ * for a file and the multipart part name for a photo; the last path component when `null`.
+ */
+data class OutgoingMedia(val path: String, val kind: Kind, val fileName: String? = null) {
+    enum class Kind { PHOTO, VIDEO, FILE }
+}
+
+/**
  * Photo upload slot: reply to `PHOTO_UPLOAD` 80 `{url}`; [photoId] is the `photoIds` query
  * parameter of [url] (PyMax `upload_photo`, `parse_qs(...)["photoIds"][0]`), the key of the token
  * in the CDN reply.

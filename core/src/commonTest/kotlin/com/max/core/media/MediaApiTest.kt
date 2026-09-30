@@ -341,6 +341,80 @@ class MediaApiTest {
         assertEquals("chat.denied", e2.errorKey)
     }
 
+    @Test
+    fun contactCardPayload() {
+        assertEquals(mapOf("_type" to "CONTACT", "contactId" to 7L), OutgoingAttachment.Contact(7).toPayload())
+        assertEquals(listOf("_type", "contactId"), OutgoingAttachment.Contact(7).toPayload().keys.toList())
+    }
+
+    @Test
+    fun notReadyIsRetriedWhenAskedFor() = runTest {
+        val sink = FakeSink(serverError(Opcode.MSG_SEND, "attachment.not.ready"), serverError(Opcode.MSG_SEND, "attachment.not.ready"), sentMessage(61))
+        val api = MediaApi(sink, FakeHttp(), ua, clock = clock)
+        val start = testScheduler.currentTime
+        assertEquals(61L, api.sendMessage(100, listOf(OutgoingAttachment.Photo("ph-token")), notReadyAttempts = 3).id)
+        assertEquals(3, sink.sent.size)
+        assertEquals(2_000L, testScheduler.currentTime - start)
+        assertEquals(bytes(sink.sent[0].second), bytes(sink.sent[2].second))
+
+        // attempts used up: the last error is rethrown
+        val sink2 = FakeSink(serverError(Opcode.MSG_SEND, "attachment.not.ready"), serverError(Opcode.MSG_SEND, "attachment.not.ready"))
+        val e = assertFailsWith<ServerErrorException> {
+            MediaApi(sink2, FakeHttp(), ua, clock = clock).sendMessage(100, listOf(OutgoingAttachment.File(1)), notReadyAttempts = 2)
+        }
+        assertEquals("attachment.not.ready", e.errorKey)
+        assertEquals(2, sink2.sent.size)
+        // other errors are not retried
+        val sink3 = FakeSink(serverError(Opcode.MSG_SEND, "chat.denied"), sentMessage(62))
+        assertFailsWith<ServerErrorException> {
+            MediaApi(sink3, FakeHttp(), ua, clock = clock).sendMessage(100, listOf(OutgoingAttachment.Contact(7)), notReadyAttempts = 5)
+        }
+        assertEquals(1, sink3.sent.size)
+    }
+
+    @Test
+    fun uploadAllKeepsOrderNamesAndReportsBatchProgress() = runTest {
+        val sink = FakeSink(
+            mapOf("url" to photoUrl),
+            mapOf("info" to listOf(mapOf("url" to "https://vu.test/f?id=30", "fileId" to 30, "token" to "ft"))),
+        )
+        val http = FakeHttp(reply = """{"photos": {"Xy=1": {"token": "ph-token"}}}""")
+        http.reportEvery = 7
+        val api = MediaApi(sink, http, ua, clock = clock, boundary = { "----B" })
+        val files = mapOf("/tmp/a.jpg" to ByteArray(10), "/tmp/x/doc" to ByteArray(20))
+        val opened = ArrayList<String>()
+        val seen = ArrayList<Pair<Long, Long>>()
+        val result = api.uploadAll(
+            listOf(OutgoingMedia("/tmp/a.jpg", OutgoingMedia.Kind.PHOTO), OutgoingMedia("/tmp/x/doc", OutgoingMedia.Kind.FILE, "Отчёт.pdf")),
+            progress = UploadProgress { sent, total -> seen += sent to total },
+            open = { path -> opened += path; ByteArrayUploadSource(files.getValue(path)) },
+        )
+        assertEquals(listOf(OutgoingAttachment.Photo("ph-token"), OutgoingAttachment.File(30)), result)
+        assertEquals(listOf("/tmp/a.jpg", "/tmp/x/doc"), opened)
+        assertEquals(listOf(Opcode.PHOTO_UPLOAD, Opcode.FILE_UPLOAD), sink.sent.map { it.first })
+        assertTrue(http.posts[0].body.decodeToString().contains("filename=\"a.jpg\""))
+        assertEquals("attachment; filename=%D0%9E%D1%82%D1%87%D1%91%D1%82.pdf", http.posts[1].headers.toMap()["Content-Disposition"])
+        // one total for the batch, never going back, ending at the sum of the file sizes
+        assertTrue(seen.all { it.second == 30L })
+        assertEquals(seen.map { it.first }.sorted(), seen.map { it.first })
+        assertTrue(seen.any { it.first in 1L..9L })
+        assertTrue(seen.any { it.first in 11L..29L })
+        assertEquals(30L, seen.last().first)
+    }
+
+    @Test
+    fun uploadAllStopsAtTheFirstFailure() = runTest {
+        val sink = FakeSink(mapOf("url" to photoUrl), mapOf("url" to photoUrl))
+        val api = MediaApi(sink, FakeHttp(status = 500), ua, clock = clock)
+        assertFailsWith<UploadException> {
+            api.uploadAll(
+                listOf(OutgoingMedia("/a.jpg", OutgoingMedia.Kind.PHOTO), OutgoingMedia("/b.jpg", OutgoingMedia.Kind.PHOTO)),
+                open = { ByteArrayUploadSource(ByteArray(3)) },
+            )
+        }
+        assertEquals(1, sink.sent.size)
+    }
+
     // --- links ---
 
     @Test

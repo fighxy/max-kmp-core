@@ -17,6 +17,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterIsInstance
@@ -354,6 +355,54 @@ class MediaApi(
         return OutgoingAttachment.VideoNote(slot.id, slot.token, durationMs, thumbhash)
     }
 
+    // ---- several files --------------------------------------------------------------------------
+
+    /** Uploads [source] with the slot of [kind] ([uploadPhoto], [uploadVideo] or [uploadFile]). */
+    suspend fun upload(kind: OutgoingMedia.Kind, source: UploadSource, fileName: String, progress: UploadProgress? = null): OutgoingAttachment =
+        when (kind) {
+            OutgoingMedia.Kind.PHOTO -> uploadPhoto(source, fileName, progress = progress)
+            OutgoingMedia.Kind.VIDEO -> uploadVideo(source, fileName, progress)
+            OutgoingMedia.Kind.FILE -> uploadFile(source, fileName, progress)
+        }
+
+    /**
+     * Uploads [items] one after another, in order, and returns their attachments in the same
+     * order. [progress] gets `(bytes done, bytes in all)` over the whole batch: the file sizes
+     * are summed first, and each upload's own progress is scaled to its file's share (a photo
+     * reports its multipart body, a little larger than the file). The first failure stops the
+     * batch and is rethrown; cancelling the caller stops the current upload. [open] opens a path
+     * ([fileUploadSource] by default); every opened source is closed at the end.
+     */
+    suspend fun uploadAll(
+        items: List<OutgoingMedia>,
+        progress: UploadProgress? = null,
+        open: (String) -> UploadSource = ::fileUploadSource,
+    ): List<OutgoingAttachment> {
+        val sources = ArrayList<UploadSource>(items.size)
+        try {
+            items.forEach { sources += open(it.path) }
+            val sizes = sources.map { it.size.coerceAtLeast(0) }
+            val total = sizes.sum()
+            var done = 0L
+            return items.mapIndexed { i, item ->
+                val size = sizes[i]
+                val base = done
+                val scaled = progress?.let { p ->
+                    UploadProgress { sent, all ->
+                        val part = if (all > 0) (sent.coerceIn(0, all).toDouble() / all * size).toLong() else 0L
+                        p.onProgress(base + part, total)
+                    }
+                }
+                val attachment = upload(item.kind, sources[i], item.fileName?.takeIf { it.isNotBlank() } ?: fileNameOf(item.path), scaled)
+                done += size
+                progress?.onProgress(done, total)
+                attachment
+            }
+        } finally {
+            sources.forEach { runCatching { it.close() } }
+        }
+    }
+
     // ---- download links -----------------------------------------------------------------------
 
     /** `VIDEO_PLAY` 83 `{chatId, messageId, videoId}` (PyMax `get_video_by_id`). */
@@ -373,6 +422,12 @@ class MediaApi(
      * `NOTIF_ATTACH {audioId}`, video note: `{videoId}` — and resends the same frame once; so does
      * this method (signals are collected from before the first send). Without such an attachment
      * or without [events] the error is rethrown; a missing signal throws [UploadException].
+     *
+     * Photos, files and videos have no signal to wait for here. With [notReadyAttempts] above 1
+     * the same frame is sent again every [notReadyDelay] while the server answers
+     * `attachment.not.ready`, at most [notReadyAttempts] times in all (Komet retries photos and
+     * files 20 times and videos 30 times, a second apart); the last error is rethrown. The
+     * default 1 keeps PyMax's behaviour.
      */
     suspend fun sendMessage(
         chatId: Long,
@@ -381,6 +436,8 @@ class MediaApi(
         replyTo: Long? = null,
         notify: Boolean = true,
         elements: List<Map<String, Any?>> = emptyList(),
+        notReadyAttempts: Int = 1,
+        notReadyDelay: Duration = 1.seconds,
     ): MaxMessage {
         val payload = messages.sendMessagePayload(chatId, text, messages.nextCid(), replyTo, notify, elements, attaches(attachments))
         val pending = attachments.firstNotNullOfOrNull {
@@ -391,7 +448,7 @@ class MediaApi(
             }
         }
         val events = events
-        if (pending == null || events == null) return messages.sendPrepared(chatId, payload)
+        if (pending == null || events == null) return sendUntilReady(chatId, payload, notReadyAttempts, notReadyDelay)
         return coroutineScope {
             val seen = MutableStateFlow(emptySet<Pair<MaxEvent.AttachmentReady.Kind, Long>>())
             val collector = launch(start = CoroutineStart.UNDISPATCHED) {
@@ -409,6 +466,20 @@ class MediaApi(
             } finally {
                 collector.cancel()
             }
+        }
+    }
+
+    /** `MSG_SEND` of [payload], repeated after [pause] on `attachment.not.ready`, [attempts] times at most. */
+    private suspend fun sendUntilReady(chatId: Long, payload: Map<String, Any?>, attempts: Int, pause: Duration): MaxMessage {
+        var attempt = 1
+        while (true) {
+            try {
+                return messages.sendPrepared(chatId, payload)
+            } catch (e: ServerErrorException) {
+                if (e.errorKey != ATTACHMENT_NOT_READY || attempt >= attempts) throw e
+            }
+            attempt++
+            delay(pause)
         }
     }
 

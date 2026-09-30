@@ -33,6 +33,9 @@ import com.max.core.events.MaxEvents
 import com.max.core.media.MediaApi
 import com.max.core.media.MediaHttp
 import com.max.core.media.MediaHttpConfig
+import com.max.core.media.OutgoingAttachment
+import com.max.core.media.OutgoingMedia
+import com.max.core.media.UploadProgress
 import com.max.core.media.defaultMediaHttp
 import com.max.core.protocol.DefaultMessagePackCodec
 import com.max.core.protocol.Opcode
@@ -826,6 +829,54 @@ class MaxClient @Throws(Exception::class) constructor(
         return message
     }
 
+    /**
+     * Uploads [items] in order ([MediaApi.uploadAll], [progress] over the whole batch) and sends
+     * them as one message with [text] as its caption ([sendAttachments]). Cancelling the caller
+     * stops the upload; nothing is sent then.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun sendMedia(
+        chatId: Long,
+        items: List<OutgoingMedia>,
+        text: String? = null,
+        replyTo: Long? = null,
+        progress: UploadProgress? = null,
+    ): MaxMessage {
+        require(items.isNotEmpty()) { "nothing to send" }
+        val attachments = media.uploadAll(items, progress)
+        return sendAttachments(chatId, attachments, text, replyTo)
+    }
+
+    /**
+     * Sends ready [attachments] (`MSG_SEND` 64 `attaches`) with an optional caption, and adds the
+     * server's copy to [store] like [sendText]. While the server still processes an upload
+     * (`attachment.not.ready`) the frame is sent again once a second, up to
+     * [ATTACHMENT_SEND_ATTEMPTS] times.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun sendAttachments(
+        chatId: Long,
+        attachments: List<OutgoingAttachment>,
+        text: String? = null,
+        replyTo: Long? = null,
+    ): MaxMessage {
+        val t = ticket()
+        val message = media.sendMessage(
+            chatId,
+            attachments,
+            text?.takeIf { it.isNotBlank() },
+            replyTo,
+            notReadyAttempts = ATTACHMENT_SEND_ATTEMPTS,
+        )
+        commit(t) { store.putSentMessage(chatId, message) }
+        return message
+    }
+
+    /** Sends the card of MAX user [contactId] (`{_type: CONTACT, contactId}`), see [sendAttachments]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun sendContact(chatId: Long, contactId: Long, replyTo: Long? = null): MaxMessage =
+        sendAttachments(chatId, listOf(OutgoingAttachment.Contact(contactId)), null, replyTo)
+
     // ---- Reactions ------------------------------------------------------------------------------
 
     /**
@@ -972,3 +1023,9 @@ private fun Any?.asMarker(): Long? = when (this) {
     is String -> toLongOrNull()
     else -> null
 }
+
+/**
+ * `MSG_SEND` attempts of [MaxClient.sendAttachments] while the server answers
+ * `attachment.not.ready`, a second apart (Komet waits up to 30 s for a video).
+ */
+const val ATTACHMENT_SEND_ATTEMPTS: Int = 30
