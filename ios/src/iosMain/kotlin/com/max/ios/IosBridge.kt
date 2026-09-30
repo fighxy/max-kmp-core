@@ -9,6 +9,8 @@ import com.max.core.api.Chat
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.ReactionInfo
+import com.max.core.media.OutgoingMedia
+import com.max.core.media.UploadProgress
 import com.max.core.media.messageContentJson
 import com.max.core.media.reactionsJson
 import com.max.core.calls.CallLogEntry
@@ -28,6 +30,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -643,6 +646,46 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /**
+     * Uploads [items] in order and sends them as one message with [caption] (empty for none);
+     * a non-empty [replyTo] makes it a reply ([MaxClient.sendMedia]). [onProgress] gets the
+     * bytes of the whole batch, at most once per percent, on a background thread. The returned
+     * [IosTask] cancels the upload: [onResult] then reports `CANCELLED` and nothing is sent.
+     * Each item's file must stay readable until [onResult].
+     */
+    fun sendMedia(
+        chatId: String,
+        items: List<IosOutgoingMedia>,
+        caption: String,
+        replyTo: String,
+        onProgress: (IosUploadProgress) -> Unit,
+        onResult: (IosMessage?, String?, String?) -> Unit,
+    ): IosTask = IosTask(
+        perform(onResult, { null }) { c ->
+            val chat = parseId(chatId)
+            val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
+            val media = items.map { OutgoingMedia(it.path, mediaKind(it.kind), it.fileName.takeIf { name -> name.isNotBlank() }) }
+            var lastPercent = -1L
+            val progress = UploadProgress { sent, total ->
+                val percent = if (total > 0) sent * 100 / total else 0
+                if (percent > lastPercent || sent >= total) {
+                    lastPercent = percent
+                    guarded { onProgress(IosUploadProgress(sent, total)) }
+                }
+            }
+            val message = c.sendMedia(chat, media, caption, reply, progress)
+            messageSnapshot(message, chatId, c.store.state.value)
+        },
+    )
+
+    /** Sends the card of MAX user [contactId] ([MaxClient.sendContact]). */
+    fun sendContact(chatId: String, contactId: String, replyTo: String, onResult: (IosMessage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
+            messageSnapshot(c.sendContact(parseId(chatId), parseId(contactId), reply), chatId, c.store.state.value)
+        }
+    }
+
     /** Disconnects and releases the client. It cannot be used afterwards; [onDone] is always called once. */
     fun close(onDone: () -> Unit) {
         clientLock.locked {
@@ -742,7 +785,7 @@ class MaxIosClient internal constructor(
      * `(fallback, kind, errorKey)` on any failure. ATOMIC start: the body runs (and reports
      * `CANCELLED`) even when the scope is already cancelled by [close].
      */
-    private fun <T> perform(onResult: (T, String?, String?) -> Unit, fallback: () -> T, body: suspend (MaxClient) -> T) {
+    private fun <T> perform(onResult: (T, String?, String?) -> Unit, fallback: () -> T, body: suspend (MaxClient) -> T): Job =
         scope.launch(start = CoroutineStart.ATOMIC) {
             val outcome = try {
                 Result.success(body(client()))
@@ -758,7 +801,6 @@ class MaxIosClient internal constructor(
                 },
             )
         }
-    }
 
     private fun runUnit(onResult: (String?, String?) -> Unit, body: suspend (MaxClient) -> Unit) {
         perform<Unit>({ _, kind, key -> onResult(kind, key) }, { }) { body(it) }
@@ -816,6 +858,32 @@ private inline fun guarded(block: () -> Unit) {
 /** Decimal id from Swift; a malformed one becomes an [IllegalArgumentException] (error kind `UNKNOWN`). */
 private fun parseId(value: String): Long =
     value.toLongOrNull() ?: throw IllegalArgumentException("not a numeric id: \"$value\"")
+
+/** `photo`, `video` or `file` of [IosOutgoingMedia.kind]. */
+private fun mediaKind(kind: String): OutgoingMedia.Kind = when (kind) {
+    "photo" -> OutgoingMedia.Kind.PHOTO
+    "video" -> OutgoingMedia.Kind.VIDEO
+    "file" -> OutgoingMedia.Kind.FILE
+    else -> throw IllegalArgumentException("unknown media kind \"$kind\"")
+}
+
+/**
+ * A local file for [MaxIosClient.sendMedia]. [kind] is `photo` (recompressed by the server),
+ * `video` or `file` (sent as is). [fileName] is what the recipient sees for a file; empty for
+ * the last path component. A photo's name should be ASCII (`image.jpg`): it goes into the
+ * multipart header unencoded.
+ */
+class IosOutgoingMedia(val path: String, val kind: String, val fileName: String)
+
+/** Upload progress of a [MaxIosClient.sendMedia] batch in bytes. */
+class IosUploadProgress(val sent: Long, val total: Long)
+
+/** A running request that can be cancelled, such as [MaxIosClient.sendMedia]. */
+class IosTask internal constructor(private val job: Job) {
+    fun cancel() {
+        job.cancel()
+    }
+}
 
 /** Cancels one `watch…` subscription of [MaxIosClient]. */
 class IosWatch internal constructor(private val watcher: Watcher?) {
