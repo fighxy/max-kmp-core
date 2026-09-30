@@ -59,6 +59,28 @@ class SettingsApisTest {
     }
 
     @Test
+    fun chatMuteGoesUnderSettingsChats() = runTest {
+        val sink = ScriptSink(mapOf("hash" to "h3"), emptyMap<String, Any?>())
+        val api = AccountApi(sink)
+        assertEquals("h3", api.setChatMute(-42L, -1L))
+        assertEquals(Opcode.CONFIG, sink.opcodes[0])
+        assertEquals(mapOf("settings" to mapOf("chats" to mapOf(-42L to mapOf("dontDisturbUntil" to -1L)))), sink.payload(0))
+        assertNull(api.setChatMute(-42L, 0L))
+    }
+
+    @Test
+    fun chatMuteFromLoginConfig() {
+        val config = AccountConfig.fromLoginReply(mapOf("config" to mapOf("chats" to mapOf("7" to mapOf("dontDisturbUntil" to -1), "8" to mapOf("dontDisturbUntil" to 1_000L)))))!!
+        assertEquals(true, config.isMuted(7, nowMs = 5_000))
+        assertEquals(false, config.isMuted(8, nowMs = 5_000))
+        assertEquals(true, config.isMuted(8, nowMs = 500))
+        assertNull(config.isMuted(9, nowMs = 0))
+        val unmuted = config.withChatMute(7, 0)
+        assertEquals(false, unmuted.isMuted(7, nowMs = 0))
+        assertEquals(true, unmuted.withChatMute(9, -1).isMuted(9, nowMs = 0))
+    }
+
+    @Test
     fun folderEditKeepsPinsAndOptions() = runTest {
         val raw = mapOf(
             "id" to "f1", "title" to "Работа", "include" to listOf(1L, 2L), "filters" to listOf(4),

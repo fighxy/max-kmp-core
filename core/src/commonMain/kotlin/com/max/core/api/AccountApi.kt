@@ -67,6 +67,17 @@ class AccountApi(private val sink: RequestSink, private val newFolderId: () -> S
     }
 
     /**
+     * Mutes or unmutes a chat (`CONFIG` 22, `{settings: {chats: {<chatId>: {dontDisturbUntil}}}}`,
+     * as Komet sends it): [until] `0` turns the sound on, `-1` mutes for good, a time in ms
+     * mutes until then. Returns the new config `hash`, `null` if the reply has none.
+     */
+    suspend fun setChatMute(chatId: Long, until: Long): String? {
+        val settings = linkedMapOf<String, Any?>("chats" to linkedMapOf<Any?, Any?>(chatId to linkedMapOf("dontDisturbUntil" to until)))
+        val map = replyMap(sink.request(Opcode.CONFIG, linkedMapOf("settings" to settings)), Opcode.CONFIG)
+        return map["hash"]?.let { it as? String ?: it.asLong()?.toString() }
+    }
+
+    /**
      * Changes privacy settings (`CONFIG` 22, PyMax `ChangeProfileSettingsPayload`:
      * `{settings: {user: {...}}}` with only the given keys). Returns the new config `hash`
      * (PyMax stores it as the session's `configHash`; `null` if the reply has none).

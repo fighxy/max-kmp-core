@@ -721,6 +721,21 @@ class MaxClient @Throws(Exception::class) constructor(
         }
     }
 
+    /**
+     * Mutes [chatId] for good or turns its sound back on (`CONFIG` 22, `dontDisturbUntil` `-1` /
+     * `0`). [accountConfig] gets the new value, so [AccountConfig.isMuted] reflects it at once.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setChatMuted(chatId: Long, muted: Boolean) {
+        val t = ticket()
+        val until = if (muted) -1L else 0L
+        val hash = api.account.setChatMute(chatId, until)
+        commit(t) {
+            val base = _accountConfig.value ?: AccountConfig()
+            _accountConfig.value = base.withChatMute(chatId, until).let { if (hash != null) it.copy(hash = hash) else it }
+        }
+    }
+
     /** The own user from [store], or `CONTACT_INFO` for it when missing; `null` before login. */
     @Throws(CancellationException::class, Exception::class)
     suspend fun loadMe(): MaxUser? {

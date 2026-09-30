@@ -18,7 +18,31 @@ data class AccountConfig(
     val user: Map<String, Any?> = emptyMap(),
     val server: Map<String, Any?> = emptyMap(),
     val hash: String? = null,
+    /** `config.chats`: per-chat settings by chat id, e.g. `{"-123": {"dontDisturbUntil": -1}}`. */
+    val chats: Map<String, Any?> = emptyMap(),
 ) {
+    /**
+     * `dontDisturbUntil` of [chatId]: `0` sound on, `-1` muted for good, else the end of the
+     * mute in ms. `null` when the config says nothing about the chat.
+     */
+    fun dontDisturbUntil(chatId: Long): Long? =
+        ((chats[chatId.toString()] as? Map<*, *>)?.get("dontDisturbUntil"))?.asLong()
+
+    /** Whether [chatId] is muted at [nowMs] ([dontDisturbUntil]); `null` when unknown. */
+    fun isMuted(chatId: Long, nowMs: Long): Boolean? {
+        val until = dontDisturbUntil(chatId) ?: return null
+        return until < 0 || until > nowMs
+    }
+
+    /** This config with [chatId]'s `dontDisturbUntil` set to [until]. */
+    fun withChatMute(chatId: Long, until: Long): AccountConfig {
+        val key = chatId.toString()
+        val entry = LinkedHashMap<String, Any?>()
+        (chats[key] as? Map<*, *>)?.forEach { (k, v) -> if (k != null) entry[k.toString()] = v }
+        entry["dontDisturbUntil"] = until
+        return copy(chats = chats + (key to entry))
+    }
+
     /** A string setting of [user] (numbers and booleans as text), `null` when absent. */
     fun userString(key: String): String? = when (val v = user[key]) {
         null -> null
@@ -73,6 +97,7 @@ data class AccountConfig(
                 user = stringKeys(config["user"]),
                 server = stringKeys(config["server"]),
                 hash = config["hash"]?.let { it as? String ?: it.asLong()?.toString() },
+                chats = stringKeys(config["chats"]),
             )
         }
 

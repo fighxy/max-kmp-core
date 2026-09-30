@@ -20,6 +20,7 @@ import com.max.core.auth.VerifyResult
 import com.max.core.events.MaxEvent
 import com.max.core.toMaxError
 import com.max.shared.MaxClient
+import com.max.shared.DeviceProfile
 import com.max.shared.MaxClientConfig
 import com.max.shared.Watcher
 import com.max.shared.watch
@@ -35,6 +36,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import platform.Foundation.NSData
+import platform.Foundation.NSDate
+import platform.Foundation.timeIntervalSince1970
 import platform.Foundation.NSLock
 
 /**
@@ -72,6 +75,12 @@ class MaxIosClient internal constructor(
     fun currentUserId(): String = attempt("") { client().userId.value?.toString().orEmpty() }
 
     fun hasStoredToken(): Boolean = attempt(false) { client().hasStoredToken }
+
+    /**
+     * HTTP User-Agent of the session's Android profile (`OKMessages/…`). The CDN addresses from
+     * [mediaLink] are issued for that client, so video and file requests send it too.
+     */
+    fun mediaUserAgent(): String = attempt(DeviceProfile.android.httpUserAgent) { client().config.userAgent.httpUserAgent }
 
     fun start(onResult: (String?, String?, String?) -> Unit) {
         perform(onResult, { null }) { phaseOf(it.start()) }
@@ -136,7 +145,8 @@ class MaxIosClient internal constructor(
             val chats = c.store.state.value.chats.values
             resolveUsers(c, chats.mapNotNull { dialogPeer(it, c.userId.value) })
             val state = c.store.state.value
-            chats.map { chatSnapshot(it, state) }
+            val config = c.accountConfig.value
+            chats.map { chatSnapshot(it, state, config) }
         }
     }
 
@@ -144,8 +154,13 @@ class MaxIosClient internal constructor(
         perform(onResult, { null }) { c ->
             val chat = c.api.chats.getChat(parseId(chatId))
             resolveUsers(c, listOfNotNull(dialogPeer(chat, c.userId.value)))
-            chatSnapshot(chat, c.store.state.value)
+            chatSnapshot(chat, c.store.state.value, c.accountConfig.value)
         }
+    }
+
+    /** Mutes [chatId] for good or turns its sound back on ([MaxClient.setChatMuted]). */
+    fun setChatMuted(chatId: String, muted: Boolean, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.setChatMuted(parseId(chatId), muted) }
     }
 
     /**
@@ -930,6 +945,8 @@ class IosChat(
     val comments: Int = -1,
     /** The account may post here: `1` yes, `0` no ([canWrite]). */
     val canWrite: Int = 1,
+    /** Notifications off (`config.chats[id].dontDisturbUntil`): `1` muted, `0` on, `-1` unknown. */
+    val muted: Int = -1,
 )
 
 /**
@@ -1069,7 +1086,7 @@ private fun classify(t: Throwable): Pair<String, String?> {
     return kind to error.errorKey
 }
 
-private fun chatSnapshot(chat: Chat, state: MaxState): IosChat {
+private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = null): IosChat {
     val last = chat.lastMessage
     val updated = when {
         chat.lastEventTime > 0 -> chat.lastEventTime
@@ -1097,6 +1114,11 @@ private fun chatSnapshot(chat: Chat, state: MaxState): IosChat {
             else -> -1
         },
         canWrite = if (canWrite(chat, state)) 1 else 0,
+        muted = when (config?.isMuted(chat.id, (NSDate().timeIntervalSince1970 * 1000).toLong())) {
+            true -> 1
+            false -> 0
+            null -> if (config == null) -1 else 0
+        },
     )
 }
 
