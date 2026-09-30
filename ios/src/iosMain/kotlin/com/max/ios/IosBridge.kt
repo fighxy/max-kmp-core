@@ -8,7 +8,9 @@ import com.max.core.api.EntryApp
 import com.max.core.api.Chat
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
+import com.max.core.api.ReactionInfo
 import com.max.core.media.messageContentJson
+import com.max.core.media.reactionsJson
 import com.max.core.calls.CallLogEntry
 import com.max.core.state.MaxState
 import com.max.core.auth.CodeRequestType
@@ -234,7 +236,8 @@ class MaxIosClient internal constructor(
     fun editMessage(chatId: String, messageId: String, text: String, onResult: (IosMessage?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
             val edited = c.api.messages.editMessage(parseId(chatId), parseId(messageId), text)
-            messageSnapshot(edited, chatId, c.store.state.value)
+            // The edit reply may leave reactions out; the app keeps the ones it has.
+            messageSnapshot(edited, chatId, c.store.state.value, withReactions = false)
         }
     }
 
@@ -286,6 +289,55 @@ class MaxIosClient internal constructor(
             )
             resolveUsers(c, listOfNotNull(sent.sender))
             messageSnapshot(sent, chatId, c.store.state.value)
+        }
+    }
+
+    /**
+     * Sets this account's reaction on message [messageId] to [reaction], or removes it when
+     * [reaction] is empty (`MSG_REACTION` 178 / `MSG_CANCEL_REACTION` 179). A non-empty [postId]
+     * marks a comment of that channel post. [onResult] gets the reactions the server sent back
+     * in the [IosMessage.reactionsJson] format, or an empty string when the reply had none.
+     */
+    fun setReaction(chatId: String, messageId: String, postId: String, reaction: String, onResult: (String?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val info = c.setReaction(
+                parseId(chatId),
+                parseId(messageId),
+                reaction.takeIf { it.isNotEmpty() },
+                postId.takeIf { it.isNotBlank() }?.let(::parseId),
+            )
+            info?.let { reactionsJson(it) }.orEmpty()
+        }
+    }
+
+    /**
+     * Current reactions of several messages (`MSG_GET_REACTIONS` 180). Ids that are not numbers
+     * are skipped; messages the server left out are missing from the list.
+     */
+    fun loadReactions(chatId: String, messageIds: List<String>, onResult: (List<IosReactions>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val ids = messageIds.mapNotNull { it.toLongOrNull() }.distinct()
+            if (ids.isEmpty()) return@perform emptyList()
+            ids.chunked(REACTIONS_PAGE).flatMap { page ->
+                c.loadReactions(parseId(chatId), page).map { (id, info) -> IosReactions(id.toString(), reactionsJson(info)) }
+            }
+        }
+    }
+
+    /** Emoji the server offers for reactions (the animoji catalog), in its order; may be empty. */
+    fun loadReactionCatalog(onResult: (List<String>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c -> c.reactionCatalog().map { it.emoji } }
+    }
+
+    /** Who reacted to a message (`MSG_GET_DETAILED_REACTIONS` 181), with names from the store. */
+    fun loadReactionUsers(chatId: String, messageId: String, onResult: (List<IosReactionUser>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val users = c.loadReactionUsers(parseId(chatId), parseId(messageId))
+            val state = c.store.state.value
+            users.map { entry ->
+                val user = state.users[entry.userId]
+                IosReactionUser(entry.userId.toString(), user?.displayName.orEmpty(), user?.baseUrl.orEmpty(), entry.reaction)
+            }
         }
     }
 
@@ -719,6 +771,9 @@ private const val SENDER_WAIT_MS = 3_000L
 /** Ids per `CONTACT_INFO` request when resolving names. */
 private const val USERS_PAGE = 100
 
+/** Message ids per `MSG_GET_REACTIONS` request. */
+private const val REACTIONS_PAGE = 100
+
 /** Black list page size and page cap of [MaxIosClient.loadBlockedUsers]. */
 private const val BLOCKED_PAGE_SIZE = 100
 private const val BLOCKED_PAGES = 20
@@ -877,6 +932,9 @@ class IosCommentCount(
 /**
  * One message. [authorId] is empty when the server omitted the sender.
  * [contentJson] is empty when there are no attachments, reply, reactions or comments.
+ * [reactionsJson] is the message's reactions, `{"counters":[{"reaction","count"}],"totalCount",
+ * "yourReaction"}` ([reactionsJson]); `{"counters":[]…}` means none. It is empty when the
+ * source may leave reactions out (an edit reply), so the app keeps what it has.
  * [authorName] and [authorAvatarUrl] stay empty when that user is not in the store.
  */
 class IosMessage(
@@ -888,13 +946,23 @@ class IosMessage(
     val contentJson: String = "",
     val authorName: String = "",
     val authorAvatarUrl: String = "",
+    val reactionsJson: String = "",
 )
+
+/** Reactions of one message ([MaxIosClient.loadReactions]); [json] as [IosMessage.reactionsJson]. */
+class IosReactions(val messageId: String, val json: String)
+
+/** One entry of [MaxIosClient.loadReactionUsers]; [name] and [avatarUrl] are empty for an unknown user. */
+class IosReactionUser(val userId: String, val name: String, val avatarUrl: String, val reaction: String)
 
 /**
  * A push the app stores or shows.
  *
- * [kind] is `message`, `edited`, `deleted`, `chat`, `typing` or `read`.
+ * [kind] is `message`, `edited`, `deleted`, `chat`, `typing`, `read` or `reactions`.
  * [unread] is `-1` when this event does not change the unread counter.
+ * [reactionsJson] as in [IosMessage]: set for `message` and `reactions`, empty for `edited` (an
+ * edit keeps the reactions). For `reactions` it has no `yourReaction` key when the own reaction
+ * is unknown (`NOTIF_MSG_REACTIONS_CHANGED` 155 carries only counters).
  * Call, presence and unknown pushes are not forwarded.
  */
 class IosEvent(
@@ -910,6 +978,7 @@ class IosEvent(
     val contentJson: String = "",
     val authorName: String = "",
     val authorAvatarUrl: String = "",
+    val reactionsJson: String = "",
 )
 
 private fun phaseOf(state: ClientState): String = when (state) {
@@ -1080,7 +1149,7 @@ private fun callSnapshot(entry: CallLogEntry, me: Long?, state: MaxState): IosCa
     )
 }
 
-private fun messageSnapshot(message: MaxMessage, fallbackChatId: String, state: MaxState): IosMessage {
+private fun messageSnapshot(message: MaxMessage, fallbackChatId: String, state: MaxState, withReactions: Boolean = true): IosMessage {
     val user = message.sender?.let { state.users[it] }
     return IosMessage(
         id = message.id.toString(),
@@ -1091,12 +1160,14 @@ private fun messageSnapshot(message: MaxMessage, fallbackChatId: String, state: 
         contentJson = messageContentJson(message) { id -> state.users[id]?.displayName },
         authorName = user?.displayName.orEmpty(),
         authorAvatarUrl = user?.baseUrl.orEmpty(),
+        reactionsJson = if (withReactions) reactionsJson(message.reactionInfo) else "",
     )
 }
 
 private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (event) {
-    is MaxEvent.NewMessage -> listOf(messageEvent("message", event.message, state))
-    is MaxEvent.MessageEdited -> listOf(messageEvent("edited", event.message, state))
+    is MaxEvent.NewMessage -> listOf(messageEvent("message", event.message, state, withReactions = true))
+    is MaxEvent.MessageEdited -> listOf(messageEvent("edited", event.message, state, withReactions = false))
+    is MaxEvent.ReactionsChanged -> listOf(reactionsEvent(event, state))
     is MaxEvent.MessagesDeleted -> event.messageIds.map { id ->
         iosEvent(kind = "deleted", chatId = event.chatId.toString(), messageId = id.toString())
     }
@@ -1114,7 +1185,24 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
     else -> emptyList()
 }
 
-private fun messageEvent(kind: String, message: MaxMessage, state: MaxState): IosEvent {
+/**
+ * `reactions` event. The own reaction comes from the push if it has one, else from the stored
+ * message while its counter is still in the push; otherwise it is left out as unknown.
+ */
+private fun reactionsEvent(event: MaxEvent.ReactionsChanged, state: MaxState): IosEvent {
+    val stored = event.messageId.toLongOrNull()?.let { id -> state.messages[event.chatId]?.firstOrNull { it.id == id } }
+    val mine = event.yourReaction
+        ?: stored?.reactionInfo?.yourReaction?.takeIf { own -> event.counters.any { it.reaction == own && it.count > 0 } }
+    val info = ReactionInfo(event.totalCount, event.counters, mine, emptyMap<Any?, Any?>())
+    return iosEvent(
+        kind = "reactions",
+        chatId = event.chatId.toString(),
+        messageId = event.messageId,
+        reactionsJson = reactionsJson(info, mineKnown = mine != null),
+    )
+}
+
+private fun messageEvent(kind: String, message: MaxMessage, state: MaxState, withReactions: Boolean): IosEvent {
     val user = message.sender?.let { state.users[it] }
     return iosEvent(
         kind = kind,
@@ -1126,6 +1214,7 @@ private fun messageEvent(kind: String, message: MaxMessage, state: MaxState): Io
         contentJson = messageContentJson(message) { id -> state.users[id]?.displayName },
         authorName = user?.displayName.orEmpty(),
         authorAvatarUrl = user?.baseUrl.orEmpty(),
+        reactionsJson = if (withReactions) reactionsJson(message.reactionInfo) else "",
     )
 }
 
@@ -1156,6 +1245,7 @@ private fun iosEvent(
     contentJson: String = "",
     authorName: String = "",
     authorAvatarUrl: String = "",
+    reactionsJson: String = "",
 ): IosEvent = IosEvent(
-    kind, chatId, messageId, authorId, text, title, chatType, timeMs, unread, contentJson, authorName, authorAvatarUrl,
+    kind, chatId, messageId, authorId, text, title, chatType, timeMs, unread, contentJson, authorName, authorAvatarUrl, reactionsJson,
 )
