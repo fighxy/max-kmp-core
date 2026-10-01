@@ -1043,6 +1043,9 @@ class IosChat(
     /** The last message is a forward (`link.type` FORWARD): `1` yes, `0` no. Its text and
      *  attachment are then the forwarded message's. */
     val lastForwarded: Int = 0,
+    /** Latest read mark of the other participants (`participants`: user id → read time, ms):
+     *  own messages up to it are read. `0` for channels or when the card does not say. */
+    val peerReadMs: Long = 0,
 )
 
 /**
@@ -1225,7 +1228,34 @@ private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = n
             else -> 0
         },
         lastForwarded = if (forwarded != null) 1 else 0,
+        peerReadMs = peerReadMark(chat, me),
     )
+}
+
+/**
+ * The newest read mark of the participants other than [me]: `participants` maps a user id to
+ * the time (ms) up to which they read the chat. In a dialog that is the peer, in a group anyone
+ * else, as other clients show it. Channels report none.
+ */
+private fun peerReadMark(chat: Chat, me: Long?): Long {
+    if (chat.type == "CHANNEL") return 0L
+    val participants = chat.raw["participants"] as? Map<*, *> ?: return 0L
+    var newest = 0L
+    for ((key, value) in participants) {
+        val id = when (key) {
+            is Number -> key.toLong()
+            is String -> key.toLongOrNull()
+            else -> null
+        } ?: continue
+        if (id == me) continue
+        val mark = when (value) {
+            is Number -> value.toLong()
+            is String -> value.toLongOrNull()
+            else -> null
+        } ?: continue
+        if (mark > newest) newest = mark
+    }
+    return newest
 }
 
 /**
