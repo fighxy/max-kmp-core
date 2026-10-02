@@ -98,6 +98,11 @@ sealed interface OutgoingAttachment {
         override fun toPayload(): Map<String, Any?> = linkedMapOf("_type" to "CONTACT", "contactId" to contactId)
     }
 
+    /** A sticker of the server catalog (KometTeam/Komet `sendStickerMessage`): `{_type: STICKER, stickerId}`. */
+    data class Sticker(val stickerId: Long) : OutgoingAttachment {
+        override fun toPayload(): Map<String, Any?> = linkedMapOf("_type" to "STICKER", "stickerId" to stickerId)
+    }
+
     /**
      * A poll (PyMax `Poll`): `{title, answers: [{text, answerId?}], settings: <PollFlag bits>,
      * _type: "POLL"}`; no upload needed.

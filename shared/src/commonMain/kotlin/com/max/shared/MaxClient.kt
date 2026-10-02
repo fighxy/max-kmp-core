@@ -838,9 +838,9 @@ class MaxClient @Throws(Exception::class) constructor(
      * back): it becomes the chat's last message and moves the chat up the list; unread stays.
      */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun sendText(chatId: Long, text: String, replyTo: Long? = null): MaxMessage {
+    suspend fun sendText(chatId: Long, text: String, replyTo: Long? = null, elements: List<Map<String, Any?>> = emptyList()): MaxMessage {
         val t = ticket()
-        val message = api.messages.sendMessage(chatId, text, replyTo)
+        val message = api.messages.sendMessage(chatId, text, replyTo, elements = elements)
         commit(t) { store.putSentMessage(chatId, message) }
         return message
     }
@@ -892,6 +892,23 @@ class MaxClient @Throws(Exception::class) constructor(
     @Throws(CancellationException::class, Exception::class)
     suspend fun sendContact(chatId: Long, contactId: Long, replyTo: Long? = null): MaxMessage =
         sendAttachments(chatId, listOf(OutgoingAttachment.Contact(contactId)), null, replyTo)
+
+    /** Sends sticker [stickerId] of the server catalog (`{_type: STICKER, stickerId}`), see [sendAttachments]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun sendSticker(chatId: Long, stickerId: Long, replyTo: Long? = null): MaxMessage =
+        sendAttachments(chatId, listOf(OutgoingAttachment.Sticker(stickerId)), null, replyTo)
+
+    // ---- Stickers -------------------------------------------------------------------------------
+
+    /** Sticker sets and recent stickers ([com.max.core.api.AssetsApi.stickerSections]). */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun stickerSections(): com.max.core.api.StickerSections = api.assets.stickerSections()
+
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun stickerSets(ids: List<Long>): List<com.max.core.api.StickerSet> = api.assets.stickerSets(ids)
+
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun stickers(ids: List<Long>): List<com.max.core.api.StickerItem> = api.assets.stickers(ids)
 
     // ---- Reactions ------------------------------------------------------------------------------
 

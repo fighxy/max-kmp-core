@@ -350,6 +350,75 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /**
+     * Sends [text] with animated emoji: each [animoji] mark becomes an `ANIMOJI` element
+     * (`{type, from, length, entityId, attributes: {animojiLottieUrl}}`, KometTeam/Komet
+     * `RichMessageController`) over the emoji at `from` (UTF-16 offsets).
+     */
+    fun sendText(
+        chatId: String,
+        text: String,
+        replyTo: String,
+        animoji: List<IosAnimojiMark>,
+        onResult: (IosMessage?, String?, String?) -> Unit,
+    ) {
+        perform(onResult, { null }) { c ->
+            val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
+            val elements = animoji.mapNotNull { mark ->
+                val id = mark.animojiId.toLongOrNull() ?: return@mapNotNull null
+                if (mark.from < 0 || mark.length <= 0 || mark.from + mark.length > text.length) return@mapNotNull null
+                linkedMapOf<String, Any?>(
+                    "type" to "ANIMOJI", "from" to mark.from, "length" to mark.length, "entityId" to id,
+                    "attributes" to linkedMapOf("animojiLottieUrl" to mark.lottieUrl),
+                )
+            }
+            messageSnapshot(c.sendText(parseId(chatId), text, reply, elements), chatId, c.store.state.value)
+        }
+    }
+
+    /** Sends sticker [stickerId] of the catalog; a non-empty [replyTo] makes it a reply. */
+    fun sendSticker(chatId: String, stickerId: String, replyTo: String, onResult: (IosMessage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
+            messageSnapshot(c.sendSticker(parseId(chatId), parseId(stickerId), reply), chatId, c.store.state.value)
+        }
+    }
+
+    /** Sticker sets in panel order (the account's first) with their metadata, and recent stickers. */
+    fun loadStickerCatalog(onResult: (IosStickerCatalog?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val sections = c.stickerSections()
+            val sets = c.stickerSets(sections.setIds).map { set ->
+                IosStickerSet(
+                    set.id.toString(), set.name, set.iconUrl.orEmpty(), set.stickerIds.map(Long::toString),
+                    set.link.orEmpty(), set.id in sections.favoriteSetIds,
+                )
+            }
+            IosStickerCatalog(sets, sections.recentStickerIds.map(Long::toString))
+        }
+    }
+
+    /** Stickers by id in the given order; unknown ids are left out. */
+    fun loadStickers(ids: List<String>, onResult: (List<IosSticker>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val wanted = ids.mapNotNull { it.toLongOrNull() }
+            if (wanted.isEmpty()) return@perform emptyList()
+            c.stickers(wanted).map { s ->
+                IosSticker(
+                    s.id.toString(), s.url, s.lottieUrl.orEmpty(), s.setId?.toString().orEmpty(),
+                    s.width ?: 0, s.height ?: 0, s.tags,
+                )
+            }
+        }
+    }
+
+    /** The animated emoji catalog (lottie per emoji), in server order; may be empty. */
+    fun loadAnimojis(onResult: (List<IosAnimoji>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            c.reactionCatalog().map { IosAnimoji(it.id.toString(), it.emoji, it.iconUrl.orEmpty(), it.lottieUrl.orEmpty()) }
+        }
+    }
+
     /** Emoji the server offers for reactions (the animoji catalog), in its order; may be empty. */
     fun loadReactionCatalog(onResult: (List<String>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c -> c.reactionCatalog().map { it.emoji } }
@@ -1150,6 +1219,36 @@ class IosMessage(
 
 /** Reactions of one message ([MaxIosClient.loadReactions]); [json] as [IosMessage.reactionsJson]. */
 class IosReactions(val messageId: String, val json: String)
+
+/** An animated emoji in sent text ([MaxIosClient.sendText]): UTF-16 [from]/[length] of the emoji. */
+class IosAnimojiMark(val from: Int, val length: Int, val animojiId: String, val lottieUrl: String)
+
+/** [MaxIosClient.loadStickerCatalog]: sets in panel order and recent sticker ids. */
+class IosStickerCatalog(val sets: List<IosStickerSet>, val recentStickerIds: List<String>)
+
+/** A sticker set; [iconUrl] and [link] are empty when unknown. */
+class IosStickerSet(
+    val id: String,
+    val name: String,
+    val iconUrl: String,
+    val stickerIds: List<String>,
+    val link: String,
+    val isFavorite: Boolean,
+)
+
+/** A sticker; [lottieUrl] empty for a still one, [setId] empty when unknown, sizes `0` when unknown. */
+class IosSticker(
+    val id: String,
+    val url: String,
+    val lottieUrl: String,
+    val setId: String,
+    val width: Int,
+    val height: Int,
+    val tags: List<String>,
+)
+
+/** An animated emoji of the catalog; [iconUrl] / [lottieUrl] empty when unknown. */
+class IosAnimoji(val id: String, val emoji: String, val iconUrl: String, val lottieUrl: String)
 
 /** [MaxIosClient.transcribeVoice]: [status] `1` ready, `0` in progress, `-1` failed. */
 class IosTranscription(val status: Int, val text: String)
