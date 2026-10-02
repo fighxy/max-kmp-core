@@ -79,6 +79,9 @@ data class MaxMessage(
 /** `CHAT_HISTORY` reply: `messages` (PyMax reads only this) and, with `getChat`, a `chat`. */
 data class ChatHistory(val messages: List<MaxMessage>, val chat: Chat?, val raw: Map<*, *>)
 
+/** `CHAT_MEDIA` reply: messages with the asked attachment types and the server's [total], if sent. */
+data class ChatMediaPage(val messages: List<MaxMessage>, val total: Int?, val raw: Map<*, *>)
+
 /** `CHAT_MARK` reply (PyMax `ReadState`, both fields required). */
 data class ReadState(val unread: Int, val mark: Long, val raw: Map<*, *>)
 

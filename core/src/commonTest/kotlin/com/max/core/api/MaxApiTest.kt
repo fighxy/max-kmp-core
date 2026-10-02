@@ -227,6 +227,34 @@ class MaxApiTest {
     }
 
     @Test
+    fun chatMediaPayloadAndReply() = runTest {
+        val sink = FakeSink(
+            mapOf("messages" to listOf(msg(5, 100, "photo"), "junk", mapOf("id" to 4)), "total" to 37),
+            emptyMap<String, Any?>(),
+        )
+        val a = api(sink)
+        val page = a.messages.getChatMedia(100, messageId = 900, attachTypes = listOf("PHOTO", "VIDEO"), forward = 30, backward = 30)
+        assertEquals(Opcode.CHAT_MEDIA, sink.sent[0].first)
+        assertEquals(51, Opcode.CHAT_MEDIA.value)
+        val p = sink.sent[0].second as Map<*, *>
+        assertEquals(listOf("chatId", "messageId", "attachTypes", "forward", "backward"), p.keys.toList())
+        assertEquals(100L, p["chatId"])
+        assertEquals(900L, p["messageId"])
+        assertEquals(listOf("PHOTO", "VIDEO"), p["attachTypes"])
+        assertEquals(30, p["forward"])
+        assertEquals(30, p["backward"])
+        // Invalid items are skipped, the valid one stays.
+        assertEquals(listOf(5L), page.messages.map { it.id })
+        assertEquals(37, page.total)
+
+        val empty = a.messages.getChatMedia(100, messageId = 5, attachTypes = listOf("AUDIO"))
+        assertEquals(emptyList(), empty.messages)
+        assertNull(empty.total)
+        assertEquals(0, (sink.sent[1].second as Map<*, *>)["forward"])
+        assertFailsWith<IllegalArgumentException> { a.messages.getChatMedia(100, 5, emptyList()) }
+    }
+
+    @Test
     fun markReadPinAndReactions() = runTest {
         val info = mapOf("totalCount" to 1, "counters" to listOf(mapOf("count" to 1, "reaction" to "👍")), "yourReaction" to "👍")
         val sink = FakeSink(

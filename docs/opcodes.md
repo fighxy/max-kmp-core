@@ -56,6 +56,7 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | закреплённые чаты | `274` (`favorites` папки «Все чаты»), `272`, `277` (push), `config.chatFolders` в `19` | `ChatFolders`, `MaxClient.setPinnedChats` / `loadFolders`, схема Komet (protocol.md, «Закреплённые чаты») |
 | чаты | `48`, `49`, `50`, `52`, `53`, `55`, `57`, `58`, `59`, `75`, `77`, `89` | `ChatsApi` (группы, ссылки, заявки, админы) |
 | сообщения | `64` (текст, вложения, отложенная отправка, опросы, комментарии), `66`, `67`, `71`, `91`, `94`, `178`, `179`, `180`, `304` | `MessagesApi` |
+| общие медиа | `51` `CHAT_MEDIA` (схема Komet `SharedContentModule.fetchMedia`: `{chatId, messageId, attachTypes, forward, backward}` → `{messages, total}`) | `MessagesApi.getChatMedia`, мост iOS `loadSharedMedia`; в `MaxStore` не пишется — это не сплошная история |
 | реакции | `178`, `179` (и для комментариев, с `postId`), `180`, `181` (схема Komet), `155` (push); каталог `27` / `28` (`ANIMOJI_SET`, `ANIMOJI`, схема Komet) | `MessagesApi`, `AssetsApi` (`MaxApi.assets`), `MaxClient.setReaction` / `loadReactions` / `loadReactionUsers` / `reactionCatalog` |
 | медиа | `80`, `82`, `83`, `87`, `88` | `MediaApi` (потоковая загрузка с диска через `UploadSource`) |
 | боты | `105` (схема Komet), `118`, `160` (`queryId` / `query_id` необязателен) | `BotsApi` (`MaxApi.bots`), `EntryApp` (мини-приложения настроек) |

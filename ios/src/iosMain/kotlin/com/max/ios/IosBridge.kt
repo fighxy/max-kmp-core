@@ -222,6 +222,36 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /**
+     * Shared media of a chat from the server (`CHAT_MEDIA` 51), not limited to the loaded history:
+     * messages with [attachTypes] (`PHOTO`, `VIDEO`, `FILE`, `AUDIO`, `SHARE`) around [anchorId],
+     * [forward] newer and [backward] older, with their authors resolved. The first page is
+     * anchored at the chat's last message, the next ones at the oldest message received; pages
+     * overlap, the app deduplicates them. The messages are not put into the store: they are not
+     * a continuous history page and must not close or open history gaps.
+     */
+    fun loadSharedMedia(
+        chatId: String,
+        anchorId: String,
+        attachTypes: List<String>,
+        forward: Int,
+        backward: Int,
+        onResult: (List<IosMessage>, String?, String?) -> Unit,
+    ) {
+        perform(onResult, { emptyList() }) { c ->
+            val page = c.api.messages.getChatMedia(
+                parseId(chatId),
+                parseId(anchorId),
+                attachTypes,
+                forward = forward.coerceIn(0, 100),
+                backward = backward.coerceIn(0, 100),
+            )
+            resolveUsers(c, page.messages.mapNotNull { it.sender })
+            val state = c.store.state.value
+            page.messages.map { messageSnapshot(it, chatId, state) }
+        }
+    }
+
     fun sendText(chatId: String, text: String, onResult: (IosMessage?, String?, String?) -> Unit) {
         sendText(chatId, text, "", onResult)
     }

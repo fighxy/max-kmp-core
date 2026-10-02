@@ -148,6 +148,39 @@ class MessagesApi(
     }
 
     /**
+     * Messages of a chat with attachments of the given types (`CHAT_MEDIA`, 51), as Komet's shared
+     * content screen reads them (`SharedContentModule.fetchMedia`): `{chatId, messageId,
+     * attachTypes, forward, backward}`. [messageId] is the anchor: the first page starts from the
+     * chat's last message, the next ones from the oldest message already received. Attachment
+     * types are the `_type` names (`PHOTO`, `VIDEO`, `FILE`, `AUDIO`, `SHARE`).
+     *
+     * Reply: `messages` (missing = empty) and `total`, the number of matching messages on the
+     * server when it sends one. The server may also return messages with other attachments and
+     * the anchor page overlaps the next one, so callers filter and deduplicate. Invalid items are
+     * skipped, not an error: one bad message must not hide the rest of the media.
+     */
+    suspend fun getChatMedia(
+        chatId: Long,
+        messageId: Long,
+        attachTypes: List<String>,
+        forward: Int = 0,
+        backward: Int = 40,
+    ): ChatMediaPage {
+        require(attachTypes.isNotEmpty()) { "attachTypes must not be empty" }
+        val payload = linkedMapOf<String, Any?>(
+            "chatId" to chatId,
+            "messageId" to messageId,
+            "attachTypes" to attachTypes,
+            "forward" to forward,
+            "backward" to backward,
+        )
+        val map = replyMap(sink.request(Opcode.CHAT_MEDIA, payload), Opcode.CHAT_MEDIA)
+        val items = map["messages"] as? List<*> ?: emptyList<Any?>()
+        val messages = items.mapNotNull { MaxMessage.from(it, chatId) }
+        return ChatMediaPage(messages, map["total"].asLong()?.toInt(), map)
+    }
+
+    /**
      * Marks messages up to [messageId] as read (`CHAT_MARK`, 50; PyMax `read_message`,
      * `ReadMessagesPayload`): `{type: "READ_MESSAGE", chatId, messageId, mark}` with `mark` = now.
      * Reply: `{unread, mark}` (required).
