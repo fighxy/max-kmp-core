@@ -540,6 +540,42 @@ class MaxIosClient internal constructor(
     }
 
     /**
+     * Public chats and channels by name or link (`PUBLIC_SEARCH` 60), page [from]..[from]+[count].
+     * People in the reply are skipped: a found user has no chat to open yet. A blank query gives
+     * an empty list without a request.
+     */
+    fun searchPublic(query: String, from: Int, count: Int, onResult: (List<IosSearchChat>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            c.api.search.searchPublic(query, from, count).mapNotNull { hit ->
+                val chat = hit.chat ?: return@mapNotNull null
+                IosSearchChat(
+                    id = chat.id.toString(),
+                    type = chat.type,
+                    title = chat.title?.trim().orEmpty(),
+                    subtitle = hit.link?.let { "@$it" } ?: chat.lastMessage?.text?.trim().orEmpty(),
+                    avatarUrl = hit.iconUrl.orEmpty(),
+                    participantsCount = chat.participantsCount,
+                )
+            }
+        }
+    }
+
+    /** Messages in all of the user's chats (`CHAT_SEARCH` 68 without a chat), newest as the server orders them. */
+    fun searchMessages(query: String, count: Int, onResult: (List<IosFoundMessage>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            c.api.search.searchMessages(query, count).map { hit ->
+                IosFoundMessage(
+                    chatId = hit.chatId.toString(),
+                    messageId = hit.message.id.toString(),
+                    text = hit.message.text.trim(),
+                    timeMs = hit.message.time,
+                    senderId = hit.message.sender?.toString().orEmpty(),
+                )
+            }
+        }
+    }
+
+    /**
      * Schedules the account deletion (`PROFILE_DELETE` 199); [onResult] gets the deletion time in
      * Unix milliseconds (0 when the server did not say). The app logs out afterwards.
      */
@@ -1112,6 +1148,19 @@ class IosWatch internal constructor(private val watcher: Watcher?) {
 
 /** `AUTH_REQUEST` reply. [codeLength] is 0 when the server omitted it. */
 class IosCodeRequest(val token: String, val codeLength: Int)
+
+/** A public chat or channel from [IosBridge.searchPublic]; `subtitle` is `@link` or the last message. */
+class IosSearchChat(
+    val id: String,
+    val type: String,
+    val title: String,
+    val subtitle: String,
+    val avatarUrl: String,
+    val participantsCount: Int,
+)
+
+/** A message from [IosBridge.searchMessages]; `timeMs` is 0 when the server did not send it. */
+class IosFoundMessage(val chatId: String, val messageId: String, val text: String, val timeMs: Long, val senderId: String)
 
 /**
  * Next auth step. [kind] is `loggedIn`, `password` or `register`.
