@@ -198,9 +198,9 @@ enum class Opcode(val value: Int) {
 
     // ── Transcription ───────────────────────────────────────────────
     // PyMax: TRANSCRIBE_MEDIA. No call sites in either source
-    AUDIO_TRANSCRIPTION(202), // TODO: payload unknown
+    AUDIO_TRANSCRIPTION(202), // {chatId, messageId, mediaId} -> {transcriptionStatus, transcription?} (KometTeam/Komet)
     // PyMax: NOTIF_TRANSCRIPTION. No call sites in either source
-    TRANSCRIPTION_RESULT(293), // TODO: payload unknown
+    TRANSCRIPTION_RESULT(293), // push {messageId, chatId?, mediaId?, transcriptionStatus, transcription}, maybe inside `message`
 
     // ── Misc ────────────────────────────────────────────────────────
     // PyMax: CALLS_TOKEN. No call sites in either source (protocol.md K12); CallsApi.requestCallsToken

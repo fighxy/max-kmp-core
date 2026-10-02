@@ -5,6 +5,7 @@ package com.max.ios
 import com.max.core.ErrorKind
 import com.max.core.api.AccountConfig
 import com.max.core.api.EntryApp
+import com.max.core.api.Transcription
 import com.max.core.api.Chat
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
@@ -19,6 +20,7 @@ import com.max.core.state.MaxState
 import com.max.core.auth.CodeRequestType
 import com.max.core.auth.VerifyResult
 import com.max.core.events.MaxEvent
+import com.max.core.protocol.Opcode
 import com.max.core.toMaxError
 import com.max.shared.MaxClient
 import com.max.shared.DeviceProfile
@@ -351,6 +353,19 @@ class MaxIosClient internal constructor(
     /** Emoji the server offers for reactions (the animoji catalog), in its order; may be empty. */
     fun loadReactionCatalog(onResult: (List<String>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c -> c.reactionCatalog().map { it.emoji } }
+    }
+
+    /**
+     * Speech to text of a voice message (`AUDIO_TRANSCRIPTION` 202). [audioId] is the
+     * attachment's `audioId`. The result's status is `1` with the text (empty: no speech),
+     * `0` while the server works on it (the text then comes as a `transcription` event) or
+     * `-1`.
+     */
+    fun transcribeVoice(chatId: String, messageId: String, audioId: String, onResult: (IosTranscription, String?, String?) -> Unit) {
+        perform(onResult, { IosTranscription(-1, "") }) { c ->
+            val result = c.transcribe(parseId(chatId), parseId(messageId), parseId(audioId))
+            IosTranscription(result.status, result.text.orEmpty())
+        }
     }
 
     /** Who reacted to a message (`MSG_GET_DETAILED_REACTIONS` 181), with names from the store. */
@@ -1136,13 +1151,17 @@ class IosMessage(
 /** Reactions of one message ([MaxIosClient.loadReactions]); [json] as [IosMessage.reactionsJson]. */
 class IosReactions(val messageId: String, val json: String)
 
+/** [MaxIosClient.transcribeVoice]: [status] `1` ready, `0` in progress, `-1` failed. */
+class IosTranscription(val status: Int, val text: String)
+
 /** One entry of [MaxIosClient.loadReactionUsers]; [name] and [avatarUrl] are empty for an unknown user. */
 class IosReactionUser(val userId: String, val name: String, val avatarUrl: String, val reaction: String)
 
 /**
  * A push the app stores or shows.
  *
- * [kind] is `message`, `edited`, `deleted`, `chat`, `typing`, `read` or `reactions`.
+ * [kind] is `message`, `edited`, `deleted`, `chat`, `typing`, `read`, `reactions` or
+ * `transcription` (the text of a voice message in [text], its status in [unread]).
  * [unread] is `-1` when this event does not change the unread counter.
  * [reactionsJson] as in [IosMessage]: set for `message` and `reactions`, empty for `edited` (an
  * edit keeps the reactions). For `reactions` it has no `yourReaction` key when the own reaction
@@ -1429,7 +1448,23 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
             unread = if (event.setAsUnread) 1 else 0,
         ),
     )
+    is MaxEvent.Unknown -> if (event.opcode == Opcode.TRANSCRIPTION_RESULT.value) transcriptionEvent(event.raw) else emptyList()
     else -> emptyList()
+}
+
+/** `TRANSCRIPTION_RESULT` push (293): the text of a voice message the server finished. */
+private fun transcriptionEvent(raw: Any?): List<IosEvent> {
+    val result = Transcription.from(raw) ?: return emptyList()
+    val messageId = result.messageId ?: return emptyList()
+    return listOf(
+        iosEvent(
+            kind = "transcription",
+            chatId = result.chatId?.toString().orEmpty(),
+            messageId = messageId.toString(),
+            text = result.text.orEmpty(),
+            unread = result.status,
+        ),
+    )
 }
 
 /**

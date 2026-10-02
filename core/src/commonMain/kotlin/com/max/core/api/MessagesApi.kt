@@ -200,6 +200,18 @@ class MessagesApi(
     }
 
     /**
+     * Speech to text of a voice message or video note (`AUDIO_TRANSCRIPTION`, 202; the request
+     * KometTeam/Komet sends): `{chatId, messageId, mediaId}`, [mediaId] being the attachment's
+     * `audioId` (or `videoId`). Reply `{transcriptionStatus, transcription?}`: `1` ready (the
+     * text may be empty when no speech was recognised), `0` in progress — the text then comes
+     * with the `TRANSCRIPTION_RESULT` push (293). A missing status is `-1`.
+     */
+    suspend fun transcribe(chatId: Long, messageId: Long, mediaId: Long): Transcription {
+        val map = rawMap(sink.request(Opcode.AUDIO_TRANSCRIPTION, linkedMapOf("chatId" to chatId, "messageId" to messageId, "mediaId" to mediaId)))
+        return Transcription.from(map) ?: Transcription(-1, null)
+    }
+
+    /**
      * Who reacted to a message (`MSG_GET_DETAILED_REACTIONS`, 181; the request KometTeam/Komet
      * sends for its "read by" list): `{chatId, messageId, count}`. Reply: `reactions`, a list of
      * `{userId, reaction}`; entries without a numeric `userId` or with an empty reaction are
@@ -390,4 +402,26 @@ private fun messageList(reply: TransportPacket, opcode: Opcode, chatId: Long): L
     val items = map["messages"] ?: return emptyList()
     val list = items as? List<*> ?: throw MalformedReplyException(opcode, "messages is not a list", map)
     return list.map { MaxMessage.from(it, chatId) ?: throw MalformedReplyException(opcode, "invalid message in messages", map) }
+}
+
+/**
+ * A transcription answer or push: [status] `1` ready, `0` in progress, `-1` failed or unknown;
+ * [text] is the recognised speech (empty when there was none), `null` while not ready.
+ * [messageId] and [chatId] are set for the `TRANSCRIPTION_RESULT` push.
+ */
+data class Transcription(val status: Int, val text: String?, val messageId: Long? = null, val chatId: Long? = null) {
+    companion object {
+        /** Reads `{transcriptionStatus, transcription, messageId, chatId}`, also nested in `message`. */
+        fun from(raw: Any?): Transcription? {
+            val outer = raw as? Map<*, *> ?: return null
+            val map = outer["message"] as? Map<*, *> ?: outer
+            val status = map["transcriptionStatus"].asLong()?.toInt() ?: if (map.containsKey("transcription")) 1 else -1
+            return Transcription(
+                status = status,
+                text = map["transcription"] as? String,
+                messageId = (map["messageId"] ?: map["msgId"]).asLong(),
+                chatId = map["chatId"].asLong(),
+            )
+        }
+    }
 }

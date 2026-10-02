@@ -11,6 +11,7 @@ import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxApi
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
+import com.max.core.api.Transcription
 import com.max.core.api.PrivacySettings
 import com.max.core.api.Profile
 import com.max.core.api.Animoji
@@ -939,6 +940,11 @@ class MaxClient @Throws(Exception::class) constructor(
         commit(t) { found.forEach { (id, info) -> store.putReactions(chatId, id, info) } }
         return found
     }
+
+    /** Speech to text of a voice message or video note (`AUDIO_TRANSCRIPTION` 202). */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun transcribe(chatId: Long, messageId: Long, mediaId: Long): Transcription =
+        api.messages.transcribe(chatId, messageId, mediaId)
 
     /**
      * Who reacted to a message (`MSG_GET_DETAILED_REACTIONS` 181), with the users missing from
