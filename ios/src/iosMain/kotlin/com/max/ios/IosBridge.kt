@@ -1421,7 +1421,8 @@ private fun attachmentKind(attaches: List<*>): String {
         "CONTACT" -> "contact"
         "LOCATION" -> "location"
         "POLL" -> "poll"
-        "CALL" -> "call"
+        // A group call carries a join link; the app labels it «Групповой звонок».
+        "CALL" -> if ((attach["joinLink"] as? String).isNullOrBlank()) "call" else "groupCall"
         else -> ""
     }
 }
