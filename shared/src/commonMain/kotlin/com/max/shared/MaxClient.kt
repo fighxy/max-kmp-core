@@ -846,6 +846,24 @@ class MaxClient @Throws(Exception::class) constructor(
     }
 
     /**
+     * Marks [chatId] unread from [mark] (message time, ms) and stores the read boundary one
+     * millisecond earlier, so that message stays unread. Returns the server's unread count.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun markUnread(chatId: Long, mark: Long): Int {
+        val t = ticket()
+        val state = api.messages.markUnread(chatId, mark)
+        val me = store.state.value.me
+        if (me != null) {
+            val boundary = if (mark > 0) mark - 1 else mark
+            commit(t) {
+                store.apply(MaxEvent.MessageRead(chatId, me, boundary, true, Opcode.CHAT_MARK.value, null))
+            }
+        }
+        return state.unread
+    }
+
+    /**
      * Uploads [items] in order ([MediaApi.uploadAll], [progress] over the whole batch) and sends
      * them as one message with [text] as its caption ([sendAttachments]). Cancelling the caller
      * stops the upload; nothing is sent then.

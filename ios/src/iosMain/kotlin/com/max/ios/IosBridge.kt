@@ -491,6 +491,11 @@ class MaxIosClient internal constructor(
         runUnit(onResult) { it.api.messages.markRead(parseId(chatId), parseId(messageId)) }
     }
 
+    /** Marks the chat unread from [mark] (message time, ms). [onResult] gets the server unread count. */
+    fun markUnread(chatId: String, mark: Long, onResult: (Int, String?, String?) -> Unit) {
+        perform(onResult, { 0 }) { it.markUnread(parseId(chatId), mark) }
+    }
+
     /**
      * Sets the pinned chats to [chatIds] (decimal ids, top first): pin, unpin and reorder all send
      * the whole new list ([MaxClient.setPinnedChats], `FOLDERS_UPDATE` 274). [onResult] gets the

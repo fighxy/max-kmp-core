@@ -270,6 +270,16 @@ class MaxApiTest {
         assertEquals(Opcode.CHAT_MARK, sink.sent[0].first)
         assertEquals(pymax["read"], bytes(sink.sent[0].second))
 
+        val unreadSink = FakeSink(mapOf("unread" to 3, "mark" to 50L))
+        val unread = api(unreadSink).messages.markUnread(100, 50)
+        assertEquals(3, unread.unread)
+        assertEquals(50L, unread.mark)
+        assertEquals(Opcode.CHAT_MARK, unreadSink.sent[0].first)
+        val unreadPayload = unreadSink.sent[0].second as Map<*, *>
+        assertEquals("SET_AS_UNREAD", unreadPayload["type"])
+        assertEquals(100L, unreadPayload["chatId"])
+        assertEquals(50L, unreadPayload["mark"])
+
         a.messages.pinMessage(100, 2, notifyPin = false)
         assertEquals(Opcode.CHAT_UPDATE, sink.sent[1].first)
         assertEquals(pymax["pin"], bytes(sink.sent[1].second))

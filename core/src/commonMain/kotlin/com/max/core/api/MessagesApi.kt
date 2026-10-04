@@ -194,6 +194,18 @@ class MessagesApi(
     }
 
     /**
+     * Marks the chat unread from [mark] (`CHAT_MARK`, 50, type `SET_AS_UNREAD`; Komet
+     * `markUnread`). [mark] is the message time in milliseconds. Reply: `{unread, mark}`.
+     */
+    suspend fun markUnread(chatId: Long, mark: Long): ReadState {
+        val payload = linkedMapOf<String, Any?>("type" to "SET_AS_UNREAD", "chatId" to chatId, "mark" to mark)
+        val map = replyMap(sink.request(Opcode.CHAT_MARK, payload), Opcode.CHAT_MARK)
+        val unread = map["unread"].asLong() ?: throw MalformedReplyException(Opcode.CHAT_MARK, "no unread", map)
+        val newMark = map["mark"].asLong() ?: throw MalformedReplyException(Opcode.CHAT_MARK, "no mark", map)
+        return ReadState(unread.toInt(), newMark, map)
+    }
+
+    /**
      * Pins a message (`CHAT_UPDATE`, 55; PyMax `pin_message`, `PinMessagePayload`):
      * `{chatId, notifyPin, pinMessageId}`. PyMax ignores the reply; it is returned raw.
      */
