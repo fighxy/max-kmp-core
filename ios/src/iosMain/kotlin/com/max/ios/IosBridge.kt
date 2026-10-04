@@ -802,7 +802,7 @@ class MaxIosClient internal constructor(
         runUnit(onResult) { c ->
             val id = parseId(chatId)
             val stored = c.store.state.value.chats[id]?.lastEventTime?.takeIf { it > 0 }
-            val time = stored ?: lastEventTimeMs.takeIf { it > 0 } ?: kotlin.system.getTimeMillis()
+            val time = stored ?: lastEventTimeMs.takeIf { it > 0 } ?: (platform.Foundation.NSDate().timeIntervalSince1970 * 1000).toLong()
             c.session.request(
                 Opcode.CHAT_CLEAR,
                 linkedMapOf("chatId" to id, "lastEventTime" to time, "forAll" to forAll),
@@ -887,7 +887,7 @@ class MaxIosClient internal constructor(
      */
     fun signalCall(calleeId: String, isVideo: Boolean, onResult: (IosCallSignal?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
-            val conversationId = java.util.UUID.randomUUID().toString()
+            val conversationId = randomUuid()
             val packet = c.session.request(
                 Opcode.VIDEO_CHAT_START_ACTIVE,
                 linkedMapOf(
@@ -1400,6 +1400,15 @@ private fun endpointOf(json: String?): String? {
         i++
     }
     return null
+}
+
+/** Version-4 UUID. `java.util.UUID` is not on the native target. */
+private fun randomUuid(): String {
+    val bytes = kotlin.random.Random.Default.nextBytes(16)
+    bytes[6] = ((bytes[6].toInt() and 0x0f) or 0x40).toByte()
+    bytes[8] = ((bytes[8].toInt() and 0x3f) or 0x80).toByte()
+    val hex = bytes.joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+    return "${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}"
 }
 
 /** Decimal id from Swift; a malformed one becomes an [IllegalArgumentException] (error kind `UNKNOWN`). */
