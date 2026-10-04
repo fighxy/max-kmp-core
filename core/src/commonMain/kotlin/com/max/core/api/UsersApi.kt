@@ -25,9 +25,17 @@ class UsersApi(private val sink: RequestSink) {
     suspend fun findByPhone(phone: String): MaxUser =
         contact(Opcode.CONTACT_INFO_BY_PHONE, sink.request(Opcode.CONTACT_INFO_BY_PHONE, linkedMapOf("phone" to phone)).payload)
 
-    /** Adds a contact (`CONTACT_UPDATE` 34, `{contactId, action: "ADD"}`); reply `contact`. */
-    suspend fun addContact(userId: Long): MaxUser =
-        contact(Opcode.CONTACT_UPDATE, sink.request(Opcode.CONTACT_UPDATE, contactAction(userId, "ADD")).payload)
+    /**
+     * Adds a contact (`CONTACT_UPDATE` 34, `{contactId, action: "ADD"}`); reply `contact`.
+     * A non-blank [firstName] is sent as well (Komet `addContact`). An empty name is left out,
+     * so [addContact] without it keeps the previous payload.
+     */
+    suspend fun addContact(userId: Long, firstName: String? = null): MaxUser {
+        val payload = linkedMapOf<String, Any?>("contactId" to userId, "action" to "ADD")
+        val name = firstName?.trim().orEmpty()
+        if (name.isNotEmpty()) payload["firstName"] = name
+        return contact(Opcode.CONTACT_UPDATE, sink.request(Opcode.CONTACT_UPDATE, payload).payload)
+    }
 
     /** Removes a contact (`CONTACT_UPDATE` 34, `{contactId, action: "REMOVE"}`). */
     suspend fun removeContact(userId: Long) {

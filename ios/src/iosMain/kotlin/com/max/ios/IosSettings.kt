@@ -38,6 +38,8 @@ class IosMyProfile(
  * - [inactiveTtl]: `1M`, `3M` or `6M`;
  * - [familyProtection]: `ON` or `OFF`;
  * - [inviteLink]: full URL or empty; [sferumBotId], [digitalIdBotId]: mini app bots.
+ * - [quickReaction]: emoji for a double tap (`DOUBLE_TAP_REACTION_VALUE`), 👍 when unset.
+ * - [quickReactionDisabled]: `DOUBLE_TAP_REACTION_DISABLED`.
  */
 class IosAccountSettings(
     val known: Boolean,
@@ -53,6 +55,8 @@ class IosAccountSettings(
     val inviteLink: String,
     val sferumBotId: Long,
     val digitalIdBotId: Long,
+    val quickReaction: String,
+    val quickReactionDisabled: Boolean,
 )
 
 /** One active session. [lastSeenMs] is Unix milliseconds (0 when unknown). */
@@ -119,7 +123,20 @@ internal fun settingsSnapshot(config: AccountConfig?): IosAccountSettings {
         inviteLink = c.inviteLink.orEmpty(),
         sferumBotId = c.entryAppBotId(EntryApp.SFERUM),
         digitalIdBotId = c.entryAppBotId(EntryApp.DIGITAL_ID),
+        quickReaction = quickReaction(c),
+        quickReactionDisabled = c.userFlag("DOUBLE_TAP_REACTION_DISABLED") == true,
     )
+}
+
+/** `DOUBLE_TAP_REACTION_VALUE`: an emoji string, or a map with `id` / `reaction`. Blank stays 👍. */
+private fun quickReaction(config: AccountConfig): String {
+    val raw = config.user["DOUBLE_TAP_REACTION_VALUE"]
+    val text = when (raw) {
+        is String -> raw.trim()
+        is Map<*, *> -> ((raw["id"] ?: raw["reaction"]) as? String)?.trim()
+        else -> null
+    }
+    return text?.takeIf { it.isNotEmpty() && it.length <= 32 } ?: "👍"
 }
 
 /** Privacy access as `ALL` / `CONTACTS` / `NOBODY`; PyMax's `_NONE_` means nobody too. */

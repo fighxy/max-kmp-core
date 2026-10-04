@@ -196,6 +196,17 @@ class ChatsApi(
         return Chat.from(rawMap(sink.request(Opcode.LINK_INFO, linkedMapOf("link" to path)))["chat"])
     }
 
+    /**
+     * Chats shared with [userId] (`CHAT_SEARCH_COMMON_PARTICIPANTS` 198, Komet
+     * `SharedContent.fetchCommonChats`): `{userIds: [userId]}`. Reply `commonChats` is a list of
+     * thin maps (`id`, `type`, `title`, `baseIconUrl`, `participantsCount`, `participants`).
+     * An entry without a non-zero id is skipped. A missing list is empty. This is not a full [Chat].
+     */
+    suspend fun commonChats(userId: Long): List<CommonChat> {
+        val map = rawMap(sink.request(Opcode.CHAT_SEARCH_COMMON_PARTICIPANTS, linkedMapOf("userIds" to listOf(userId))))
+        return (map["commonChats"] as? List<*>).orEmpty().mapNotNull(CommonChat::from)
+    }
+
     private suspend fun membersUpdate(payload: Map<String, Any?>): Chat? =
         Chat.from(rawMap(sink.request(Opcode.CHAT_MEMBERS_UPDATE, payload))["chat"])
 
@@ -247,6 +258,35 @@ data class GroupSettings(
         onlyAdminCanAddMember?.let { put("ONLY_ADMIN_CAN_ADD_MEMBER", it) }
         onlyAdminCanCall?.let { put("ONLY_ADMIN_CAN_CALL", it) }
         membersCanSeePrivateLink?.let { put("MEMBERS_CAN_SEE_PRIVATE_LINK", it) }
+    }
+}
+
+/**
+ * One chat shared with another user (`CHAT_SEARCH_COMMON_PARTICIPANTS` 198).
+ * Komet `CommonChatEntry`: not a full [Chat]. [participantIds] are the keys of `participants`.
+ */
+data class CommonChat(
+    val id: Long,
+    val type: String,
+    val title: String,
+    val iconUrl: String?,
+    val participantsCount: Int,
+    val participantIds: List<Long>,
+) {
+    companion object {
+        fun from(value: Any?): CommonChat? {
+            val m = value as? Map<*, *> ?: return null
+            val id = m["id"].asLong()?.takeIf { it != 0L } ?: return null
+            val ids = (m["participants"] as? Map<*, *>)?.keys?.mapNotNull { it.asLong() }.orEmpty()
+            return CommonChat(
+                id = id,
+                type = m["type"]?.toString()?.takeIf { it.isNotBlank() } ?: "CHAT",
+                title = m["title"]?.toString().orEmpty(),
+                iconUrl = (m["baseIconUrl"] as? String)?.takeIf { it.isNotBlank() },
+                participantsCount = m["participantsCount"].asLong()?.toInt() ?: ids.size,
+                participantIds = ids,
+            )
+        }
     }
 }
 

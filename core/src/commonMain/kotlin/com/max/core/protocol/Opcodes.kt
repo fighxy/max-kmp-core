@@ -132,8 +132,8 @@ enum class Opcode(val value: Int) {
     VIDEO_CHAT_CREATE_JOIN_LINK(84),
     GET_INBOUND_CALLS(103),
     VIDEO_CHAT_DELETE_HISTORY(164), // kolibri only (absent in PyMax)
-    // PyMax: VIDEO_CHAT_JOIN. Join-by-link vs generic join unresolved (protocol.md K13)
-    VIDEO_CHAT_JOIN_BY_LINK(166), // TODO: payload unknown
+    // PyMax names this VIDEO_CHAT_JOIN. Komet joins with {joinLink, internalParams, isVideo}.
+    VIDEO_CHAT_JOIN_BY_LINK(166),
     VIDEO_CHAT_MEMBERS(195),
 
     // ── Media / files ───────────────────────────────────────────────

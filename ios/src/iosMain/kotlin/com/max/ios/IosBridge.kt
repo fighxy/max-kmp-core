@@ -195,7 +195,7 @@ class MaxIosClient internal constructor(
     fun loadContacts(onResult: (List<IosContact>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
             val state = c.store.state.value
-            state.contactIds.mapNotNull { id -> state.users[id]?.let { contactSnapshot(it, state) } }
+            listedContacts(state)
         }
     }
 
@@ -394,14 +394,22 @@ class MaxIosClient internal constructor(
     ) {
         perform(onResult, { null }) { c ->
             val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
-            val elements = animoji.mapNotNull { mark ->
-                val id = mark.animojiId.toLongOrNull() ?: return@mapNotNull null
-                if (mark.from < 0 || mark.length <= 0 || mark.from + mark.length > text.length) return@mapNotNull null
-                linkedMapOf<String, Any?>(
-                    "type" to "ANIMOJI", "from" to mark.from, "length" to mark.length, "entityId" to id,
-                    "attributes" to linkedMapOf("animojiLottieUrl" to mark.lottieUrl),
-                )
-            }
+            messageSnapshot(c.sendText(parseId(chatId), text, reply, animojiElements(text, animoji)), chatId, c.store.state.value)
+        }
+    }
+
+    /** Text with animated emoji and `USER_MENTION` marks. Offsets are UTF-16 indexes into [text]. */
+    fun sendRichText(
+        chatId: String,
+        text: String,
+        replyTo: String,
+        animoji: List<IosAnimojiMark>,
+        mentions: List<IosMentionMark>,
+        onResult: (IosMessage?, String?, String?) -> Unit,
+    ) {
+        perform(onResult, { null }) { c ->
+            val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
+            val elements = animojiElements(text, animoji) + mentionElements(text, mentions)
             messageSnapshot(c.sendText(parseId(chatId), text, reply, elements), chatId, c.store.state.value)
         }
     }
@@ -635,6 +643,18 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /** Double-tap reaction (`DOUBLE_TAP_REACTION_VALUE`) and turns the feature on. */
+    fun setQuickReaction(emoji: String, onResult: (IosAccountSettings?, String?, String?) -> Unit) {
+        val clean = emoji.trim()
+        updateSettings(onResult) {
+            require(clean.isNotEmpty() && clean.length <= 32) { "bad quick reaction" }
+            linkedMapOf<String, Any?>(
+                "DOUBLE_TAP_REACTION_VALUE" to clean,
+                "DOUBLE_TAP_REACTION_DISABLED" to false,
+            )
+        }
+    }
+
     /** Active sessions (`SESSIONS_INFO` 96), the current one first. */
     fun loadSessions(onResult: (List<IosSession>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
@@ -678,7 +698,233 @@ class MaxIosClient internal constructor(
         perform(onResult, { emptyList() }) { c ->
             c.syncContacts()
             val state = c.store.state.value
-            state.contactIds.mapNotNull { id -> state.users[id]?.let { contactSnapshot(it, state) } }
+            listedContacts(state)
+        }
+    }
+
+    /**
+     * A user by phone (`CONTACT_INFO_BY_PHONE` 46, `{phone}`). Does not add them to contacts.
+     * [phone] is `+` plus digits. A reply without `contact` fails as `MALFORMED_REPLY`.
+     */
+    fun findByPhone(phone: String, onResult: (IosContact?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val user = c.api.users.findByPhone(phone)
+            c.store.putUsers(listOf(user))
+            contactSnapshot(user, c.store.state.value)
+        }
+    }
+
+    /**
+     * Adds [userId] (`CONTACT_UPDATE` 34, `{contactId, action: "ADD"}`). A non-blank [firstName]
+     * is sent; a blank one is left out, so the body stays `{contactId, action}`. Last name is not sent.
+     */
+    fun addContact(userId: String, firstName: String, onResult: (IosContact?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val name = firstName.trim()
+            val user = c.api.users.addContact(parseId(userId), if (name.isEmpty()) null else name)
+            c.store.putContacts(listOf(user))
+            contactSnapshot(user, c.store.state.value)
+        }
+    }
+
+    /**
+     * Creates a group (`MSG_SEND` 64, CONTROL `event: new`, `chatType: CHAT`, [ChatsApi.createGroup]).
+     * Empty [userIds] are allowed. The caller's own id is dropped. A reply without `chat` is a null
+     * chat and no error kind.
+     */
+    fun createGroup(title: String, userIds: List<String>, onResult: (IosChat?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val name = title.trim()
+            if (name.isEmpty()) throw IllegalArgumentException("empty title")
+            val me = c.userId.value
+            val ids = userIds.mapNotNull { it.toLongOrNull() }.filter { it != me }
+            val created = c.api.chats.createGroup(name, ids, true)
+            if (created == null) {
+                null
+            } else {
+                c.store.putChats(listOf(created.chat))
+                chatSnapshot(created.chat, c.store.state.value, c.accountConfig.value)
+            }
+        }
+    }
+
+    /**
+     * Creates a channel with the same `MSG_SEND` 64 body as [createGroup], but `chatType` is
+     * `CHANNEL` and `userIds` is empty. Opcode 63 is not used, and this is not a core API method:
+     * the bridge sends the packet through [MaxClient.session]. A reply without `chat` is null.
+     */
+    fun createChannel(title: String, onResult: (IosChat?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val name = title.trim()
+            if (name.isEmpty()) throw IllegalArgumentException("empty title")
+            val attach = linkedMapOf<String, Any?>(
+                "_type" to "CONTROL",
+                "event" to "new",
+                "chatType" to "CHANNEL",
+                "title" to name,
+                "userIds" to emptyList<Long>(),
+            )
+            val payload = linkedMapOf<String, Any?>(
+                "message" to linkedMapOf("cid" to c.api.messages.nextCid(), "attaches" to listOf(attach)),
+                "notify" to true,
+            )
+            val map = c.session.request(Opcode.MSG_SEND, payload).payload as? Map<*, *>
+            val chat = map?.let { Chat.from(it["chat"]) }
+            if (chat == null) {
+                null
+            } else {
+                c.store.putChats(listOf(chat))
+                chatSnapshot(chat, c.store.state.value, c.accountConfig.value)
+            }
+        }
+    }
+
+    /**
+     * Deletes a chat (`CHAT_DELETE` 52, [ChatsApi.deleteChat]: `chatId`, `lastEventTime`, `forAll`).
+     * [lastEventTimeMs] is the chat's last event when the caller has one, otherwise `0` and the
+     * core clock fills it. The chat and its messages then leave the store.
+     */
+    fun deleteChat(chatId: String, lastEventTimeMs: Long, forAll: Boolean, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c ->
+            val id = parseId(chatId)
+            val stored = c.store.state.value.chats[id]?.lastEventTime?.takeIf { it > 0 }
+            val time = stored ?: lastEventTimeMs.takeIf { it > 0 }
+            c.api.chats.deleteChat(id, time, forAll)
+            c.store.removeChat(id)
+        }
+    }
+
+    /**
+     * Clears a chat's history (`CHAT_CLEAR` 54). The body is the same three fields as delete.
+     * The chat stays. Its messages, preview and unread count are dropped locally.
+     */
+    fun clearHistory(chatId: String, lastEventTimeMs: Long, forAll: Boolean, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c ->
+            val id = parseId(chatId)
+            val stored = c.store.state.value.chats[id]?.lastEventTime?.takeIf { it > 0 }
+            val time = stored ?: lastEventTimeMs.takeIf { it > 0 } ?: kotlin.system.getTimeMillis()
+            c.session.request(
+                Opcode.CHAT_CLEAR,
+                linkedMapOf("chatId" to id, "lastEventTime" to time, "forAll" to forAll),
+            )
+            forgetHistory(c, id)
+        }
+    }
+
+    /** Pins [messageId], or unpins when it is `0` (`CHAT_UPDATE` 55). */
+    fun pinMessage(chatId: String, messageId: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c -> c.api.messages.pinMessage(parseId(chatId), parseId(messageId)) }
+    }
+
+    /** Schedules [text] for [sendAt] (epoch milliseconds). */
+    fun scheduleMessage(chatId: String, text: String, sendAt: Long, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c -> c.api.messages.scheduleMessage(parseId(chatId), text.trim(), sendAt) }
+    }
+
+    /** Messages waiting to be sent (`CHAT_HISTORY`, `itemType = DELAYED`). */
+    fun scheduledMessages(chatId: String, onResult: (List<IosFoundMessage>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val page = c.api.messages.getChatHistory(parseId(chatId), itemType = com.max.core.api.HistoryItemType.DELAYED)
+            page.messages.map { message ->
+                IosFoundMessage(chatId, message.id.toString(), message.text.trim(), message.time, message.sender?.toString().orEmpty())
+            }
+        }
+    }
+
+    /** Sends a poll. Fewer than two answers is an error. */
+    fun sendPoll(chatId: String, title: String, answers: List<String>, onResult: (IosMessage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val options = answers.map { it.trim() }.filter { it.isNotEmpty() }
+            if (options.size < 2) throw IllegalArgumentException("poll needs two answers")
+            val id = parseId(chatId)
+            val sent = c.api.messages.sendPoll(
+                id,
+                com.max.core.media.OutgoingAttachment.Poll(title.trim().ifEmpty { "Опрос" }, options.map { com.max.core.api.PollAnswer(it) }),
+            )
+            c.store.putSentMessage(id, sent)
+            messageSnapshot(sent, chatId, c.store.state.value)
+        }
+    }
+
+    /** One vote (`SEND_VOTE` 304). */
+    fun votePoll(chatId: String, messageId: String, pollId: String, answerId: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c ->
+            c.api.messages.votePoll(parseId(chatId), parseId(messageId), parseId(pollId), listOf(parseId(answerId)))
+        }
+    }
+
+    /** Messages inside one chat (`MSG_SEARCH` 73). A blank query does not hit the network. */
+    fun searchInChat(chatId: String, query: String, onResult: (List<IosFoundMessage>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val id = parseId(chatId)
+            val term = query.trim()
+            if (term.isEmpty()) return@perform emptyList()
+            val packet = c.session.request(Opcode.MSG_SEARCH, linkedMapOf("chatId" to id, "query" to term, "count" to 30))
+            foundFromSearch(id, (packet.payload as? Map<*, *>)?.get("result"))
+        }
+    }
+
+    /** First page of group or channel members. */
+    fun chatMembers(chatId: String, onResult: (List<IosChatMember>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            c.api.chats.getChatMembers(parseId(chatId)).members.mapNotNull { member ->
+                val user = MaxUser.from(member.contact) ?: return@mapNotNull null
+                IosChatMember(user.id.toString(), user.displayName?.trim().orEmpty().ifEmpty { "Участник" })
+            }
+        }
+    }
+
+    /** Bot menu (`BOT_INFO` 145). Names keep the server's spelling, without a leading slash. */
+    fun botCommands(botId: String, onResult: (List<IosBotCommand>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            c.api.bots.getBotInfo(parseId(botId)).commands.map { IosBotCommand(it.name, it.description.orEmpty()) }
+        }
+    }
+
+    /**
+     * Asks the server to start a call. Media is not opened here.
+     * `null` when the reply has no endpoint.
+     */
+    fun signalCall(calleeId: String, isVideo: Boolean, onResult: (IosCallSignal?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val conversationId = java.util.UUID.randomUUID().toString()
+            val packet = c.session.request(
+                Opcode.VIDEO_CHAT_START_ACTIVE,
+                linkedMapOf(
+                    "conversationId" to conversationId,
+                    "calleeIds" to listOf(parseId(calleeId)),
+                    "internalParams" to callInternalParams(c.device.deviceId),
+                    "isVideo" to isVideo,
+                ),
+            )
+            val map = packet.payload as? Map<*, *> ?: return@perform null
+            val endpoint = endpointOf(map["internalCallerParams"] as? String) ?: return@perform null
+            val conversation = (map["conversationId"] as? String)?.takeIf { it.isNotEmpty() } ?: conversationId
+            IosCallSignal(conversation, endpoint)
+        }
+    }
+
+    /** Turns the cloud password on. A blank hint is omitted. */
+    fun enablePassword(password: String, hint: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c -> c.api.twoFactor.enable(password, hint = hint.trim().takeIf { it.isNotEmpty() }) }
+    }
+
+    fun changePassword(oldPassword: String, newPassword: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c -> c.api.twoFactor.changePassword(oldPassword, newPassword) }
+    }
+
+    fun disablePassword(password: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c -> c.api.twoFactor.disable(password) }
+    }
+
+    /** Joins by an invite link (`CHAT_JOIN` 57, [ChatsApi.join]). */
+    fun joinByLink(link: String, onResult: (IosChat?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val trimmed = link.trim()
+            if (trimmed.isEmpty()) throw IllegalArgumentException("empty link")
+            val chat = c.api.chats.join(trimmed)
+            c.store.putChats(listOf(chat))
+            chatSnapshot(chat, c.store.state.value, c.accountConfig.value)
         }
     }
 
@@ -1081,6 +1327,81 @@ private inline fun guarded(block: () -> Unit) {
     }
 }
 
+private fun animojiElements(text: String, animoji: List<IosAnimojiMark>): List<Map<String, Any?>> =
+    animoji.mapNotNull { mark ->
+        val id = mark.animojiId.toLongOrNull() ?: return@mapNotNull null
+        if (mark.from < 0 || mark.length <= 0 || mark.from + mark.length > text.length) return@mapNotNull null
+        linkedMapOf<String, Any?>(
+            "type" to "ANIMOJI", "from" to mark.from, "length" to mark.length, "entityId" to id,
+            "attributes" to linkedMapOf("animojiLottieUrl" to mark.lottieUrl),
+        )
+    }
+
+private fun mentionElements(text: String, mentions: List<IosMentionMark>): List<Map<String, Any?>> =
+    mentions.mapNotNull { mark ->
+        val id = mark.userId.toLongOrNull() ?: return@mapNotNull null
+        if (mark.from < 0 || mark.length <= 0 || mark.from + mark.length > text.length) return@mapNotNull null
+        linkedMapOf("type" to "USER_MENTION", "from" to mark.from, "length" to mark.length, "entityId" to id)
+    }
+
+private fun foundFromSearch(fallbackChatId: Long, result: Any?): List<IosFoundMessage> {
+    val list = result as? List<*> ?: return emptyList()
+    return list.mapNotNull { item ->
+        val map = item as? Map<*, *> ?: return@mapNotNull null
+        val body = map["message"] as? Map<*, *> ?: map
+        val id = longOf(body["id"]) ?: return@mapNotNull null
+        val chatId = longOf(map["chatId"])?.takeIf { it != 0L } ?: longOf(body["chatId"])?.takeIf { it != 0L } ?: fallbackChatId
+        IosFoundMessage(
+            chatId.toString(),
+            id.toString(),
+            (body["text"] as? String)?.trim().orEmpty(),
+            longOf(body["time"]) ?: 0L,
+            longOf(body["sender"])?.toString().orEmpty(),
+        )
+    }
+}
+
+private fun longOf(value: Any?): Long? = when (value) {
+    is Number -> value.toLong()
+    is String -> value.toLongOrNull()
+    else -> null
+}
+
+/** `hexCapability` in the call body. Media is not opened from this JSON. */
+private fun callInternalParams(deviceId: String): String = buildString {
+    append("{\"platform\":\"ANDROID\",\"sdkVersion\":\"0.2.1.3\",\"clientAppKey\":\"CGPGAGLGDIHBABABA\",\"deviceId\":")
+    append('"')
+    append(deviceId.replace("\\", "\\\\").replace("\"", "\\\""))
+    append("\",\"protocolVersion\":5,\"onlyAdminCanRecord\":false,\"isWaitForAdminEnabled\":false,\"hexCapability\":\"3c02f\"}")
+}
+
+/** First `"endpoint"` string inside the call reply JSON. */
+private fun endpointOf(json: String?): String? {
+    if (json.isNullOrBlank()) return null
+    val needle = "\"endpoint\""
+    val at = json.indexOf(needle)
+    if (at < 0) return null
+    var i = json.indexOf(':', at + needle.length)
+    if (i < 0) return null
+    i++
+    while (i < json.length && json[i].isWhitespace()) i++
+    if (i >= json.length || json[i] != '"') return null
+    i++
+    val out = StringBuilder()
+    while (i < json.length) {
+        val c = json[i]
+        if (c == '\\' && i + 1 < json.length) {
+            out.append(json[i + 1])
+            i += 2
+            continue
+        }
+        if (c == '"') return out.toString().takeIf { it.isNotEmpty() }
+        out.append(c)
+        i++
+    }
+    return null
+}
+
 /** Decimal id from Swift; a malformed one becomes an [IllegalArgumentException] (error kind `UNKNOWN`). */
 private fun parseId(value: String): Long =
     value.toLongOrNull() ?: throw IllegalArgumentException("not a numeric id: \"$value\"")
@@ -1248,6 +1569,11 @@ class IosContact(
     val avatarUrl: String,
     val lastSeenMs: Long,
     val online: Boolean,
+    /** `accountStatus`. Missing or 0 means the account is alive. */
+    val accountStatus: Int = 0,
+    val isBot: Boolean = false,
+    val isOfficial: Boolean = false,
+    val isServiceAccount: Boolean = false,
 )
 
 /**
@@ -1301,6 +1627,14 @@ class IosReactions(val messageId: String, val json: String)
 
 /** An animated emoji in sent text ([MaxIosClient.sendText]): UTF-16 [from]/[length] of the emoji. */
 class IosAnimojiMark(val from: Int, val length: Int, val animojiId: String, val lottieUrl: String)
+
+/** A `USER_MENTION` over `@name` in the outgoing text. [userId] is decimal. */
+class IosMentionMark(val from: Int, val length: Int, val userId: String)
+
+class IosChatMember(val id: String, val name: String)
+
+/** Server accepted a call signal. [endpoint] is the first `"endpoint"` in `internalCallerParams`. */
+class IosCallSignal(val conversationId: String, val endpoint: String)
 
 /** [MaxIosClient.loadStickerCatalog]: sets in panel order and recent sticker ids. */
 class IosStickerCatalog(val sets: List<IosStickerSet>, val recentStickerIds: List<String>)
@@ -1546,19 +1880,65 @@ private fun chatProfile(chat: Chat): IosProfile {
     )
 }
 
+/** Contact list for the UI: a deleted account (`accountStatus != 0`) stays out, as in Komet. */
+private fun listedContacts(state: MaxState): List<IosContact> =
+    state.contactIds.mapNotNull { id ->
+        val user = state.users[id] ?: return@mapNotNull null
+        if ((user.accountStatus ?: 0) != 0) return@mapNotNull null
+        contactSnapshot(user, state)
+    }
+
+/**
+ * Name for the list, as Komet stores it: the `CUSTOM` entry, else `ONEME`, else the first.
+ * `firstName` and `lastName` win. A blank pair falls back to `name`.
+ */
 private fun contactSnapshot(user: MaxUser, state: MaxState): IosContact {
-    val name = user.names.firstOrNull()
-    val first = name?.firstName?.takeIf { it.isNotBlank() } ?: name?.name.orEmpty()
+    val names = user.names
+    val chosen = names.firstOrNull { it.type == "CUSTOM" }
+        ?: names.firstOrNull { it.type == "ONEME" }
+        ?: names.firstOrNull()
+    val givenFirst = chosen?.firstName?.trim().orEmpty()
+    val givenLast = chosen?.lastName?.trim().orEmpty()
+    val first: String
+    val last: String
+    if (givenFirst.isEmpty() && givenLast.isEmpty()) {
+        first = chosen?.name?.trim().orEmpty()
+        last = ""
+    } else {
+        first = givenFirst
+        last = givenLast
+    }
     val presence = state.presence[user.id]
+    val options = user.options
     return IosContact(
         id = user.id.toString(),
         firstName = first,
-        lastName = name?.lastName.orEmpty(),
+        lastName = last,
         phone = user.phone?.toString().orEmpty(),
         avatarUrl = user.baseUrl.orEmpty(),
         lastSeenMs = presence?.seen?.let { if (it < 100_000_000_000L) it * 1000 else it } ?: 0L,
         online = presence?.status == 1,
+        accountStatus = user.accountStatus ?: 0,
+        isBot = "BOT" in options,
+        isOfficial = "OFFICIAL" in options,
+        isServiceAccount = "SERVICE_ACCOUNT" in options,
     )
+}
+
+/** Drops loaded messages and the chat preview. The chat itself stays. */
+private fun forgetHistory(client: com.max.shared.MaxClient, chatId: Long) {
+    val state = client.store.state.value
+    val chat = state.chats[chatId]
+    val ids = ArrayList(state.messagesOf(chatId).map { it.id })
+    val last = chat?.lastMessage?.id
+    if (last != null && last !in ids) ids.add(last)
+    if (chat != null) client.store.putChats(listOf(chat.copy(newMessages = 0)))
+    if (ids.isNotEmpty()) {
+        client.store.apply(
+            MaxEvent.MessagesDeleted(chatId, ids, null, null, false, Opcode.CHAT_CLEAR.value, null),
+        )
+    }
+    client.store.closeHistoryGap(chatId)
 }
 
 private fun callSnapshot(entry: CallLogEntry, me: Long?, state: MaxState): IosCall {

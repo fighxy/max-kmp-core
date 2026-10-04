@@ -12,7 +12,7 @@
 |------|------------|------------|----------|
 | 8 | `CONTACTS_GET` | PyMax `LOGIN2` | ядро шлёт форму PyMax `LOGIN2` `{needProfile, contactsSync, configHash}` через `AuthApi.login2`; [K11](protocol.md) остаётся: kolibri называет опкод `CONTACTS_GET` и сам его не шлёт |
 | 158 | `OK_TOKEN` | PyMax `CALLS_TOKEN` | [K12](protocol.md): нет call site в kolibri и PyMax |
-| 166 | `VIDEO_CHAT_JOIN_BY_LINK` | PyMax `VIDEO_CHAT_JOIN` | [K13](protocol.md): join-by-link vs generic join не снято; payload unknown |
+| 166 | `VIDEO_CHAT_JOIN_BY_LINK` | PyMax `VIDEO_CHAT_JOIN` | Komet `joinByLink`: `{joinLink, internalParams, isVideo}`; endpoint в JSON-строке ответа. Имя PyMax другое, медиа в ядре нет |
 | cmd `2` | — | PyMax `EVENT` / kolibri `NOT_FOUND` | не opcode; [protocol.md §B.3](protocol.md) |
 
 ## Calls — что уже в ядре
@@ -24,18 +24,18 @@
 | 137 | `NOTIF_CALL_START` | `MaxEvent.CallStart` + `ConversationParams.decode` | kolibri `kolibri-net/src/calls/` (vcp: `<rawLen>:<base64(LZ4-block(JSON))>`). `callerId` + строковый `conversationId` обязательны; битый `vcp` оставляет `params = null` |
 | 79 | `VIDEO_CHAT_HISTORY` | `CallsApi.history` → `CallLogEntry` | KometTeam/Komet `CallsModule.fetchHistory`: **request** `{}`; **reply** `{history: [{message: {id, time, sender, attaches: [{_type: "CALL", contactIds?, duration, hangupType, callType?}]}}]}`. Пункты без `CALL`-вложения пропускаются |
 | 158 | `OK_TOKEN` | `CallsApi.requestCallsToken` / `MaxApi.calls` | **request** — пустой map `{}` (msgpack `80`). **reply** `{token, token_lifetime_ts?, token_refresh_ts?}` — observed-not-ref (заметки third-party, не kolibri/PyMax) |
+| 78 | `VIDEO_CHAT_START_ACTIVE` | `CallsApi.initiateCall` | Komet `initiateCall`: `{conversationId, calleeIds, internalParams, isVideo}`. Endpoint из JSON-строки `internalCallerParams`. WebRTC нет |
+| 76 | `VIDEO_CHAT_START` | `CallsApi.createConference` | Komet `createConference`: `{conversationId}` → `joinLink` / `callName` / `chatId`. Нет ссылки — отдельно 84 |
+| 84 | `VIDEO_CHAT_CREATE_JOIN_LINK` | `CallsApi.createJoinLink` | Komet: `{conversationId}` → `joinLink` |
+| 166 | `VIDEO_CHAT_JOIN_BY_LINK` | `CallsApi.joinByLink` | Komet `joinByLink`: `{joinLink, internalParams, isVideo}`. Endpoint из `internalParams` или `internalCallerParams` |
 
 Не реализовано — в обоих референсах нет payload-builder / call site, либо схема не согласована:
 
 | code | имя | почему не в API |
 |------|-----|-----------------|
-| 76 | `VIDEO_CHAT_START` | нет вектора в этом слайсе |
-| 77 | `CHAT_MEMBERS_UPDATE` | не calls-control в нашем смысле |
-| 78 | `VIDEO_CHAT_START_ACTIVE` | нет payload-builder в kolibri и PyMax |
-| 84 | `VIDEO_CHAT_CREATE_JOIN_LINK` | нет вектора в этом слайсе |
+| 77 | `CHAT_MEMBERS_UPDATE` | не calls-control в нашем смысле; метод есть в `ChatsApi` |
 | 103 | `GET_INBOUND_CALLS` | нет вектора в этом слайсе |
 | 164 | `VIDEO_CHAT_DELETE_HISTORY` | только kolibri (в PyMax нет) |
-| 166 | `VIDEO_CHAT_JOIN_BY_LINK` | payload unknown, K13 |
 | 195 | `VIDEO_CHAT_MEMBERS` | нет вектора в этом слайсе |
 
 ws2-сигналинг и WebRTC остаются на хосте. `ConversationParams.ws2Url` / `ws2UrlFromEndpoint` только собирают URL.
@@ -60,7 +60,10 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | реакции | `178`, `179` (и для комментариев, с `postId`), `180`, `181` (схема Komet), `155` (push); каталог `27` / `28` (`ANIMOJI_SET`, `ANIMOJI`, схема Komet) | `MessagesApi`, `AssetsApi` (`MaxApi.assets`), `MaxClient.setReaction` / `loadReactions` / `loadReactionUsers` / `reactionCatalog` |
 | медиа | `80`, `82`, `83`, `87`, `88` | `MediaApi` (потоковая загрузка с диска через `UploadSource`) |
 | боты | `105` (схема Komet), `118`, `160` (`queryId` / `query_id` необязателен) | `BotsApi` (`MaxApi.bots`), `EntryApp` (мини-приложения настроек) |
-| звонки | `137` (push), `158` | `MaxEvent.CallStart`, `CallsApi` |
+| звонки | `76`, `78`, `79`, `84`, `137` (push), `158`, `166` | `MaxEvent.CallStart`, `CallsApi`. `internalParams` — JSON Komet (`hexCapability` `3c02f`). Медиа на хосте |
+| жалобы | `161`, `162` | `ComplaintsApi` (`MaxApi.complaints`). Типы с вектором: канал `2`, пользователь `6`. Тип сообщения не назван |
+| поиск в чате | `73` | `SearchApi.searchInChat`: `{chatId, query, count}` |
+| общие чаты | `198` | `ChatsApi.commonChats`: `{userIds:[id]}` → `commonChats` |
 | push | `128`, `129`, `130`, `132`, `135`, `136`, `137`, `142`, `155`, `277` и др. | `EventParser` → `MaxEvents` → `EventRouter` → `MaxStore` |
 
 ## Блокеры: нужен снятый трафик
@@ -70,9 +73,9 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 
 - `81` `STICKER_UPLOAD` / отправка стикера — схема вложения-стикера в `MSG_SEND` не подтверждена
 - `65` `MSG_TYPING` (исходящий «печатает») — builder'а нет; входящий `129` уже разбирается
-- поиск: `37` `CONTACT_SEARCH`, `60` `PUBLIC_SEARCH`, `68` `CHAT_SEARCH`, `73` `MSG_SEARCH`
+- поиск: `37` `CONTACT_SEARCH` (`60`, `68`, `73` уже в `SearchApi`)
 - `193` `STICKER_CREATE`, `194` `STICKER_SUGGEST`, `301` `AUDIO_PLAY`
-- звонки: `76`, `78`, `79`, `84`, `103`, `164`, `166` (K13), `195`; семантика ответа `158` (K12)
+- звонки: `103`, `164`, `195`; семантика ответа `158` (K12). `76`, `78`, `79`, `84`, `166` есть в `CallsApi` по вектору Komet, без WebRTC
 - 2FA/пароль: `101`, `116`
 - транскрипция `202`/`293`, stories `208`–`218`, `220`
 - `LOG` (`5`) — телеметрия, намеренно не отправляется

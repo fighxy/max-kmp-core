@@ -78,4 +78,34 @@ class SearchApiTest {
         MaxApi(sink).search.searchPublic("x")
         assertEquals(listOf(Opcode.PUBLIC_SEARCH), sink.opcodes)
     }
+
+    @Test
+    fun inChatSearchSendsChatQueryAndCount() = runTest {
+        val sink = ScriptSink(
+            mapOf(
+                "result" to listOf(
+                    mapOf("chatId" to 7L, "message" to mapOf("id" to 3L, "text" to "внутри")),
+                    mapOf("id" to 4L, "text" to "голое", "time" to 9L, "type" to "USER"),
+                    mapOf("note" to "мимо"),
+                    "junk",
+                ),
+            ),
+        )
+        val hits = SearchApi(sink).searchInChat(7, "  внутри ", count = 30)
+        assertEquals(Opcode.MSG_SEARCH, sink.sent.single().first)
+        assertEquals(mapOf<String, Any>("chatId" to 7L, "query" to "внутри", "count" to 30), sink.sent.single().second)
+        assertEquals(listOf(3L, 4L), hits.map { it.message.id })
+        assertEquals(7L, hits[1].chatId)
+        assertEquals("голое", hits[1].message.text)
+    }
+
+    @Test
+    fun inChatSearchBlankSendsNothingAndBadResultIsEmpty() = runTest {
+        val blank = ScriptSink()
+        assertTrue(SearchApi(blank).searchInChat(1, "  ").isEmpty())
+        assertTrue(blank.sent.isEmpty())
+        assertTrue(SearchApi(ScriptSink(emptyMap<String, Any?>())).searchInChat(1, "a").isEmpty())
+        assertTrue(SearchApi(ScriptSink(mapOf("result" to "x"))).searchInChat(1, "a").isEmpty())
+        assertFailsWith<IllegalArgumentException> { SearchApi(ScriptSink()).searchInChat(1, "a", count = 0) }
+    }
 }

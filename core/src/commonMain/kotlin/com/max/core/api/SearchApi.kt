@@ -8,8 +8,10 @@ import com.max.core.protocol.Opcode
  *
  * - [searchPublic]: public chats, channels and people by name or link (`PUBLIC_SEARCH`, 60).
  * - [searchMessages]: messages in all of the user's chats (`CHAT_SEARCH`, 68, without `chatId`).
+ * - [searchInChat]: messages of one chat (`MSG_SEARCH`, 73).
  *
- * An empty or blank query sends nothing and returns an empty list. Errors as in [MessagesApi].
+ * An empty or blank query sends nothing and returns an empty list. Errors as in [MessagesApi],
+ * except [searchInChat]: a missing or non-list `result` is an empty page, as Komet reads it.
  */
 class SearchApi(private val sink: RequestSink) {
     /**
@@ -36,6 +38,30 @@ class SearchApi(private val sink: RequestSink) {
         return results(map, Opcode.CHAT_SEARCH).mapNotNull(MessageSearchHit::from)
     }
 
+    /**
+     * `MSG_SEARCH` (73) inside one chat, as KometTeam/Komet `MessagesModule.searchMessages`:
+     * `{chatId, query, count}` (count [IN_CHAT_PAGE_SIZE]). Reply `result` is a list of maps.
+     * A map is a hit `{chatId, message}` or a message map (`id` required; missing `type` / `time`
+     * are filled). Anything else is skipped. A missing or non-list `result` is empty.
+     */
+    suspend fun searchInChat(chatId: Long, query: String, count: Int = IN_CHAT_PAGE_SIZE): List<MessageSearchHit> {
+        val term = query.trim()
+        if (term.isEmpty()) return emptyList()
+        require(count > 0) { "count must be positive" }
+        val payload = linkedMapOf<String, Any?>("chatId" to chatId, "query" to term, "count" to count)
+        val map = replyMap(sink.request(Opcode.MSG_SEARCH, payload), Opcode.MSG_SEARCH)
+        val items = map["result"] ?: return emptyList()
+        val list = items as? List<*> ?: return emptyList()
+        return list.mapNotNull { inChatHit(it, chatId) }
+    }
+
+    private fun inChatHit(value: Any?, chatId: Long): MessageSearchHit? {
+        MessageSearchHit.from(value)?.let { return it }
+        val body = value as? Map<*, *> ?: return null
+        val id = body["chatId"].asLong()?.takeIf { it != 0L } ?: chatId
+        return MessageSearchHit.from(linkedMapOf("chatId" to id, "message" to body))
+    }
+
     private fun results(map: Map<*, *>, opcode: Opcode): List<Any?> {
         val items = map["result"] ?: return emptyList()
         return items as? List<*> ?: throw MalformedReplyException(opcode, "result is not a list", map)
@@ -45,6 +71,9 @@ class SearchApi(private val sink: RequestSink) {
         /** First page of [searchPublic]; later pages usually ask for more. */
         const val PUBLIC_PAGE_SIZE = 20
         const val MESSAGES_PAGE_SIZE = 50
+
+        /** First page of [searchInChat] (Komet `searchMessages` default). */
+        const val IN_CHAT_PAGE_SIZE = 30
     }
 }
 

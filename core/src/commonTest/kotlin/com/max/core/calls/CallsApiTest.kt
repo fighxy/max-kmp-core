@@ -122,4 +122,64 @@ class CallsApiTest {
         assertEquals(emptyList<CallLogEntry>(), CallsApi(FakeSink(mapOf("x" to 1))).history())
         assertFailsWith<MalformedReplyException> { CallsApi(FakeSink(null)).history() }
     }
+
+    @Test
+    fun initiateCallSendsKometPayloadAndReadsCallerEndpoint() = runTest {
+        val endpoint = """{"endpoint":"wss://call","id":{"internal":9,"external":"20"}}"""
+        val sink = FakeSink(mapOf("conversationId" to "conv-1", "internalCallerParams" to endpoint))
+        val call = CallsApi(sink) { "conv-1" }.initiateCall(20, isVideo = true, deviceId = "dev")
+        assertEquals(Opcode.VIDEO_CHAT_START_ACTIVE, sink.sent.single().first)
+        assertEquals(
+            mapOf(
+                "conversationId" to "conv-1",
+                "calleeIds" to listOf(20L),
+                "internalParams" to CallsApi.internalParams("dev"),
+                "isVideo" to true,
+            ),
+            sink.sent.single().second,
+        )
+        assertEquals(
+            """{"platform":"ANDROID","sdkVersion":"0.2.1.3","clientAppKey":"CGPGAGLGDIHBABABA","deviceId":"dev","protocolVersion":5,"onlyAdminCanRecord":false,"isWaitForAdminEnabled":false,"hexCapability":"3c02f"}""",
+            CallsApi.internalParams("dev"),
+        )
+        assertEquals("conv-1", call.conversationId)
+        assertEquals("wss://call", call.endpoint)
+        assertEquals(9L, call.callsUserId)
+        assertEquals(20L, call.peerExternalId)
+        assertEquals(true, call.isVideo)
+    }
+
+    @Test
+    fun createConferenceUsesReplyLinkOrAsksForOne() = runTest {
+        val ready = FakeSink(mapOf("conversationId" to "c", "joinLink" to "join/abc", "callName" to "  ", "chatId" to 4L))
+        val created = CallsApi(ready) { "c" }.createConference()
+        assertEquals(Opcode.VIDEO_CHAT_START, ready.sent.single().first)
+        assertEquals(mapOf<String, Any?>("conversationId" to "c"), ready.sent.single().second)
+        assertEquals("join/abc", created.joinLink)
+        assertNull(created.callName)
+        assertEquals(4L, created.chatId)
+
+        val asked = FakeSink(mapOf("conversationId" to "c"), mapOf("joinLink" to "join/next"))
+        val second = CallsApi(asked) { "c" }.createConference()
+        assertEquals(listOf(Opcode.VIDEO_CHAT_START, Opcode.VIDEO_CHAT_CREATE_JOIN_LINK), asked.sent.map { it.first })
+        assertEquals("join/next", second.joinLink)
+        assertFailsWith<MalformedReplyException> { CallsApi(FakeSink(mapOf("conversationId" to "c"), emptyMap<String, Any?>())) { "c" }.createConference() }
+    }
+
+    @Test
+    fun joinByLinkReadsEitherParamsField() = runTest {
+        val endpoint = """{"endpoint":"wss://join","id":{"internal":3}}"""
+        val sink = FakeSink(mapOf("conversationId" to "j", "internalParams" to endpoint))
+        val call = CallsApi(sink).joinByLink("token", deviceId = "")
+        assertEquals(Opcode.VIDEO_CHAT_JOIN_BY_LINK, sink.sent.single().first)
+        assertEquals(
+            mapOf("joinLink" to "token", "internalParams" to CallsApi.internalParams(""), "isVideo" to false),
+            sink.sent.single().second,
+        )
+        assertEquals("wss://join", call.endpoint)
+        assertEquals(3L, call.callsUserId)
+        assertEquals(0L, call.peerExternalId)
+        assertFailsWith<MalformedReplyException> { CallsApi(FakeSink(emptyMap<String, Any?>())).joinByLink("token") }
+        assertFailsWith<IllegalArgumentException> { CallsApi(FakeSink()).joinByLink("") }
+    }
 }

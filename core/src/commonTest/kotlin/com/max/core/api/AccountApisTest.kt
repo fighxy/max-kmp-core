@@ -37,6 +37,13 @@ class AccountApisTest {
         assertEquals("81aa636f6e74616374496473920102", sink.hex(0))
         assertEquals("81a570686f6e65ac2b3739393930303031313232", sink.hex(1))
         assertEquals("82a9636f6e74616374496405a6616374696f6ea3414444", sink.hex(2))
+        val named = ScriptSink(mapOf("contact" to user))
+        assertEquals(5L, UsersApi(named).addContact(5, "  Анна ").id)
+        assertEquals(Opcode.CONTACT_UPDATE, named.opcodes.single())
+        assertEquals(mapOf<String, Any>("contactId" to 5L, "action" to "ADD", "firstName" to "Анна"), named.sent.single().second)
+        val blankName = ScriptSink(mapOf("contact" to user))
+        UsersApi(blankName).addContact(5, "   ")
+        assertEquals(mapOf<String, Any>("contactId" to 5L, "action" to "ADD"), blankName.sent.single().second)
         assertEquals("82a9636f6e74616374496405a6616374696f6ea652454d4f5645", sink.hex(3))
         assertEquals("81ab636f6e746163744c69737481ac2b373939393030303131323281a966697273744e616d65a44976616e", sink.hex(4))
     }
