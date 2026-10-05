@@ -101,7 +101,12 @@ class CommentsPollsTest {
             ),
             sink.opcodes,
         )
-        listOf("comment", "getcomments", "editcomment", "delcomment", "reactcomment", "unreactcomment", "fetchcomments", "subscribe", "commentsinfo", "deluser")
-            .forEachIndexed { i, k -> assertEquals(pymax[k], sink.hex(i), k) }
+        listOf("comment", "getcomments", "editcomment", "delcomment", "reactcomment", "unreactcomment", null, "subscribe", "commentsinfo", "deluser")
+            .forEachIndexed { i, k -> if (k != null) assertEquals(pymax[k], sink.hex(i), k) }
+        // Comment history goes out in Komet's shape (feature/FullStack), not PyMax's.
+        assertEquals(
+            linkedMapOf<String, Any?>("chatId" to -100L, "postId" to 7L, "from" to -1L, "forward" to 0, "backward" to 30, "getMessages" to true),
+            sink.sent[6].second,
+        )
     }
 }

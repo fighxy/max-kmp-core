@@ -210,7 +210,14 @@ class MaxApiTest {
         val h = a.messages.getChatHistory(100)
         assertEquals(Opcode.CHAT_HISTORY, sink.sent[0].first)
         assertEquals(49, Opcode.CHAT_HISTORY.value)
-        assertEquals(pymax["history"], bytes(sink.sent[0].second))
+        // Komet (feature/FullStack): only these fields, the newest page a day ahead of now.
+        val first = sink.sent[0].second as Map<*, *>
+        assertEquals(listOf("chatId", "from", "forward", "backward", "getMessages"), first.keys.toList())
+        assertEquals(100L, first["chatId"])
+        assertEquals(0, first["forward"])
+        assertEquals(40, first["backward"])
+        assertEquals(true, first["getMessages"])
+        assertTrue((first["from"] as Long) > 0)
         assertEquals(listOf(1L, 2L), h.messages.map { it.id })
         assertEquals(listOf("one", "two"), h.messages.map { it.text })
         assertTrue(h.messages.all { it.chatId == 100L })
@@ -433,7 +440,11 @@ class MaxApiTest {
         val history = async { api.messages.getChatHistory(100) }
         runCurrent()
         val historyPayload = conn.answer(Opcode.CHAT_HISTORY, mapOf("messages" to listOf(msg(54, 100, "earlier"), msg(55, 100, "hello"))))
-        assertEquals(pymax["history"], bytes(historyPayload))
+        // Komet's shape (feature/FullStack); the newest page is a day ahead of the clock.
+        val sentHistory = historyPayload as Map<*, *>
+        assertEquals(listOf("chatId", "from", "forward", "backward", "getMessages"), sentHistory.keys.map { it.toString() })
+        assertEquals(now + NEWEST_PAGE_AHEAD_MS, (sentHistory["from"] as Number).toLong())
+        assertEquals(40L, (sentHistory["backward"] as Number).toLong())
         assertEquals(listOf(54L, 55L), history.await().messages.map { it.id })
 
         // a server error on the session surfaces as ServerErrorException

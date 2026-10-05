@@ -113,9 +113,13 @@ class MessagesApi(
     }
 
     /**
-     * Loads chat history (`CHAT_HISTORY`, 49; PyMax `fetch_history`, `ChatHistoryPayload`):
-     * `{chatId, forward, backward, backwardTime, forwardTime, getChat, from, itemType,
-     * getMessages, interactive}` with PyMax's defaults (`backward = 40`, `from` = now).
+     * Loads chat history (`CHAT_HISTORY`, 49) in the shape Komet's current client sends
+     * (`feature/FullStack`, `MessagesModule.fetchHistory`): `{chatId, from, forward, backward,
+     * getMessages}`, `from` defaulting to a day ahead of now so the newest page never misses a
+     * message to clock skew. PyMax's extra fields (`backwardTime`, `forwardTime`, `getChat`,
+     * `itemType`, `interactive`) go out only when a caller asks for a non-default value: the full
+     * PyMax shape, with `interactive: false` on every page, drew `too.many.requests` for some
+     * chats where Komet's requests do not.
      * Reply: `messages` (missing = empty), plus `chat` when [getChat].
      */
     suspend fun getChatHistory(
@@ -132,16 +136,16 @@ class MessagesApi(
     ): ChatHistory {
         val payload = linkedMapOf<String, Any?>(
             "chatId" to chatId,
+            "from" to (from ?: (clock() + NEWEST_PAGE_AHEAD_MS)),
             "forward" to forward,
             "backward" to backward,
-            "backwardTime" to backwardTime,
-            "forwardTime" to forwardTime,
-            "getChat" to getChat,
-            "from" to (from ?: clock()),
-            "itemType" to itemType.name,
             "getMessages" to getMessages,
-            "interactive" to interactive,
         )
+        if (backwardTime != 0L) payload["backwardTime"] = backwardTime
+        if (forwardTime != 0L) payload["forwardTime"] = forwardTime
+        if (getChat) payload["getChat"] = true
+        if (itemType != HistoryItemType.REGULAR) payload["itemType"] = itemType.name
+        if (interactive) payload["interactive"] = true
         val reply = sink.request(Opcode.CHAT_HISTORY, payload)
         val map = replyMap(reply, Opcode.CHAT_HISTORY)
         return ChatHistory(messageList(reply, Opcode.CHAT_HISTORY, chatId), Chat.from(map["chat"]), map)
@@ -317,14 +321,14 @@ class MessagesApi(
     }
 
     /**
-     * Comment history (`CHAT_HISTORY` 49, PyMax `fetch_comments` / `CommentsHistoryPayload`): the
-     * history fields with `backward = 30`, `from = -1` (newest) by default, then `postId`.
+     * Comment history (`CHAT_HISTORY` 49 with `postId`) in the shape Komet's current client sends
+     * (`feature/FullStack`, `CommentsModule.fetchHistory`): `{chatId, postId, from, forward,
+     * backward, getMessages}`; `backward = 30`, `from = -1` (newest) by default.
      */
     suspend fun getCommentHistory(chatId: Long, postId: Long, from: Long = -1, backward: Int = 30, forward: Int = 0, getMessages: Boolean = true): List<MaxMessage> {
         val payload = linkedMapOf<String, Any?>(
-            "chatId" to chatId, "forward" to forward, "backward" to backward, "backwardTime" to 0, "forwardTime" to 0,
-            "getChat" to false, "from" to from, "itemType" to HistoryItemType.REGULAR.name, "getMessages" to getMessages,
-            "interactive" to false, "postId" to postId,
+            "chatId" to chatId, "postId" to postId, "from" to from, "forward" to forward, "backward" to backward,
+            "getMessages" to getMessages,
         )
         return messageList(sink.request(Opcode.CHAT_HISTORY, payload), Opcode.CHAT_HISTORY, chatId)
     }
@@ -470,3 +474,6 @@ data class Transcription(val status: Int, val text: String?, val messageId: Long
         }
     }
 }
+
+/** How far ahead of now the newest history page starts (`from`), as Komet sends it: one day. */
+internal const val NEWEST_PAGE_AHEAD_MS: Long = 86_400_000L
