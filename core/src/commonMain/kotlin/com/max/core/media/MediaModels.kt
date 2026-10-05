@@ -23,20 +23,34 @@ data class OutgoingMedia(val path: String, val kind: Kind, val fileName: String?
 }
 
 /**
- * Photo upload slot: reply to `PHOTO_UPLOAD` 80 `{url}`; [photoId] is the `photoIds` query
- * parameter of [url] (PyMax `upload_photo`, `parse_qs(...)["photoIds"][0]`), the key of the token
- * in the CDN reply.
+ * Photo upload slot: reply to `PHOTO_UPLOAD` 80 `{url}`. [url] is where the image is POSTed; the
+ * photo token comes back in that HTTP reply ([photoToken]), not in this one. Older upload URLs
+ * carried a `photoIds` query parameter (PyMax `upload_photo`), the key of the token in the CDN
+ * reply; current ones may not, so [photoId] is `null` then and the reply's only photo is used.
  */
-data class PhotoUploadSlot(val url: String, val photoId: String, val raw: Map<*, *>) {
+data class PhotoUploadSlot(val url: String, val photoId: String?, val raw: Map<*, *>) {
     companion object {
         fun from(map: Map<*, *>): PhotoUploadSlot {
             val url = (map["url"] as? String)?.takeIf { it.isNotEmpty() }
                 ?: throw MalformedReplyException(Opcode.PHOTO_UPLOAD, "no url", map)
             val photoId = queryParam(url, "photoIds")?.takeIf { it.isNotEmpty() }
-                ?: throw MalformedReplyException(Opcode.PHOTO_UPLOAD, "url has no photoIds", map)
             return PhotoUploadSlot(url, photoId, map)
         }
     }
+}
+
+/**
+ * The photo token from the upload server's JSON reply to the POST of a [PhotoUploadSlot]:
+ * `photos[<photoId>].token` when the slot named the photo, otherwise the first non-empty
+ * `photos.*.token` (one photo per slot, `count = 1`), otherwise a top-level `photoToken`.
+ * `null` when the reply has none.
+ */
+internal fun photoToken(reply: Map<*, *>, photoId: String?): String? {
+    fun token(entry: Any?): String? = ((entry as? Map<*, *>)?.get("token") as? String)?.takeIf { it.isNotEmpty() }
+    val photos = reply["photos"] as? Map<*, *>
+    photoId?.let { id -> token(photos?.get(id))?.let { return it } }
+    photos?.values?.firstNotNullOfOrNull { token(it) }?.let { return it }
+    return (reply["photoToken"] as? String)?.takeIf { it.isNotEmpty() }
 }
 
 /**

@@ -191,10 +191,6 @@ class MediaApiTest {
 
     @Test
     fun photoUploadErrors() = runTest {
-        // slot url without photoIds
-        assertFailsWith<MalformedReplyException> {
-            MediaApi(FakeSink(mapOf("url" to "https://iu.test/upload.do?x=1")), FakeHttp(), ua).uploadPhoto(byteArrayOf(1))
-        }
         assertFailsWith<MalformedReplyException> { MediaApi(FakeSink(emptyMap<String, Any?>()), FakeHttp(), ua).requestPhotoUpload() }
         // non-200
         val e = assertFailsWith<UploadException> {
@@ -206,16 +202,39 @@ class MediaApiTest {
             MediaApi(FakeSink(mapOf("url" to photoUrl)), FakeHttp(failure = IllegalStateException("reset")), ua).uploadPhoto(byteArrayOf(1))
         }
         assertIs<IllegalStateException>(io.cause)
-        // not JSON / no token for this photoId
+        // not JSON / no token at all (a 200 with the CDN's error fields included)
         assertFailsWith<UploadException> { MediaApi(FakeSink(mapOf("url" to photoUrl)), FakeHttp(reply = "<html>"), ua).uploadPhoto(byteArrayOf(1)) }
         assertFailsWith<UploadException> {
-            MediaApi(FakeSink(mapOf("url" to photoUrl)), FakeHttp(reply = """{"photos":{"other":{"token":"t"}}}"""), ua).uploadPhoto(byteArrayOf(1))
+            MediaApi(FakeSink(mapOf("url" to photoUrl)), FakeHttp(reply = """{"photos":{"other":{"token":""}}}"""), ua).uploadPhoto(byteArrayOf(1))
         }
+        val cdn = assertFailsWith<UploadException> {
+            MediaApi(FakeSink(mapOf("url" to photoUrl)), FakeHttp(reply = """{"error_code":3,"error_msg":"bad image"}"""), ua).uploadPhoto(byteArrayOf(1))
+        }
+        assertTrue(cdn.message!!.contains("bad image"))
         // server error on the slot request stays a ServerErrorException
         val se = assertFailsWith<ServerErrorException> {
             MediaApi(FakeSink(serverError(Opcode.PHOTO_UPLOAD, "upload.denied")), FakeHttp(), ua).uploadPhoto(byteArrayOf(1))
         }
         assertEquals("upload.denied", se.errorKey)
+    }
+
+    @Test
+    fun photoUploadWithoutPhotoIdsTakesTheTokenFromTheUploadReply() = runTest {
+        // Current PHOTO_UPLOAD replies give a bare upload URL: the token is only in the POST reply.
+        val bare = "https://iu.test/uploadImage?apiToken=abc&id=1"
+        val sink = FakeSink(mapOf("url" to bare))
+        val http = FakeHttp(reply = """{"photos": {"srv-1": {"token": "ph-token"}}}""")
+        val photo = MediaApi(sink, http, ua, clock = clock, boundary = { "----B" }).uploadPhoto(byteArrayOf(1, 2, 3), "image.jpg")
+        assertEquals(OutgoingAttachment.Photo("ph-token"), photo)
+        assertEquals(bare, http.posts.single().url)
+        assertEquals(null, MediaApi(FakeSink(mapOf("url" to bare)), FakeHttp(), ua).requestPhotoUpload().photoId)
+        // a top-level photoToken is accepted too
+        val flat = MediaApi(FakeSink(mapOf("url" to bare)), FakeHttp(reply = """{"photoToken": "flat"}"""), ua).uploadPhoto(byteArrayOf(1))
+        assertEquals(OutgoingAttachment.Photo("flat"), flat)
+        // a named photo wins over other entries; an unknown name falls back to the reply's photo
+        assertEquals("b", photoToken(mapOf("photos" to mapOf("a" to mapOf("token" to "a"), "Xy=1" to mapOf("token" to "b"))), "Xy=1"))
+        assertEquals("a", photoToken(mapOf("photos" to mapOf("a" to mapOf("token" to "a"))), "Xy=1"))
+        assertEquals(null, photoToken(mapOf("photos" to emptyMap<String, Any?>()), null))
     }
 
     // --- file / video / voice ---

@@ -88,7 +88,7 @@ class MediaApi(
 
     // ---- upload slots -------------------------------------------------------------------------
 
-    /** `PHOTO_UPLOAD` 80 with [uploadPayload]`(profile = profile)`; reply `{url}` with `photoIds` in the query. */
+    /** `PHOTO_UPLOAD` 80 with [uploadPayload]`(profile = profile)`; reply `{url}`, the upload URL ([PhotoUploadSlot]). */
     suspend fun requestPhotoUpload(profile: Boolean = false): PhotoUploadSlot =
         PhotoUploadSlot.from(replyMap(sink.request(Opcode.PHOTO_UPLOAD, uploadPayload(profile = profile)), Opcode.PHOTO_UPLOAD))
 
@@ -124,7 +124,7 @@ class MediaApi(
 
     /**
      * Uploads a photo: slot → multipart POST (`file` part, [fileName], content type by extension)
-     * → CDN JSON `{photos: {<photoId>: {token}}}` → [OutgoingAttachment.Photo]. PyMax names the
+     * → CDN JSON `{photos: {<id>: {token}}}` ([photoToken]) → [OutgoingAttachment.Photo]. PyMax names the
      * part `image.<ext>`; pass such a name to match it. [progress] counts multipart body bytes
      * (kolibri `upload_photo` reports against the whole body).
      */
@@ -146,8 +146,9 @@ class MediaApi(
         val b = boundary()
         val body = UploadRequests.multipartBody(b, fileName, UploadRequests.imageContentType(fileName), source)
         val response = post(slot.url, UploadRequests.multipartHeaders(b, body.contentLength, userAgent), body, "photo", progress)
-        val token = ((jsonReply(response, "photo")["photos"] as? Map<*, *>)?.get(slot.photoId) as? Map<*, *>)?.get("token") as? String
-            ?: throw UploadException("photo upload reply has no token for photoId=${slot.photoId}", response.status)
+        val reply = jsonReply(response, "photo")
+        val token = photoToken(reply, slot.photoId)
+            ?: throw UploadException("photo upload reply has no photo token" + (reply["error_msg"]?.let { ": $it" } ?: ""), response.status)
         return OutgoingAttachment.Photo(token)
     }
 
