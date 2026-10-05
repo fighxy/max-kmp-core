@@ -161,12 +161,23 @@ class MaxIosClient internal constructor(
      * has just brought the changed chats. Later calls (polls) refresh only the newest page.
      */
     fun loadChats(onResult: (List<IosChat>, String?, String?) -> Unit) {
-        perform(onResult, { emptyList() }) { c -> flights.share("chats") { chatList(c) } }
+        perform(onResult, { emptyList() }) { c -> flights.share("chats") { chatList(c) }.chats }
     }
 
-    private suspend fun chatList(c: MaxClient): List<IosChat> {
+    /**
+     * Same as [loadChats], with [IosChatList.complete] `true` when this call paged the account's
+     * whole chat list from the server (the first call after a login of this process). The core
+     * store is not persisted, so such a list holds every chat the account still takes part in:
+     * the app may drop the stored chats it lacks (left or deleted on another device).
+     */
+    fun loadChatList(onResult: (IosChatList?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c -> flights.share("chats") { chatList(c) } }
+    }
+
+    private suspend fun chatList(c: MaxClient): IosChatList {
         val user = c.userId.value
         val logins = c.logins.value
+        var complete = false
         when {
             user != null && clientLock.locked { pagedUser } != user -> {
                 c.loadAllChats()
@@ -175,6 +186,7 @@ class MaxIosClient internal constructor(
                     pagedUser = user
                     listedLogins = logins
                 }
+                complete = true
             }
             user != null && logins > 0 && clientLock.locked { listedLogins } != logins ->
                 clientLock.locked { listedLogins = logins }
@@ -185,7 +197,7 @@ class MaxIosClient internal constructor(
         resolveUsers(c, chats.mapNotNull { dialogPeer(it, c.userId.value) } + chats.filter { it.type == "CHAT" }.mapNotNull { it.lastMessage?.sender })
         val state = c.store.state.value
         val config = c.accountConfig.value
-        return chats.map { chatSnapshot(it, state, config) }
+        return IosChatList(chats.map { chatSnapshot(it, state, config) }, complete)
     }
 
     fun loadChat(chatId: String, onResult: (IosChat?, String?, String?) -> Unit) {
@@ -1729,6 +1741,9 @@ class IosProfile(
     /** Channel option `COMMENTS`: `1` on, `0` off, `-1` when the card does not say. */
     val comments: Int = -1,
 )
+
+/** [MaxIosClient.loadChatList]: the chats and whether they are the account's whole list. */
+class IosChatList(val chats: List<IosChat>, val complete: Boolean)
 
 /** Answer to a pressed inline button: a short [text] notice and/or a [url] to open; empty when absent. */
 class IosButtonAnswer(val text: String, val url: String)
