@@ -25,6 +25,8 @@ import com.max.core.toMaxError
 import com.max.shared.MaxClient
 import com.max.shared.DeviceProfile
 import com.max.shared.MaxClientConfig
+import com.max.shared.ReadPacer
+import com.max.shared.SingleFlight
 import com.max.shared.Watcher
 import com.max.shared.watch
 import kotlinx.coroutines.flow.map
@@ -69,6 +71,14 @@ class MaxIosClient internal constructor(
     private val watches = mutableListOf<Watcher>()
     /** The user whose whole chat list was already paged in ([loadChats]). */
     private var pagedUser: Long? = null
+    /** Identical reads in flight share one request (a chat card asked by the header and the profile at once). */
+    private val flights = SingleFlight()
+    /**
+     * Background reads (shared media, reactions, comment counters, the call log) go one at a time
+     * and wait for the reads the user is looking at (comments, history), so that they do not
+     * spend the server's request budget first (`too.many.requests`).
+     */
+    private val pacer = ReadPacer()
 
     /** The client, created on the first call; throws what the constructor threw (retried next time). */
     private fun client(): MaxClient = clientLock.locked { created ?: factory(scope).also { created = it } }
@@ -136,29 +146,33 @@ class MaxIosClient internal constructor(
      * later calls (polls) refresh only the newest page.
      */
     fun loadChats(onResult: (List<IosChat>, String?, String?) -> Unit) {
-        perform(onResult, { emptyList() }) { c ->
-            val user = c.userId.value
-            if (user != null && clientLock.locked { pagedUser } != user) {
-                c.loadAllChats()
-                syncFolders(c)
-                clientLock.locked { pagedUser = user }
-            } else {
-                c.loadChats()
-            }
-            val chats = c.store.state.value.chats.values
-            // Dialog peers and the authors of groups' last messages, so rows can name them.
-            resolveUsers(c, chats.mapNotNull { dialogPeer(it, c.userId.value) } + chats.filter { it.type == "CHAT" }.mapNotNull { it.lastMessage?.sender })
-            val state = c.store.state.value
-            val config = c.accountConfig.value
-            chats.map { chatSnapshot(it, state, config) }
+        perform(onResult, { emptyList() }) { c -> flights.share("chats") { chatList(c) } }
+    }
+
+    private suspend fun chatList(c: MaxClient): List<IosChat> {
+        val user = c.userId.value
+        if (user != null && clientLock.locked { pagedUser } != user) {
+            c.loadAllChats()
+            syncFolders(c)
+            clientLock.locked { pagedUser = user }
+        } else {
+            c.loadChats()
         }
+        val chats = c.store.state.value.chats.values
+        // Dialog peers and the authors of groups' last messages, so rows can name them.
+        resolveUsers(c, chats.mapNotNull { dialogPeer(it, c.userId.value) } + chats.filter { it.type == "CHAT" }.mapNotNull { it.lastMessage?.sender })
+        val state = c.store.state.value
+        val config = c.accountConfig.value
+        return chats.map { chatSnapshot(it, state, config) }
     }
 
     fun loadChat(chatId: String, onResult: (IosChat?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
-            val chat = c.api.chats.getChat(parseId(chatId))
-            resolveUsers(c, listOfNotNull(dialogPeer(chat, c.userId.value)))
-            chatSnapshot(chat, c.store.state.value, c.accountConfig.value)
+            flights.share("chat:$chatId") {
+                val chat = c.api.chats.getChat(parseId(chatId))
+                resolveUsers(c, listOfNotNull(dialogPeer(chat, c.userId.value)))
+                chatSnapshot(chat, c.store.state.value, c.accountConfig.value)
+            }
         }
     }
 
@@ -175,19 +189,22 @@ class MaxIosClient internal constructor(
     fun loadProfile(chatId: String, onResult: (IosProfile?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
             val id = parseId(chatId)
-            val me = c.userId.value
-            val stored = c.store.state.value.chats[id]
-            val chat = if (stored == null || stored.type != "DIALOG") fetchChatOrNull(c, id) ?: stored else stored
-            if (chat != null && chat.type != "DIALOG") {
-                chatProfile(chat)
-            } else {
-                val peer = chat?.let { dialogPeer(it, me) } ?: me?.let { id xor it }
-                if (peer == null || peer == me || peer == 0L) {
-                    IosProfile(kind = "saved", chatId = chatId)
-                } else {
-                    userProfile(c, chatId, peer)
-                }
-            }
+            // Saved Messages are chat 0: there is no CHAT_INFO for it, asking only spends requests.
+            if (id == 0L) return@perform IosProfile(kind = "saved", chatId = chatId)
+            flights.share("profile:$chatId") { profileOf(c, chatId, id) }
+        }
+    }
+
+    private suspend fun profileOf(c: MaxClient, chatId: String, id: Long): IosProfile {
+        val me = c.userId.value
+        val stored = c.store.state.value.chats[id]
+        val chat = if (stored == null || stored.type != "DIALOG") fetchChatOrNull(c, id) ?: stored else stored
+        if (chat != null && chat.type != "DIALOG") return chatProfile(chat)
+        val peer = chat?.let { dialogPeer(it, me) } ?: me?.let { id xor it }
+        return if (peer == null || peer == me || peer == 0L) {
+            IosProfile(kind = "saved", chatId = chatId)
+        } else {
+            userProfile(c, chatId, peer)
         }
     }
 
@@ -205,20 +222,28 @@ class MaxIosClient internal constructor(
      */
     fun loadCallHistory(onResult: (List<IosCall>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
-            val me = c.userId.value
-            val entries = c.api.calls.history()
-            resolveUsers(c, entries.mapNotNull { it.peerId(me) })
-            val state = c.store.state.value
-            entries.map { callSnapshot(it, me, state) }
+            flights.share("calls") {
+                pacer.background {
+                    val me = c.userId.value
+                    val entries = c.api.calls.history()
+                    resolveUsers(c, entries.mapNotNull { it.peerId(me) })
+                    val state = c.store.state.value
+                    entries.map { callSnapshot(it, me, state) }
+                }
+            }
         }
     }
 
     fun loadHistory(chatId: String, beforeMs: Long, limit: Int, onResult: (List<IosMessage>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
-            val history = c.loadHistory(parseId(chatId), from = beforeMs.takeIf { it > 0 }, backward = limit.coerceIn(1, 100))
-            resolveUsers(c, history.messages.mapNotNull { it.sender })
-            val state = c.store.state.value
-            history.messages.map { messageSnapshot(it, chatId, state) }
+            flights.share("history:$chatId:$beforeMs:$limit") {
+                pacer.priority {
+                    val history = c.loadHistory(parseId(chatId), from = beforeMs.takeIf { it > 0 }, backward = limit.coerceIn(1, 100))
+                    resolveUsers(c, history.messages.mapNotNull { it.sender })
+                    val state = c.store.state.value
+                    history.messages.map { messageSnapshot(it, chatId, state) }
+                }
+            }
         }
     }
 
@@ -239,16 +264,20 @@ class MaxIosClient internal constructor(
         onResult: (List<IosMessage>, String?, String?) -> Unit,
     ) {
         perform(onResult, { emptyList() }) { c ->
-            val page = c.api.messages.getChatMedia(
-                parseId(chatId),
-                parseId(anchorId),
-                attachTypes,
-                forward = forward.coerceIn(0, 100),
-                backward = backward.coerceIn(0, 100),
-            )
-            resolveUsers(c, page.messages.mapNotNull { it.sender })
-            val state = c.store.state.value
-            page.messages.map { messageSnapshot(it, chatId, state) }
+            flights.share("media:$chatId:$anchorId:${attachTypes.joinToString(",")}:$forward:$backward") {
+                pacer.background {
+                    val page = c.api.messages.getChatMedia(
+                        parseId(chatId),
+                        parseId(anchorId),
+                        attachTypes,
+                        forward = forward.coerceIn(0, 100),
+                        backward = backward.coerceIn(0, 100),
+                    )
+                    resolveUsers(c, page.messages.mapNotNull { it.sender })
+                    val state = c.store.state.value
+                    page.messages.map { messageSnapshot(it, chatId, state) }
+                }
+            }
         }
     }
 
@@ -270,19 +299,24 @@ class MaxIosClient internal constructor(
      */
     fun loadComments(chatId: String, postId: String, beforeMs: Long, limit: Int, onResult: (List<IosMessage>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
-            // The newest page is a page back from now: `from` is always a real time in
-            // milliseconds, as for the chat history, never -1.
-            val page = c.api.messages.getCommentHistory(
-                parseId(chatId),
-                parseId(postId),
-                from = if (beforeMs > 0) beforeMs else (NSDate().timeIntervalSince1970 * 1000).toLong(),
-                backward = limit.coerceIn(1, 100),
-            )
-            resolveUsers(c, page.mapNotNull { it.sender })
-            val state = c.store.state.value
-            page.filter { beforeMs <= 0 || it.time < beforeMs }
-                .sortedBy { it.time }
-                .map { messageSnapshot(it, chatId, state) }
+            flights.share("comments:$chatId:$postId:$beforeMs:$limit") {
+                // Comments are what the user is waiting for: background reads wait for them.
+                pacer.priority {
+                    // The newest page is a page back from now: `from` is always a real time in
+                    // milliseconds, as for the chat history, never -1.
+                    val page = c.api.messages.getCommentHistory(
+                        parseId(chatId),
+                        parseId(postId),
+                        from = if (beforeMs > 0) beforeMs else (NSDate().timeIntervalSince1970 * 1000).toLong(),
+                        backward = limit.coerceIn(1, 100),
+                    )
+                    resolveUsers(c, page.mapNotNull { it.sender })
+                    val state = c.store.state.value
+                    page.filter { beforeMs <= 0 || it.time < beforeMs }
+                        .sortedBy { it.time }
+                        .map { messageSnapshot(it, chatId, state) }
+                }
+            }
         }
     }
 
@@ -326,9 +360,13 @@ class MaxIosClient internal constructor(
         perform(onResult, { emptyList() }) { c ->
             val ids = postIds.mapNotNull { it.toLongOrNull() }.distinct()
             if (ids.isEmpty()) return@perform emptyList()
-            // An entry without `commentsInfo` reports no discussion for the post: no counter.
-            c.api.messages.getCommentsInfo(parseId(chatId), ids).mapNotNull { info ->
-                info.totalCount?.let { IosCommentCount(postId = info.postId.toString(), count = it) }
+            flights.share("counts:$chatId:${ids.sorted().joinToString(",")}") {
+                pacer.background {
+                    // An entry without `commentsInfo` reports no discussion for the post: no counter.
+                    c.api.messages.getCommentsInfo(parseId(chatId), ids).mapNotNull { info ->
+                        info.totalCount?.let { IosCommentCount(postId = info.postId.toString(), count = it) }
+                    }
+                }
             }
         }
     }
@@ -373,11 +411,13 @@ class MaxIosClient internal constructor(
         perform(onResult, { emptyList() }) { c ->
             val ids = messageIds.mapNotNull { it.toLongOrNull() }.distinct()
             if (ids.isEmpty()) return@perform emptyList()
-            ids.chunked(REACTIONS_PAGE).flatMap { page ->
-                c.loadReactions(parseId(chatId), page).map { (id, info) ->
-                    // Без ключа `yourReaction` своя реакция неизвестна, а не «нет».
-                    val mineKnown = info.yourReaction != null || info.raw.containsKey("yourReaction")
-                    IosReactions(id.toString(), reactionsJson(info, mineKnown = mineKnown))
+            flights.share("reactions:$chatId:${ids.sorted().joinToString(",")}") {
+                ids.chunked(REACTIONS_PAGE).flatMap { page ->
+                    pacer.background { c.loadReactions(parseId(chatId), page) }.map { (id, info) ->
+                        // Без ключа `yourReaction` своя реакция неизвестна, а не «нет».
+                        val mineKnown = info.yourReaction != null || info.raw.containsKey("yourReaction")
+                        IosReactions(id.toString(), reactionsJson(info, mineKnown = mineKnown))
+                    }
                 }
             }
         }
