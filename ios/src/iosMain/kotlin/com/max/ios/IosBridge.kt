@@ -1696,6 +1696,12 @@ class IosChat(
     /** Latest read mark of the other participants (`participants`: user id → read time, ms):
      *  own messages up to it are read. `0` for channels or when the card does not say. */
     val peerReadMs: Long = 0,
+    /**
+     * `1` for a live chat, `0` for one the account left or that was closed (`status` other than
+     * `ACTIVE`). Komet keeps those out of the chat list: the server refuses to leave or delete
+     * them and answers their history with a refusal.
+     */
+    val active: Int = 1,
 )
 
 /**
@@ -1939,6 +1945,7 @@ private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = n
         },
         lastForwarded = if (forwarded != null) 1 else 0,
         peerReadMs = peerReadMark(chat, me),
+        active = if (isActive(chat)) 1 else 0,
     )
 }
 
@@ -1974,6 +1981,12 @@ private fun peerReadMark(chat: Chat, me: Long?): Long {
  * (`owner`, `admins` or the keys of `adminParticipants`), and not in a dialog with an official
  * service account (a peer with the `OFFICIAL` option that is not a `BOT`).
  */
+/** The chat's `status` is empty or `ACTIVE`: the account takes part in it ([IosChat.active]). */
+private fun isActive(chat: Chat): Boolean {
+    val status = chat.raw["status"] as? String
+    return status.isNullOrEmpty() || status == "ACTIVE"
+}
+
 private fun canWrite(chat: Chat, state: MaxState): Boolean {
     val status = chat.raw["status"] as? String
     if (!status.isNullOrEmpty() && status != "ACTIVE") return false
@@ -2244,6 +2257,8 @@ private fun messageEvent(kind: String, message: MaxMessage, state: MaxState, wit
 }
 
 private fun chatEvent(chat: Chat, state: MaxState): IosEvent {
+    // A chat the account left or that was closed: the app drops it from the list, as Komet does.
+    if (!isActive(chat)) return iosEvent(kind = "chatGone", chatId = chat.id.toString())
     val snap = chatSnapshot(chat, state)
     return iosEvent(
         kind = "chat",
