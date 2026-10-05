@@ -10,6 +10,7 @@ import com.max.core.api.Chat
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.ReactionInfo
+import com.max.core.api.hasWebApp
 import com.max.core.media.OutgoingMedia
 import com.max.core.media.UploadProgress
 import com.max.core.media.fileUploadSource
@@ -1042,6 +1043,36 @@ class MaxIosClient internal constructor(
     }
 
     /**
+     * A bot's mini app (`WEB_APP_INIT_DATA` 160): the "Open app" button of a bot chat or an
+     * `OPEN_APP` inline button. [chatId] and [startParam] are left out of the request when empty.
+     */
+    fun launchBotApp(botId: String, chatId: String, startParam: String, onResult: (IosMiniApp?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val bot = parseId(botId)
+            val chat = chatId.takeIf { it.isNotBlank() }?.let(::parseId)
+            miniAppSnapshot(bot, c.api.bots.getWebAppInitData(bot, chat, startParam.takeIf { it.isNotBlank() }))
+        }
+    }
+
+    /**
+     * Presses a `CALLBACK` button of a bot's inline keyboard (`MSG_SEND_CALLBACK` 118, see
+     * [com.max.core.api.BotsApi.pressButton]). The answer's text or address is empty when the bot
+     * answers with a message instead (it then arrives as a push).
+     */
+    fun pressButton(
+        chatId: String,
+        messageId: String,
+        callbackId: String,
+        payload: String,
+        onResult: (IosButtonAnswer?, String?, String?) -> Unit,
+    ) {
+        perform(onResult, { null }) { c ->
+            val answer = c.api.bots.pressButton(parseId(chatId), parseId(messageId), callbackId, payload.takeIf { it.isNotEmpty() })
+            IosButtonAnswer(answer.text.orEmpty(), answer.url.orEmpty())
+        }
+    }
+
+    /**
      * The mini app to reopen after an external step returned to [url] (`externalCallback=1`):
      * `EXTERNAL_CALLBACK` 105, then 160 with the bot and start parameter it named.
      */
@@ -1291,6 +1322,7 @@ class MaxIosClient internal constructor(
             online = presence?.status == 1,
             official = "OFFICIAL" in user.options,
             commands = bot?.commands.orEmpty().map { IosBotCommand(it.name, it.description.orEmpty()) },
+            hasWebApp = isBot && hasWebApp(user.options + card.options),
         )
     }
 
@@ -1630,7 +1662,12 @@ class IosProfile(
     val official: Boolean = false,
     val isPublic: Boolean = false,
     val commands: List<IosBotCommand> = emptyList(),
+    /** A bot with a mini app: the chat shows "Open app" ([com.max.core.api.WEB_APP_OPTIONS]). */
+    val hasWebApp: Boolean = false,
 )
+
+/** Answer to a pressed inline button: a short [text] notice and/or a [url] to open; empty when absent. */
+class IosButtonAnswer(val text: String, val url: String)
 
 /** One bot menu command, [name] without the slash. */
 class IosBotCommand(val name: String, val description: String)

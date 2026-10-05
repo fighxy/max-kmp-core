@@ -53,6 +53,24 @@ class BotsApi(private val sink: RequestSink, private val clock: () -> Long = ::e
     }
 
     /**
+     * Presses a `CALLBACK` button of an inline keyboard (`MSG_SEND_CALLBACK` 118) the way
+     * KometTeam/Komet sends it (`MessagesModule.sendButtonCallback`, schema only): `{chatId,
+     * messageId, callbackId, payload?}`. [callbackId] is the keyboard attach's `callbackId`,
+     * [payload] the button's `payload`. See [ButtonAnswer] for the reply.
+     */
+    suspend fun pressButton(chatId: Long, messageId: Long, callbackId: String, payload: String? = null): ButtonAnswer {
+        require(callbackId.isNotBlank()) { "callbackId is blank" }
+        val body = linkedMapOf<String, Any?>("chatId" to chatId, "messageId" to messageId, "callbackId" to callbackId)
+        if (payload != null) body["payload"] = payload
+        val map = replyMap(sink.request(Opcode.MSG_SEND_CALLBACK, body), Opcode.MSG_SEND_CALLBACK)
+        return ButtonAnswer(
+            text = (map["text"] as? String)?.trim()?.takeIf { it.isNotEmpty() },
+            url = (map["url"] as? String)?.trim()?.takeIf { it.isNotEmpty() },
+            raw = map,
+        )
+    }
+
+    /**
      * Presses an inline-keyboard button (`MSG_SEND_CALLBACK` 118, PyMax `SendCallbackPayload`:
      * `{callbackId, type, payload?, timestamp}`); [callbackId] is the keyboard attach's
      * `callbackId`, [type] the button type (`CALLBACK`, ...). Reply `{success, unread, mark,
@@ -75,6 +93,22 @@ class BotsApi(private val sink: RequestSink, private val clock: () -> Long = ::e
         )
     }
 }
+
+/**
+ * [BotsApi.pressButton] reply. Komet reads two optional fields: `text` (a short answer the client
+ * shows as a notice) and `url` (a page to open). The bot's real answer usually arrives as a new
+ * or edited message push; both fields are `null` then.
+ */
+data class ButtonAnswer(val text: String?, val url: String?, val raw: Map<*, *>)
+
+/**
+ * Contact or chat options that mark a bot with a mini app (the "Open app" button), as Komet checks
+ * them (`kMiniAppOptions`): `HAS_WEBAPP`, `HAS_WEB_APP`, `WEBAPP`.
+ */
+val WEB_APP_OPTIONS: Set<String> = setOf("HAS_WEBAPP", "HAS_WEB_APP", "WEBAPP")
+
+/** The bot behind these options opens a mini app ([WEB_APP_OPTIONS]). */
+fun hasWebApp(options: Collection<String>): Boolean = options.any { it.uppercase() in WEB_APP_OPTIONS }
 
 /** One `/command` of a bot menu. */
 data class BotCommand(val name: String, val description: String?)

@@ -55,6 +55,27 @@ class BotsApiTest {
     }
 
     @Test
+    fun pressButtonSendsKometSchemaAndReadsTheAnswer() = runTest {
+        val sink = ScriptSink(mapOf("text" to " Готово ", "url" to ""), mapOf("x" to 1))
+        val api = BotsApi(sink)
+        val answer = api.pressButton(-70L, 9L, "cb-1", payload = "p")
+        assertEquals(com.max.core.protocol.Opcode.MSG_SEND_CALLBACK, sink.sent[0].first)
+        assertEquals(mapOf<String, Any>("chatId" to -70L, "messageId" to 9L, "callbackId" to "cb-1", "payload" to "p"), sink.sent[0].second)
+        assertEquals("Готово", answer.text)
+        assertNull(answer.url)
+        val silent = api.pressButton(-70L, 9L, "cb-1")
+        assertEquals(mapOf<String, Any>("chatId" to -70L, "messageId" to 9L, "callbackId" to "cb-1"), sink.sent[1].second)
+        assertNull(silent.text)
+    }
+
+    @Test
+    fun webAppOptions() {
+        assertTrue(hasWebApp(listOf("BOT", "HAS_WEBAPP")))
+        assertTrue(hasWebApp(listOf("has_web_app")))
+        assertEquals(false, hasWebApp(listOf("BOT", "OFFICIAL")))
+    }
+
+    @Test
     fun botInfoParsesCommandsAndContact() = runTest {
         val sink = ScriptSink(
             mapOf(
