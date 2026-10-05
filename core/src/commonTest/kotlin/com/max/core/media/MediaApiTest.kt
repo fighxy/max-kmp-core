@@ -266,7 +266,7 @@ class MediaApiTest {
     }
 
     @Test
-    fun videoUploadWaitsForReadinessAndTimesOut() = runTest {
+    fun videoUploadWaitsForReadinessButNotForever() = runTest {
         val events = MutableSharedFlow<MaxEvent>()
         val slot = mapOf("info" to listOf(mapOf("url" to "https://vu.test/v", "videoId" to 20, "token" to "video-token")))
         val http = FakeHttp()
@@ -277,13 +277,15 @@ class MediaApiTest {
         assertEquals(Opcode.VIDEO_UPLOAD, sink.sent[0].first)
         assertEquals(pymax["uploadDefault"], bytes(sink.sent[0].second))
 
+        // no NOTIF_ATTACH (lost with a reconnect): after 60 s the attachment is returned anyway,
+        // and MSG_SEND retries on attachment.not.ready
         http.onPost = {}
-        val waiting = async { runCatching { api.uploadVideo(byteArrayOf(9), "v.mp4") } }
+        val waiting = async { api.uploadVideo(byteArrayOf(9), "v.mp4") }
         advanceTimeBy(59_000)
         runCurrent()
         assertTrue(waiting.isActive)
         advanceTimeBy(2_000)
-        assertIs<UploadException>(waiting.await().exceptionOrNull())
+        assertEquals(OutgoingAttachment.Video(20, "video-token"), waiting.await())
     }
 
     @Test

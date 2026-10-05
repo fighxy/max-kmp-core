@@ -54,7 +54,8 @@ import kotlin.time.Duration.Companion.seconds
  *   Without it uploads return right after the POST and [sendMessage] does not retry.
  * @param userAgent HTTP User-Agent, normally `UserAgentInfo.httpUserAgent` of the session's
  *   device (sent percent-encoded); defaults to the default Android profile's.
- * @param readyTimeout PyMax waits 60 s for readiness signals.
+ * @param readyTimeout PyMax waits 60 s for readiness signals. Without a signal by then the upload
+ *   still succeeds and `MSG_SEND` retries on `attachment.not.ready` (Komet's way).
  * @param boundary multipart boundary generator (kolibri uses a time-based `----KolibriBoundary…`).
  */
 class MediaApi(
@@ -163,7 +164,7 @@ class MediaApi(
     /** [uploadFile] streamed from [source]. */
     suspend fun uploadFile(source: UploadSource, fileName: String, progress: UploadProgress? = null): OutgoingAttachment.File {
         val slot = requestFileUpload()
-        awaitReady(slot.id, MaxEvent.AttachmentReady.Kind.FILE, "file") {
+        awaitReady(slot.id, MaxEvent.AttachmentReady.Kind.FILE) {
             post(slot.url, UploadRequests.singlePostHeaders(fileName, source.size, userAgent), UploadBody.of(source), "file", progress)
         }
         return OutgoingAttachment.File(slot.id)
@@ -184,7 +185,7 @@ class MediaApi(
     /** [uploadVideo] streamed from [source]. */
     suspend fun uploadVideo(source: UploadSource, fileName: String, progress: UploadProgress? = null): OutgoingAttachment.Video {
         val slot = requestVideoUpload()
-        awaitReady(slot.id, MaxEvent.AttachmentReady.Kind.VIDEO, "video") {
+        awaitReady(slot.id, MaxEvent.AttachmentReady.Kind.VIDEO) {
             post(slot.url, UploadRequests.singlePostHeaders(fileName, source.size, userAgent), UploadBody.of(source), "video", progress)
         }
         return OutgoingAttachment.Video(slot.id, slot.token)
@@ -217,7 +218,7 @@ class MediaApi(
         progress: UploadProgress? = null,
     ): OutgoingAttachment.Video {
         val slot = requestVideoUpload()
-        awaitReady(slot.id, MaxEvent.AttachmentReady.Kind.VIDEO, "video") {
+        awaitReady(slot.id, MaxEvent.AttachmentReady.Kind.VIDEO) {
             uploadChunked(slot.url, source, chunkSize, concurrency, progress)
         }
         return OutgoingAttachment.Video(slot.id, slot.token)
@@ -562,9 +563,13 @@ class MediaApi(
 
     /**
      * Subscribes to `NOTIF_ATTACH` for [id] before [upload] (like PyMax's waiter future) and waits
-     * [readyTimeout] after it. Without [events] only runs [upload].
+     * up to [readyTimeout] after it. Without [events] only runs [upload].
+     *
+     * A missing signal does not fail the upload: the bytes are on the CDN, and the push can be lost
+     * with a reconnect. The attachment is returned anyway and `MSG_SEND` decides, repeating on
+     * `attachment.not.ready` like Komet ([sendMessage] with `notReadyAttempts`).
      */
-    private suspend fun awaitReady(id: Long, kind: MaxEvent.AttachmentReady.Kind, what: String, upload: suspend () -> Unit) {
+    private suspend fun awaitReady(id: Long, kind: MaxEvent.AttachmentReady.Kind, upload: suspend () -> Unit) {
         val events = events
         if (events == null) {
             upload()
@@ -577,7 +582,6 @@ class MediaApi(
             try {
                 upload()
                 withTimeoutOrNull(readyTimeout) { ready.await() }
-                    ?: throw UploadException("timed out waiting for $what processing id=$id")
             } finally {
                 ready.cancel()
             }
