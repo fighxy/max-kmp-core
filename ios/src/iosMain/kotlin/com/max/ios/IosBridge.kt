@@ -763,6 +763,50 @@ class MaxIosClient internal constructor(
         runUnit(onResult) { it.api.users.setBlocked(parseId(userId), false) }
     }
 
+    /** Blocks [userId] (`CONTACT_UPDATE` 34 `BLOCK`): the user lands in the black list. */
+    fun blockUser(userId: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.api.users.setBlocked(parseId(userId), true) }
+    }
+
+    /**
+     * Chats shared with [userId] (`CHAT_SEARCH_COMMON_PARTICIPANTS` 198, [ChatsApi.commonChats]).
+     * Thin entries: id, type, title, icon and the participant count.
+     */
+    fun commonChats(userId: String, onResult: (List<IosCommonChat>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            c.api.chats.commonChats(parseId(userId)).map { chat ->
+                IosCommonChat(
+                    id = chat.id.toString(),
+                    type = chat.type,
+                    title = chat.title,
+                    iconUrl = chat.iconUrl.orEmpty(),
+                    participants = chat.participantsCount,
+                )
+            }
+        }
+    }
+
+    /**
+     * Complaint reasons for [typeId] (`COMPLAIN_REASONS_GET` 162, [ComplaintsApi.reasons]):
+     * [ComplaintsApi.CHANNEL] `2` for a channel, [ComplaintsApi.USER] `6` for a person.
+     */
+    fun complaintReasons(typeId: Int, onResult: (List<IosComplaintReason>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            c.api.complaints.reasons()[typeId].orEmpty().map { IosComplaintReason(it.reasonId, it.reasonTitle) }
+        }
+    }
+
+    /**
+     * Sends a complaint (`COMPLAIN` 161, [ComplaintsApi.send]) about [ids] of [typeId]. The result
+     * is `"ok"` when the server answered `success: true`, otherwise empty (a string, not a
+     * boxed Boolean, for Swift).
+     */
+    fun sendComplaint(reasonId: Int, typeId: Int, ids: List<String>, onResult: (String, String?, String?) -> Unit) {
+        perform(onResult, { "" }) { c ->
+            if (c.api.complaints.send(reasonId, typeId, ids.map(::parseId))) "ok" else ""
+        }
+    }
+
     /** The whole contact list (opcode 8 `{contactsSync: 0}`) into the store, then as [loadContacts]. */
     fun syncContacts(onResult: (List<IosContact>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
@@ -951,7 +995,7 @@ class MaxIosClient internal constructor(
         perform(onResult, { emptyList() }) { c ->
             c.api.chats.getChatMembers(parseId(chatId)).members.mapNotNull { member ->
                 val user = MaxUser.from(member.contact) ?: return@mapNotNull null
-                IosChatMember(user.id.toString(), user.displayName?.trim().orEmpty().ifEmpty { "Участник" })
+                IosChatMember(user.id.toString(), user.displayName?.trim().orEmpty().ifEmpty { "Участник" }, user.baseUrl.orEmpty())
             }
         }
     }
@@ -1760,7 +1804,13 @@ class IosAnimojiMark(val from: Int, val length: Int, val animojiId: String, val 
 /** A `USER_MENTION` over `@name` in the outgoing text. [userId] is decimal. */
 class IosMentionMark(val from: Int, val length: Int, val userId: String)
 
-class IosChatMember(val id: String, val name: String)
+class IosChatMember(val id: String, val name: String, val avatarUrl: String = "")
+
+/** A chat shared with a user ([MaxIosClient.commonChats]); [type] is `CHAT` or `CHANNEL`. */
+class IosCommonChat(val id: String, val type: String, val title: String, val iconUrl: String, val participants: Int)
+
+/** One complaint reason ([MaxIosClient.complaintReasons]). */
+class IosComplaintReason(val id: Int, val title: String)
 
 /** Server accepted a call signal. [endpoint] is the first `"endpoint"` in `internalCallerParams`. */
 class IosCallSignal(val conversationId: String, val endpoint: String)
