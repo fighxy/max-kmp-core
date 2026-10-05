@@ -372,6 +372,50 @@ class SessionMachineTest {
     }
 
     @Test
+    fun failedFirstConnectKeepsRetryingWithAutoReconnect() = runTest {
+        val scripted = ScriptedConnectionFactory()
+        var failures = 2
+        val factory = ConnectionFactory { host, port, tls, proxy ->
+            if (failures-- > 0) throw ConnectionClosedException("no network")
+            scripted.open(host, port, tls, proxy)
+        }
+        val m = machine(factory, quiet.copy(autoReconnect = true))
+        // the caller hears the first error, as from kolibri's connect()
+        assertFailsWith<ConnectionClosedException> { m.connect() }
+        val state = m.state.value
+        assertIs<SessionState.Reconnecting>(state)
+        assertEquals(1, state.attempt)
+        assertIs<ConnectionClosedException>(state.lastError)
+        // a later connect() waits for the background retries instead of starting over
+        val waiting = async { m.connect() }
+        advanceTimeBy(2_001) // second failure
+        runCurrent()
+        assertEquals(0, scripted.openCount)
+        assertIs<SessionState.Reconnecting>(m.state.value)
+        advanceTimeBy(4_001)
+        runCurrent()
+        assertEquals(1, scripted.openCount)
+        scripted.lastConnection!!.answerHandshake()
+        assertEquals(42L, waiting.await().callsSeed)
+        assertIs<SessionState.Online>(m.state.value)
+        m.disconnect()
+    }
+
+    @Test
+    fun fatalErrorOnFirstConnectFailsDespiteAutoReconnect() = runTest {
+        class Revoked : Exception("revoked"), FatalSessionError
+        val factory = ScriptedConnectionFactory()
+        val m = machine(factory, quiet.copy(autoReconnect = true)) { _, _ -> throw Revoked() }
+        val connecting = async { runCatching { m.connect() } }
+        runCurrent()
+        factory.lastConnection!!.answerHandshake()
+        assertIs<Revoked>(connecting.await().exceptionOrNull())
+        assertIs<SessionState.Failed>(m.state.value)
+        advanceTimeBy(120_000)
+        assertEquals(1, factory.openCount)
+    }
+
+    @Test
     fun afterHandshakeHookRunsBeforeOnlineAndItsFailureFails() = runTest {
         val factory = ScriptedConnectionFactory()
         // e.g. a stored-token LOGIN (opcode 19); here the hook sends one request and checks the reply

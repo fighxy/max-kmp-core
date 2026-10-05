@@ -58,9 +58,12 @@ import kotlin.time.Duration
  *   [TransportConfig.autoReconnect] the transport reconnects after [reconnectDelay] (2, 4, 8,
  *   15, 15 s ...), resetting the attempt counter after each successful connection.
  *
- * Differences from kolibri: the first [connect] failure is thrown to the caller and not retried
- * (kolibri reports it and keeps retrying); reconnect lives here and not in the session, so the
- * session layer re-runs the opcode 6 handshake through [onConnected] on every (re)connect.
+ * - like kolibri's supervisor, a failed first [connect] is thrown to the caller and, with
+ *   [TransportConfig.autoReconnect], retried in the background on the same schedule (an app
+ *   started without network comes online by itself once the network is back).
+ *
+ * Difference from kolibri: reconnect lives here and not in the session, so the session layer
+ * re-runs the opcode 6 handshake through [onConnected] on every (re)connect.
  *
  * @param onConnected runs after every successful TLS connect, before [state] becomes
  *   [ConnectionState.Connected]; [request] already works inside it (use it for the handshake). If
@@ -137,7 +140,15 @@ class MaxTransport(
         lifecycleLock.withLock {
             if (config != null) this.config = config
             if (supervisorJob?.isActive == true) return
-            val reader = establish()
+            val reader = try {
+                establish()
+            } catch (e: Throwable) {
+                // kolibri `supervise`: the first error goes to the caller, the retries go on
+                if (this.config.autoReconnect && (e !is CancellationException || e is TimeoutCancellationException)) {
+                    supervisorJob = scope.launch { supervise(null) }
+                }
+                throw e
+            }
             supervisorJob = scope.launch { supervise(reader) }
         }
     }
@@ -269,14 +280,19 @@ class MaxTransport(
         return reader
     }
 
-    /** Waits for the connection to drop, then reconnects with backoff while allowed. */
-    private suspend fun supervise(firstReader: Job) {
+    /**
+     * Waits for the connection to drop, then reconnects with backoff while allowed. Without
+     * [firstReader] (the first connect failed) it starts with the reconnect attempts.
+     */
+    private suspend fun supervise(firstReader: Job?) {
         var reader = firstReader
         while (true) {
-            reader.join()
-            dropConnection(ConnectionClosedException("connection lost"))
-            _state.value = ConnectionState.Disconnected
-            if (!config.autoReconnect) return
+            if (reader != null) {
+                reader.join()
+                dropConnection(ConnectionClosedException("connection lost"))
+                _state.value = ConnectionState.Disconnected
+                if (!config.autoReconnect) return
+            }
             var attempt = 0
             while (true) {
                 delay(reconnectDelay(attempt))

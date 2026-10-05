@@ -33,7 +33,9 @@ import kotlin.random.Random
  * Session states. Transitions:
  * - `Disconnected | Closed | Failed` --connect()--> [Connecting] --TLS up--> [Handshaking]
  *   --opcode 6 OK (+ afterHandshake)--> [Online];
- * - [Connecting] / [Handshaking] on the first connect --error, server error, timeout--> [Failed];
+ * - [Connecting] / [Handshaking] on the first connect --error, server error, timeout--> with
+ *   auto-reconnect [Reconnecting] (the error goes to the caller, the transport keeps retrying with
+ *   backoff, as kolibri's supervisor does), without it or for a [FatalSessionError] [Failed];
  * - [Online] --drop, auto-reconnect on--> [Reconnecting] --transport up--> [Handshaking] --> [Online]
  *   (a failed reconnect attempt goes back to [Reconnecting] and is retried with backoff);
  * - [Online] --drop, auto-reconnect off--> [Failed];
@@ -56,9 +58,9 @@ sealed interface SessionState {
     data class Online(val handshake: HandshakeInfo) : SessionState
 
     /**
-     * The connection dropped and the transport is reconnecting with backoff (2/4/8/15 s).
-     * [attempt] counts drops and failed attempts since the last Online; [lastError] is the last
-     * handshake failure during reconnect, if any.
+     * The connection dropped (or the first connect failed) and the transport is reconnecting
+     * with backoff (2/4/8/15 s). [attempt] counts drops and failed attempts since the last
+     * Online; [lastError] is the last connect or handshake failure, if any.
      */
     data class Reconnecting(val attempt: Int, val lastError: Throwable? = null) : SessionState
 
@@ -66,7 +68,8 @@ sealed interface SessionState {
     data object Closed : SessionState
 
     /**
-     * Stopped by an error: connect / TLS failure, `ConnectTimeoutException`, the handshake
+     * Stopped by an error. With auto-reconnect only a [FatalSessionError] gets here; without it:
+     * connect / TLS failure, `ConnectTimeoutException`, the handshake
      * rejected by the server ([com.max.core.transport.ServerErrorException] /
      * [com.max.core.transport.NotFoundException]), a handshake `RequestTimeoutException`, a failing
      * `afterHandshake` hook (on the first connect, or a [FatalSessionError] such as a revoked
@@ -197,11 +200,25 @@ class SessionMachine(
             result.completeExceptionally(SessionClosedException())
             throw e
         } catch (e: Throwable) {
-            val current = lock.withLock {
-                (gen == generation).also { if (it) _state.value = SessionState.Failed(e) }
+            // kolibri: with auto-reconnect a failed first attempt is reported and retried in the
+            // background (the transport keeps its reconnect loop); a fatal error still fails
+            val outcome = lock.withLock {
+                when {
+                    gen != generation -> null
+                    config.transport.autoReconnect && e !is FatalSessionError -> {
+                        reconnectAttempts = 0
+                        _state.value = SessionState.Reconnecting(1, e)
+                        watchJob = scope.launch { watchTransport(gen) }
+                        true
+                    }
+                    else -> {
+                        _state.value = SessionState.Failed(e)
+                        false
+                    }
+                }
             }
-            if (current) withContext(NonCancellable) { transport.close() }
-            result.completeExceptionally(if (current) e else SessionClosedException())
+            if (outcome == false) withContext(NonCancellable) { transport.close() }
+            result.completeExceptionally(if (outcome != null) e else SessionClosedException())
             return
         }
         val info = lock.withLock {
