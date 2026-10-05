@@ -865,6 +865,18 @@ class MaxIosClient internal constructor(
     }
 
     /**
+     * Leaves a group or unsubscribes from a channel (`CHAT_LEAVE` 58, [ChatsApi.leaveChat]:
+     * `{chatId}`). The chat and its messages then leave the store.
+     */
+    fun leaveChat(chatId: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c ->
+            val id = parseId(chatId)
+            c.api.chats.leaveChat(id)
+            c.store.removeChat(id)
+        }
+    }
+
+    /**
      * Clears a chat's history (`CHAT_CLEAR` 54). The body is the same three fields as delete.
      * The chat stays. Its messages, preview and unread count are dropped locally.
      */
