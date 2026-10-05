@@ -270,10 +270,12 @@ class MaxIosClient internal constructor(
      */
     fun loadComments(chatId: String, postId: String, beforeMs: Long, limit: Int, onResult: (List<IosMessage>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
+            // The newest page is a page back from now: `from` is always a real time in
+            // milliseconds, as for the chat history, never -1.
             val page = c.api.messages.getCommentHistory(
                 parseId(chatId),
                 parseId(postId),
-                from = if (beforeMs > 0) beforeMs else -1,
+                from = if (beforeMs > 0) beforeMs else (NSDate().timeIntervalSince1970 * 1000).toLong(),
                 backward = limit.coerceIn(1, 100),
             )
             resolveUsers(c, page.mapNotNull { it.sender })
@@ -324,8 +326,9 @@ class MaxIosClient internal constructor(
         perform(onResult, { emptyList() }) { c ->
             val ids = postIds.mapNotNull { it.toLongOrNull() }.distinct()
             if (ids.isEmpty()) return@perform emptyList()
-            c.api.messages.getCommentsInfo(parseId(chatId), ids).map { info ->
-                IosCommentCount(postId = info.postId.toString(), count = info.totalCount ?: 0)
+            // An entry without `commentsInfo` reports no discussion for the post: no counter.
+            c.api.messages.getCommentsInfo(parseId(chatId), ids).mapNotNull { info ->
+                info.totalCount?.let { IosCommentCount(postId = info.postId.toString(), count = it) }
             }
         }
     }
