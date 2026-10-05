@@ -1676,6 +1676,8 @@ class IosProfile(
     val commands: List<IosBotCommand> = emptyList(),
     /** A bot with a mini app: the chat shows "Open app" ([com.max.core.api.WEB_APP_OPTIONS]). */
     val hasWebApp: Boolean = false,
+    /** Channel option `COMMENTS`: `1` on, `0` off, `-1` when the card does not say. */
+    val comments: Int = -1,
 )
 
 /** Answer to a pressed inline button: a short [text] notice and/or a [url] to open; empty when absent. */
@@ -2004,6 +2006,11 @@ private fun chatProfile(chat: Chat): IosProfile {
         participants = chat.participantsCount,
         official = options?.get("OFFICIAL") == true,
         isPublic = chat.raw["access"] == "PUBLIC",
+        comments = when (options?.get("COMMENTS")) {
+            true -> 1
+            false -> 0
+            else -> -1
+        },
     )
 }
 
