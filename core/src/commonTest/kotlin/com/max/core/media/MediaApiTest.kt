@@ -189,6 +189,37 @@ class MediaApiTest {
         )
     }
 
+    // --- stories ---
+
+    @Test
+    fun storyUploadsUseTheirSlotsAndReturnTokens() = runTest {
+        val sink = FakeSink(
+            mapOf("url" to photoUrl),
+            mapOf("info" to listOf(mapOf("url" to "https://vu.test/upload", "videoId" to 77L, "token" to "slot-token"))),
+            mapOf("info" to listOf(mapOf("url" to "https://vu.test/upload", "videoId" to 78L, "token" to "slot-token-2"))),
+        )
+        val http = FakeHttp(reply = """{"photos": {"Xy=1": {"token": "story-photo"}}}""")
+        val api = MediaApi(sink, http, ua, clock = clock, boundary = { "----B" })
+        assertEquals("story-photo", api.uploadStoryPhoto(ByteArrayUploadSource(byteArrayOf(1, 2))))
+        http.reply = """[{"token": "cdn-video"}]"""
+        assertEquals("cdn-video", api.uploadStoryVideo(ByteArrayUploadSource(byteArrayOf(3, 4))))
+        // No token in the CDN reply: the slot's token.
+        http.reply = ""
+        assertEquals("slot-token-2", api.uploadStoryVideo(ByteArrayUploadSource(byteArrayOf(5))))
+        assertEquals(listOf(Opcode.PHOTO_UPLOAD, Opcode.VIDEO_UPLOAD, Opcode.VIDEO_UPLOAD), sink.sent.map { it.first })
+        assertEquals(1, (sink.sent[0].second as Map<*, *>)["type"])
+        assertEquals(3, (sink.sent[1].second as Map<*, *>)["type"])
+        assertEquals("https://vu.test/upload", http.posts[1].url)
+    }
+
+    @Test
+    fun videoTokenShapes() {
+        assertEquals("a", videoUploadToken("""{"videos": {"1": {"token": "a"}}}"""))
+        assertEquals("b", videoUploadToken("""{"videoToken": "b"}"""))
+        assertEquals(null, videoUploadToken("<html>"))
+        assertEquals(null, videoUploadToken("""{"ok": true}"""))
+    }
+
     @Test
     fun photoUploadErrors() = runTest {
         assertFailsWith<MalformedReplyException> { MediaApi(FakeSink(emptyMap<String, Any?>()), FakeHttp(), ua).requestPhotoUpload() }

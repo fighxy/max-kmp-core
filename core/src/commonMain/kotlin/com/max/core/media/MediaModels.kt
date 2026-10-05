@@ -54,6 +54,26 @@ internal fun photoToken(reply: Map<*, *>, photoId: String?): String? {
 }
 
 /**
+ * The video token in the upload server's reply to a video POST, as Komet reads it
+ * (`FileUploader._parseVideoToken`): `[{token}]`, `{videos|video|photos: {<id>: {token}}}` or a
+ * top-level `token` / `videoToken` / `photoToken`. `null` for an empty or non-JSON reply.
+ */
+internal fun videoUploadToken(text: String): String? {
+    val json = try {
+        MiniJson.parse(text)
+    } catch (e: IllegalArgumentException) {
+        return null
+    }
+    fun token(entry: Any?): String? = ((entry as? Map<*, *>)?.get("token") as? String)?.takeIf { it.isNotEmpty() }
+    (json as? List<*>)?.firstNotNullOfOrNull(::token)?.let { return it }
+    val map = json as? Map<*, *> ?: return null
+    for (key in listOf("videos", "video", "photos")) {
+        (map[key] as? Map<*, *>)?.values?.firstNotNullOfOrNull(::token)?.let { return it }
+    }
+    return listOf("token", "videoToken", "photoToken").firstNotNullOfOrNull { k -> (map[k] as? String)?.takeIf { it.isNotEmpty() } }
+}
+
+/**
  * File / video / voice upload slot: `info[0] {url, fileId | videoId, token}` of the
  * `FILE_UPLOAD` 87 / `VIDEO_UPLOAD` 82 reply (PyMax `FileUploadResponse`, `VideoUploadResponse`).
  * [id] is `fileId` for files and `videoId` for videos and voice messages.

@@ -10,6 +10,10 @@ import com.max.core.api.Chat
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.ReactionInfo
+import com.max.core.api.Story
+import com.max.core.api.StoryAudience
+import com.max.core.api.StoryOwner
+import com.max.core.api.StoryPreview
 import com.max.core.api.hasWebApp
 import com.max.core.media.OutgoingMedia
 import com.max.core.media.UploadProgress
@@ -819,6 +823,79 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /**
+     * The stories feed (`STORIES_LIST` 208, [StoriesApi.feed]): one ring per owner, as the server
+     * orders them; empty rings are left out. A background read: it waits for the reads the user
+     * is looking at. Names and avatars of person owners come from the store, missing ones are
+     * asked first (best effort).
+     */
+    fun loadStoriesFeed(onResult: (List<IosStoryPreview>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val rings = flights.share("stories") { pacer.background { c.api.stories.feed() } }.filterNot { it.isEmpty }
+            resolveUsers(c, rings.filter { it.owner.type == StoryOwner.Type.USER }.map { it.owner.ownerId })
+            val state = c.store.state.value
+            rings.map { storyPreviewSnapshot(it, state) }
+        }
+    }
+
+    /**
+     * Stories of one owner (`STORIES_GET_BY_OWNER_ID` 210, [StoriesApi.byOwners]): [ownerId]
+     * decimal, [type] `0` person, `1` group, `2` channel. The user opened the ring, so this read
+     * goes at once. [IosOwnerStories.preview] is `null` when the owner has no stories (left).
+     */
+    fun loadOwnerStories(ownerId: String, type: Int, onResult: (IosOwnerStories?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val owner = StoryOwner(parseId(ownerId), storyOwnerType(type))
+            val reply = pacer.priority { c.api.stories.byOwners(listOf(owner)) }
+            if (owner.type == StoryOwner.Type.USER) resolveUsers(c, listOf(owner.ownerId))
+            val state = c.store.state.value
+            IosOwnerStories(
+                preview = reply.previews.firstOrNull { it.owner.ownerId == owner.ownerId && !it.isEmpty }?.let { storyPreviewSnapshot(it, state) },
+                stories = reply.storiesOf(owner).orEmpty().map(::storySnapshot),
+            )
+        }
+    }
+
+    /** Marks story [storyId] of the owner seen (`STORIES_MARK` 214); paced like other background writes of the viewer. */
+    fun markStorySeen(ownerId: String, type: Int, storyId: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c ->
+            val owner = StoryOwner(parseId(ownerId), storyOwnerType(type))
+            pacer.background { c.api.stories.mark(owner, parseId(storyId)) }
+        }
+    }
+
+    /**
+     * Publishes the photo or video at [path] as the account's story for a day: [kind] `photo` or
+     * `video`, [durationMs] the video's length (`0` unknown), [audience] `1` everyone, `2`
+     * contacts. Story upload slot (`type` 1 photo / 3 video) → upload → `STORIES_SEND` 215.
+     * Cancel with the task. The file must stay readable until [onResult].
+     */
+    fun publishStory(
+        path: String,
+        kind: String,
+        durationMs: Long,
+        audience: Int,
+        onProgress: (IosUploadProgress) -> Unit,
+        onResult: (IosPublishedStory?, String?, String?) -> Unit,
+    ): IosTask = IosTask(
+        perform(onResult, { null }) { c ->
+            val who = if (audience == StoryAudience.CONTACTS.code) StoryAudience.CONTACTS else StoryAudience.EVERYONE
+            val progress = percentProgress(onProgress)
+            val published = when (kind) {
+                "photo" -> c.api.stories.publishPhoto(c.media.uploadStoryPhoto(path, progress), who)
+                "video" -> c.api.stories.publishVideo(c.media.uploadStoryVideo(path, progress), durationMs.takeIf { it > 0 }, who)
+                else -> throw IllegalArgumentException("unknown story kind \"$kind\"")
+            }
+            val state = c.store.state.value
+            IosPublishedStory(published.preview?.takeIf { !it.isEmpty }?.let { storyPreviewSnapshot(it, state) }, published.stories.map(::storySnapshot))
+        },
+    )
+
+    /** Deletes the account's own stories [storyIds] (`STORIES_DELETE` 218). */
+    fun deleteStories(storyIds: List<String>, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c -> c.api.stories.delete(storyIds.map(::parseId)) }
+    }
+
     /** The whole contact list (opcode 8 `{contactsSync: 0}`) into the store, then as [loadContacts]. */
     fun syncContacts(onResult: (List<IosContact>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
@@ -1596,6 +1673,48 @@ private fun percentProgress(onProgress: (IosUploadProgress) -> Unit): UploadProg
     }
 }
 
+/** [StoryOwner.Type] of a Swift type code; unknown codes are a person. */
+private fun storyOwnerType(code: Int): StoryOwner.Type =
+    StoryOwner.Type.entries.firstOrNull { it.code == code } ?: StoryOwner.Type.USER
+
+/** A ring for Swift; a person owner's name and avatar come from [state] (empty when unknown). */
+private fun storyPreviewSnapshot(preview: StoryPreview, state: MaxState): IosStoryPreview {
+    val id = preview.owner.ownerId
+    val user = if (preview.owner.type == StoryOwner.Type.USER) state.users[id] else null
+    return IosStoryPreview(
+        ownerId = id.toString(),
+        ownerType = preview.owner.type.code,
+        name = user?.displayName ?: state.chats[id]?.title.orEmpty(),
+        avatarUrl = user?.baseUrl.orEmpty(),
+        updateTimeMs = preview.updateTime,
+        totalCount = preview.totalCount,
+        readCount = preview.readCount,
+        expiresAtMs = preview.lastStoryExpirationTime,
+    )
+}
+
+private fun storySnapshot(story: Story): IosStory {
+    val media = story.media
+    return IosStory(
+        id = story.id.toString(),
+        ownerId = story.owner.ownerId.toString(),
+        ownerType = story.owner.type.code,
+        audience = story.settings,
+        timeMs = story.time,
+        expiresAtMs = story.expiration,
+        mediaKind = when {
+            media == null || media.url == null -> ""
+            media.isVideo -> "video"
+            else -> "photo"
+        },
+        url = media?.url.orEmpty(),
+        thumbnailUrl = media?.thumbnailUrl.orEmpty(),
+        width = media?.width ?: 0,
+        height = media?.height ?: 0,
+        durationMs = media?.durationMs ?: 0,
+    )
+}
+
 /** The last path component of [path], or [fallback] when it has none. */
 private fun fileNameOf(path: String, fallback: String): String =
     path.substringAfterLast('/').ifEmpty { fallback }
@@ -1863,6 +1982,48 @@ class IosSticker(
 /** An animated emoji of the catalog; [iconUrl] / [lottieUrl] empty when unknown. */
 class IosAnimoji(val id: String, val emoji: String, val iconUrl: String, val lottieUrl: String)
 
+/**
+ * One owner's stories ring ([MaxIosClient.loadStoriesFeed]). [ownerType] `0` person, `1` group,
+ * `2` channel; [name] and [avatarUrl] empty when unknown. Times are milliseconds. The ring is
+ * unseen while [readCount] < [totalCount].
+ */
+class IosStoryPreview(
+    val ownerId: String,
+    val ownerType: Int,
+    val name: String,
+    val avatarUrl: String,
+    val updateTimeMs: Long,
+    val totalCount: Int,
+    val readCount: Int,
+    val expiresAtMs: Long,
+)
+
+/**
+ * One story. [mediaKind] `photo`, `video` or empty (nothing the client can show); [url] the
+ * photo or MP4 address, [thumbnailUrl] a video's cover; sizes and [durationMs] `0` when unknown.
+ * [audience] `1` everyone, `2` contacts.
+ */
+class IosStory(
+    val id: String,
+    val ownerId: String,
+    val ownerType: Int,
+    val audience: Int,
+    val timeMs: Long,
+    val expiresAtMs: Long,
+    val mediaKind: String,
+    val url: String,
+    val thumbnailUrl: String,
+    val width: Int,
+    val height: Int,
+    val durationMs: Long,
+)
+
+/** [MaxIosClient.loadOwnerStories]: the owner's ring (`null` when none) and stories, oldest first. */
+class IosOwnerStories(val preview: IosStoryPreview?, val stories: List<IosStory>)
+
+/** [MaxIosClient.publishStory]: the account's new ring and the published stories. */
+class IosPublishedStory(val preview: IosStoryPreview?, val stories: List<IosStory>)
+
 /** [MaxIosClient.transcribeVoice]: [status] `1` ready, `0` in progress, `-1` failed. */
 class IosTranscription(val status: Int, val text: String)
 
@@ -1872,8 +2033,9 @@ class IosReactionUser(val userId: String, val name: String, val avatarUrl: Strin
 /**
  * A push the app stores or shows.
  *
- * [kind] is `message`, `edited`, `deleted`, `chat`, `typing`, `read`, `reactions` or
- * `transcription` (the text of a voice message in [text], its status in [unread]).
+ * [kind] is `message`, `edited`, `deleted`, `chat`, `typing`, `read`, `reactions`,
+ * `transcription` (the text of a voice message in [text], its status in [unread]) or `stories`
+ * (an owner's stories ring changed, see `storiesEvent`).
  * [unread] is `-1` when this event does not change the unread counter.
  * [reactionsJson] as in [IosMessage]: set for `message` and `reactions`, empty for `edited` (an
  * edit keeps the reactions). For `reactions` it has no `yourReaction` key when the own reaction
@@ -2219,9 +2381,25 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
             unread = if (event.setAsUnread) 1 else 0,
         ),
     )
+    is MaxEvent.StoriesUpdated -> listOf(storiesEvent(event.preview))
     is MaxEvent.Unknown -> if (event.opcode == Opcode.TRANSCRIPTION_RESULT.value) transcriptionEvent(event.raw) else emptyList()
     else -> emptyList()
 }
+
+/**
+ * `NOTIF_STORIES_UPDATE` push (216): an owner's ring changed. [IosEvent.chatId] is the owner id,
+ * [IosEvent.chatType] its type (`0` person, `1` group, `2` channel), [IosEvent.unread] the unseen
+ * count, [IosEvent.timeMs] the ring's update time, [IosEvent.text] the total count (`0`: the
+ * owner has no stories left, drop the ring).
+ */
+private fun storiesEvent(preview: StoryPreview): IosEvent = iosEvent(
+    kind = "stories",
+    chatId = preview.owner.ownerId.toString(),
+    chatType = preview.owner.type.code.toString(),
+    timeMs = preview.updateTime,
+    unread = preview.unreadCount,
+    text = preview.totalCount.toString(),
+)
 
 /** `TRANSCRIPTION_RESULT` push (293): the text of a voice message the server finished. */
 private fun transcriptionEvent(raw: Any?): List<IosEvent> {

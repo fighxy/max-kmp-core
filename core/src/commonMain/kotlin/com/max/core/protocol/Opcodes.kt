@@ -239,20 +239,20 @@ enum class Opcode(val value: Int) {
     FOLDERS_DELETE(276),
 
     // ── Stories ─────────────────────────────────────────────────────
-    // TODO: payload unknown — applies to every opcode in this group
-    STORIES_LIST(208), // TODO: payload unknown
+    // Payloads marked TODO below are unknown; the rest follow Komet (StoriesApi)
+    STORIES_LIST(208), // Komet feature/FullStack: {cursor, count} → storiesPreviews
     // PyMax: STORIES_LIST_BY_OWNER_ID (kolibri name() string is also STORIES_LIST_BY_OWNER_ID)
     STORIES_LIST_BY_OWNER(209), // TODO: payload unknown
     // PyMax: STORIES_GET_BY_OWNER_ID (kolibri name() string is also STORIES_GET_BY_OWNER_ID)
-    STORIES_GET_BY_OWNER(210), // TODO: payload unknown
+    STORIES_GET_BY_OWNER(210), // Komet: {owners: [{ownerId, type}]} → storiesPreviews, peerStories
     STORIES_GET_STATS(211), // TODO: payload unknown
     STORIES_GET_DETAILED_STATS(212), // TODO: payload unknown
     STORIES_REACT(213), // TODO: payload unknown
-    STORIES_MARK(214), // TODO: payload unknown
-    STORIES_SEND(215), // TODO: payload unknown
-    NOTIF_STORIES_UPDATE(216), // TODO: payload unknown
+    STORIES_MARK(214), // Komet: {owner, storyId}
+    STORIES_SEND(215), // Komet: {stories: [{cid, settings, media, expiration}]}
+    NOTIF_STORIES_UPDATE(216), // Komet: {storiesPreview}
     STORIES_EDIT(217), // TODO: payload unknown
-    STORIES_DELETE(218), // TODO: payload unknown
+    STORIES_DELETE(218), // Komet: {storyIds}
     STORIES_GET_BY_STORY_ID(220); // TODO: payload unknown
 
     companion object {

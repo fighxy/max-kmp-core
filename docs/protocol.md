@@ -615,6 +615,27 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 218 | `STORIES_DELETE` | `STORIES_DELETE` |  |
 | 220 | `STORIES_GET_BY_STORY_ID` | `STORIES_GET_BY_STORY_ID` |  |
 
+#### Истории (схема KometTeam/Komet `feature/FullStack`, `modules/stories.dart` / `models/story.dart`; только факты, код не брали)
+
+- `STORIES_LIST` 208 `{cursor: "", count}` → `storiesPreviews: [{owner: {ownerId, type}, updateTime,
+  totalCount, readCount, lastStoryExpirationTime}]`, одно кольцо на владельца. `type`: 0 человек,
+  1 группа, 2 канал. Кольцо непросмотрено, пока `readCount < totalCount`.
+- `STORIES_GET_BY_OWNER_ID` 210 `{owners: [{ownerId, type}]}` → `storiesPreviews` и
+  `peerStories: [{owner, stories: [{id, cid, owner, settings, time, updateTime, expiration, media}]}]`.
+  Владелец, которого нет в ответе, историй не имеет. `media`: `{_type: PHOTO, …url}` или
+  `{_type: VIDEO, …url, thumbnail, duration}`.
+- `STORIES_MARK` 214 `{owner: {ownerId, type}, storyId}`; Komet сразу поднимает `readCount` кольца.
+- `STORIES_SEND` 215 `{stories: [{cid, settings, media, expiration}]}`: `settings` 1 всем, 2 контактам;
+  `expiration` — срок жизни в мс (сутки); фото `{_type: PHOTO, photoToken}`, видео
+  `{_type: VIDEO, videoType: 2, token, duration}`. Токены — из слотов `PHOTO_UPLOAD` / `VIDEO_UPLOAD`
+  с `type` 1 / 3. Ответ: `storiesPreview` владельца и новые `stories`.
+- `STORIES_DELETE` 218 `{storyIds}`.
+- `NOTIF_STORIES_UPDATE` 216 `{storiesPreview}`; `totalCount` 0 — историй не осталось.
+- Кольцо в шапке диалога: владелец — собеседник (`chatId ^ myId`), у «Избранного» и групп колец нет.
+- В ядре: `StoriesApi` (`MaxApi.stories`), `MediaApi.uploadStoryPhoto` / `uploadStoryVideo`,
+  `MaxEvent.StoriesUpdated`, `MaxIosClient.loadStoriesFeed` / `loadOwnerStories` / `markStorySeen` /
+  `publishStory` / `deleteStories`, событие `stories`. На живом сервере не проверено.
+
 ### E.1 Только в одном источнике
 
 **Только kolibri:** `164` `VIDEO_CHAT_DELETE_HISTORY`

@@ -112,6 +112,8 @@ object EventParser {
             }
         }
         Opcode.NOTIF_FOLDERS.value -> folders(opcode, map, raw)
+        Opcode.NOTIF_STORIES_UPDATE.value ->
+            com.max.core.api.StoryPreview.from(map["storiesPreview"])?.let { MaxEvent.StoriesUpdated(it, opcode, raw) }
         else -> null
     }
 

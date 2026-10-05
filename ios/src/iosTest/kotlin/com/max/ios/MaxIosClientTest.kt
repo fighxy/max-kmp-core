@@ -82,6 +82,12 @@ class MaxIosClientTest {
         // no folders yet: the folder resync needs the network
         val pin = callback<Pair<Int, String?>> { d -> c.setPinnedChats(listOf("1")) { list, k, _ -> d.complete(list.size to k) } }
         assertEquals(0 to "NETWORK", pin)
+        val feed = callback<Pair<Int, String?>> { d -> c.loadStoriesFeed { list, k, _ -> d.complete(list.size to k) } }
+        assertEquals(0 to "NETWORK", feed)
+        val owner = callback<Pair<IosOwnerStories?, String?>> { d -> c.loadOwnerStories("x", 0) { o, k, _ -> d.complete(o to k) } }
+        assertEquals(null to "UNKNOWN", owner)
+        val story = callback<Pair<IosPublishedStory?, String?>> { d -> c.publishStory("/nope.gif", "gif", 0, 1, { }) { p, k, _ -> d.complete(p to k) } }
+        assertEquals(null to "UNKNOWN", story)
         callback<Unit> { d -> c.close { d.complete(Unit) } }
     }
 

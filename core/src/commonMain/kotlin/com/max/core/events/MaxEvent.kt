@@ -126,6 +126,13 @@ sealed interface MaxEvent {
     ) : MaxEvent
 
     /**
+     * An owner's story ring changed (`NOTIF_STORIES_UPDATE` 216, `{storiesPreview}`, schema as
+     * KometTeam/Komet `feature/FullStack` reads it): new stories, seen counts, or none left
+     * ([StoryPreview.isEmpty]).
+     */
+    data class StoriesUpdated(val preview: com.max.core.api.StoryPreview, override val opcode: Int, override val raw: Any?) : MaxEvent
+
+    /**
      * Any other push: opcodes without a typed event yet, payloads that do not fit the model, and
      * packets with `cmd != 0` (PyMax only maps `cmd == REQUEST (0)` frames). PyMax's "raw" events.
      */

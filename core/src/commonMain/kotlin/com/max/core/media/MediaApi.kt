@@ -142,16 +142,54 @@ class MediaApi(
         fileName: String = "image.jpg",
         profile: Boolean = false,
         progress: UploadProgress? = null,
-    ): OutgoingAttachment.Photo {
-        val slot = requestPhotoUpload(profile)
+    ): OutgoingAttachment.Photo = OutgoingAttachment.Photo(postPhoto(requestPhotoUpload(profile), source, fileName, progress))
+
+    /** Multipart POST of [source] to a photo [slot]; the CDN's photo token. */
+    private suspend fun postPhoto(slot: PhotoUploadSlot, source: UploadSource, fileName: String, progress: UploadProgress?): String {
         val b = boundary()
         val body = UploadRequests.multipartBody(b, fileName, UploadRequests.imageContentType(fileName), source)
         val response = post(slot.url, UploadRequests.multipartHeaders(b, body.contentLength, userAgent), body, "photo", progress)
         val reply = jsonReply(response, "photo")
-        val token = photoToken(reply, slot.photoId)
+        return photoToken(reply, slot.photoId)
             ?: throw UploadException("photo upload reply has no photo token" + (reply["error_msg"]?.let { ": $it" } ?: ""), response.status)
-        return OutgoingAttachment.Photo(token)
     }
+
+    // ---- stories ------------------------------------------------------------------------------
+    //
+    // Story media go to their own slots (Komet feature/FullStack `StoryComposerScreen`): a photo to
+    // `PHOTO_UPLOAD` with `type = 1`, a video to `VIDEO_UPLOAD` with `type = 3`. The result is the
+    // token `StoriesApi.publishPhoto` / `publishVideo` sends; a story is not a message, so nothing
+    // waits for `NOTIF_ATTACH`.
+
+    /** Story photo slot: `PHOTO_UPLOAD` 80 with `type = 1`. */
+    suspend fun requestStoryPhotoUpload(): PhotoUploadSlot =
+        PhotoUploadSlot.from(replyMap(sink.request(Opcode.PHOTO_UPLOAD, uploadPayload(type = 1)), Opcode.PHOTO_UPLOAD))
+
+    /** Story video slot: `VIDEO_UPLOAD` 82 with `type = 3`; reply `info[0] {url, videoId, token}`. */
+    suspend fun requestStoryVideoUpload(): UploadSlot =
+        UploadSlot.from(replyMap(sink.request(Opcode.VIDEO_UPLOAD, uploadPayload(type = 3)), Opcode.VIDEO_UPLOAD), Opcode.VIDEO_UPLOAD, "videoId")
+
+    /** Uploads a story photo; the photo token for `StoriesApi.publishPhoto`. */
+    suspend fun uploadStoryPhoto(source: UploadSource, fileName: String = "story.jpg", progress: UploadProgress? = null): String =
+        postPhoto(requestStoryPhotoUpload(), source, fileName, progress)
+
+    /** [uploadStoryPhoto] from the file at [path]. */
+    suspend fun uploadStoryPhoto(path: String, progress: UploadProgress? = null): String =
+        fileUploadSource(path).use { uploadStoryPhoto(it, fileNameOf(path), progress) }
+
+    /**
+     * Uploads a story video in one POST; the token for `StoriesApi.publishVideo`: the one in the
+     * CDN reply when it has one ([videoUploadToken]), else the slot's.
+     */
+    suspend fun uploadStoryVideo(source: UploadSource, fileName: String = "story.mp4", progress: UploadProgress? = null): String {
+        val slot = requestStoryVideoUpload()
+        val response = post(slot.url, UploadRequests.singlePostHeaders(fileName, source.size, userAgent), UploadBody.of(source), "story video", progress)
+        return videoUploadToken(response.text) ?: slot.token
+    }
+
+    /** [uploadStoryVideo] from the file at [path]. */
+    suspend fun uploadStoryVideo(path: String, progress: UploadProgress? = null): String =
+        fileUploadSource(path).use { uploadStoryVideo(it, fileNameOf(path), progress) }
 
     /** [uploadPhoto] from the file at [path] (part name = the file name). */
     suspend fun uploadPhoto(path: String, profile: Boolean = false, progress: UploadProgress? = null): OutgoingAttachment.Photo =
