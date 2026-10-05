@@ -60,8 +60,10 @@ class UrlSessionException(message: String, val code: Long) : Exception(message)
  *   [com.max.core.transport.MincifryCa] via the same evaluation as the socket transport
  *   ([NetworkFrameworkConnectionFactory.evaluateSecTrustWithMincifry]), or accept-all for
  *   [MediaHttpConfig.insecure].
- * - Timeouts: `timeoutIntervalForRequest` / `timeoutIntervalForResource` =
- *   [MediaHttpConfig.requestTimeout]; `NSURLSession` has no separate connect timeout.
+ * - Timeouts: `timeoutIntervalForRequest` (the longest pause without data) =
+ *   [MediaHttpConfig.requestTimeout]; the whole transfer has no limit of its own (a week, the
+ *   `NSURLSession` default), as in kolibri, so a big upload on a slow network is not cut off.
+ *   `NSURLSession` has no separate connect timeout.
  * - Cancelling the calling coroutine cancels the task.
  * - [MediaHttpConfig.proxy] is not supported (the per-session proxy dictionary keys are not
  *   available on iOS): the constructor rejects it.
@@ -126,7 +128,7 @@ class UrlSessionMediaHttp(private val config: MediaHttpConfig = MediaHttpConfig(
 
         val sessionConfig = NSURLSessionConfiguration.ephemeralSessionConfiguration
         sessionConfig.timeoutIntervalForRequest = timeout
-        sessionConfig.timeoutIntervalForResource = timeout
+        sessionConfig.timeoutIntervalForResource = WHOLE_TRANSFER_SECONDS
         sessionConfig.HTTPShouldSetCookies = false
         sessionConfig.URLCache = null
 
@@ -220,6 +222,9 @@ class UrlSessionMediaHttp(private val config: MediaHttpConfig = MediaHttpConfig(
     companion object {
         /** The shared default-config instance. */
         val shared: UrlSessionMediaHttp by lazy { UrlSessionMediaHttp() }
+
+        /** `timeoutIntervalForResource`: the `NSURLSession` default of seven days. */
+        private const val WHOLE_TRANSFER_SECONDS: Double = 7 * 24 * 60 * 60.0
     }
 }
 

@@ -132,11 +132,14 @@ class OkHttpMediaHttp(val client: OkHttpClient) : MediaHttp {
         /** The shared default-config instance ([defaultMediaHttp] with no arguments). */
         val shared: OkHttpMediaHttp by lazy { OkHttpMediaHttp(MediaHttpConfig()) }
 
-        /** An [OkHttpClient] for [config]: timeouts, trust, proxy, no redirects, no retries. */
+        /**
+         * An [OkHttpClient] for [config]: timeouts, trust, proxy, no redirects, no retries. Like
+         * kolibri, [MediaHttpConfig.requestTimeout] bounds each wait for the socket (read or
+         * write), not the whole call: a big upload on a slow network takes as long as it needs.
+         */
         fun buildClient(config: MediaHttpConfig): OkHttpClient {
             val b = OkHttpClient.Builder()
                 .connectTimeout(config.connectTimeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
-                .callTimeout(config.requestTimeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
                 .readTimeout(config.requestTimeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
                 .writeTimeout(config.requestTimeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
                 .followRedirects(false)

@@ -9,8 +9,10 @@ import kotlin.time.Duration.Companion.seconds
  * Settings of the platform [MediaHttp] ([defaultMediaHttp]).
  *
  * @property connectTimeout TCP + TLS connect timeout.
- * @property requestTimeout whole-request timeout (connect, body, response). kolibri uses 300 s
- *   for single-POST uploads and 120 s for photos and video chunks (`kolibri-net/src/media/upload.rs`).
+ * @property requestTimeout the longest wait for the socket while sending the body or reading the
+ *   reply. There is no limit on the whole request: like kolibri (300 s for single-POST uploads,
+ *   120 s for photos and video chunks, applied to each read of the reply in
+ *   `kolibri-net/src/media/http.rs`), a slow but moving upload is never cut off.
  * @property trustMincifryCa trust the [MincifryCa] roots in addition to the system roots, like
  *   the socket transport (`TransportConfig.trustMincifryCa`).
  * @property insecure accept any certificate and host name (testing only; wins over

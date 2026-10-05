@@ -141,6 +141,11 @@ class OkHttpMediaHttpTest {
     fun defaultClientIsSharedOkHttp() {
         assertSame(assertIs<OkHttpMediaHttp>(defaultMediaHttp()), defaultMediaHttp())
         assertIs<OkHttpMediaHttp>(defaultMediaHttp(MediaHttpConfig(trustMincifryCa = false)))
+        // kolibri bounds each socket wait, not the whole upload
+        val client = OkHttpMediaHttp.buildClient(MediaHttpConfig())
+        assertEquals(0, client.callTimeoutMillis)
+        assertEquals(300_000, client.readTimeoutMillis)
+        assertEquals(300_000, client.writeTimeoutMillis)
         // every trust / proxy mode builds; SOCKS5 credentials are unsupported
         OkHttpMediaHttp(MediaHttpConfig(insecure = true))
         OkHttpMediaHttp(MediaHttpConfig(proxy = ProxyConfig.parse("http://u:p@127.0.0.1:3128")))
