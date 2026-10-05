@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -240,6 +241,31 @@ class MaxClientTest {
         runCurrent()
         assertEquals(listOf(1L, 2L, 3L, 4L), c.store.state.value.messagesOf(100).map { it.id })
         assertTrue(c.store.state.value.historyGaps().isEmpty())
+    }
+
+    @Test
+    fun failedFirstStartReportsReconnectingAndLogsInOnceARetryGetsThrough() = runTest {
+        val kv = InMemoryKeyValueStore()
+        smsLogin(kv, ScriptedConnectionFactory()).disconnect()
+        val scripted = ScriptedConnectionFactory()
+        var failures = 1
+        val factory = com.max.core.transport.ConnectionFactory { host, port, tls, proxy ->
+            if (failures-- > 0) throw com.max.core.transport.ConnectionClosedException("no network")
+            scripted.open(host, port, tls, proxy)
+        }
+        val c = MaxClient(config.copy(transport = quiet.copy(autoReconnect = true)), kv, factory, noHttp, backgroundScope)
+        val started = c.start()
+        assertIs<ClientState.Reconnecting>(started)
+        assertIs<com.max.core.transport.ConnectionClosedException>(started.lastError)
+        advanceTimeBy(2_001)
+        runCurrent()
+        val conn = scripted.lastConnection!!
+        conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        conn.answer(Opcode.LOGIN, loginReply(null))
+        runCurrent()
+        assertEquals(ClientState.Ready(5), c.state.value)
+        c.close()
     }
 
     @Test

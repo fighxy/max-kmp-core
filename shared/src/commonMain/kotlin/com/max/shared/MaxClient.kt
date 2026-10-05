@@ -305,7 +305,10 @@ class MaxClient @Throws(Exception::class) constructor(
      * Connects. With a stored token the handshake is followed by `LOGIN` and the result is
      * [ClientState.Ready]; without one it is [ClientState.AwaitingAuth]. A rejected token gives
      * [ClientState.TokenRejected] (the token is cleared; call [start] again for the SMS flow).
-     * Other failures throw.
+     * When the first connect fails with auto-reconnect on, the session keeps retrying in the
+     * background (kolibri's supervisor) and this returns [ClientState.Reconnecting] with the
+     * error; [state] reaches [ClientState.Ready] (or [ClientState.AwaitingAuth]) once a retry
+     * gets through. Other failures throw.
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun start(): ClientState {
@@ -322,6 +325,10 @@ class MaxClient @Throws(Exception::class) constructor(
             session.connect()
         } catch (e: InvalidTokenException) {
             rejectToken()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (session.state.value !is SessionState.Reconnecting) throw e
         }
         return currentState()
     }
