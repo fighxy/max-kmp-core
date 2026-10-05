@@ -40,8 +40,8 @@ class MaxClientTest {
     private val config = MaxClientConfig(host = "api.test", transport = quiet)
     private val noHttp = MediaHttp { _, _, _, _, _ -> HttpResponse(500, ByteArray(0)) }
 
-    private fun client(kv: KeyValueStore, factory: ScriptedConnectionFactory, scope: CoroutineScope) =
-        MaxClient(config, kv, factory, noHttp, scope)
+    private fun client(kv: KeyValueStore, factory: ScriptedConnectionFactory, scope: CoroutineScope, cfg: MaxClientConfig = config) =
+        MaxClient(cfg, kv, factory, noHttp, scope)
 
     private suspend fun FakeRawConnection.answer(opcode: Opcode, reply: Any?): Map<*, *>? {
         val (header, payload) = decodePayloadPacket(takeWritten()!!)
@@ -64,8 +64,8 @@ class MaxClientTest {
     ) + (if (token != null) mapOf("token" to token) else emptyMap())
 
     /** Runs the SMS flow on a fresh client; returns it logged in. */
-    private suspend fun TestScope.smsLogin(kv: KeyValueStore, factory: ScriptedConnectionFactory): MaxClient {
-        val c = client(kv, factory, backgroundScope)
+    private suspend fun TestScope.smsLogin(kv: KeyValueStore, factory: ScriptedConnectionFactory, cfg: MaxClientConfig = config): MaxClient {
+        val c = client(kv, factory, backgroundScope, cfg)
         val starting = async { c.start() }
         runCurrent()
         val conn = factory.lastConnection!!
@@ -168,6 +168,7 @@ class MaxClientTest {
         assertEquals(com.max.core.auth.DEFAULT_CONFIG_HASH, login["configHash"])
         conn.feed(ok(header.seq, Opcode.LOGIN.value, syncAwareLogin(login)))
         assertEquals(ClientState.Ready(5), starting.await())
+        assertEquals(1, c.logins.value)
         // unchanged chats and contacts are there although nothing changed on the server
         assertEquals(setOf(100L), c.store.state.value.chats.keys)
         assertEquals("Ann", c.store.state.value.users.getValue(7).displayName)
@@ -186,6 +187,7 @@ class MaxClientTest {
         assertEquals("cfg-1", relogin["configHash"])
         conn2.feed(ok(h2.seq, Opcode.LOGIN.value, syncAwareLogin(relogin)))
         assertEquals(ClientState.Ready(5), again.await())
+        assertEquals(2, c.logins.value)
         assertEquals(setOf(100L), c.store.state.value.chats.keys)
         c.close()
     }
@@ -238,6 +240,35 @@ class MaxClientTest {
         runCurrent()
         assertEquals(listOf(1L, 2L, 3L, 4L), c.store.state.value.messagesOf(100).map { it.id })
         assertTrue(c.store.state.value.historyGaps().isEmpty())
+    }
+
+    @Test
+    fun reloginWithoutGapFillSendsNoHistoryRequests() = runTest {
+        val kv = InMemoryKeyValueStore()
+        val factory = ScriptedConnectionFactory()
+        val c = smsLogin(kv, factory, config.copy(fillGapsOnReconnect = false))
+        val conn = factory.lastConnection!!
+        fun m(id: Long, time: Long) = mapOf("id" to id, "time" to time, "type" to "USER", "sender" to 7, "text" to "m$id")
+        val history = async { c.loadHistory(100) }
+        runCurrent()
+        conn.answer(Opcode.CHAT_HISTORY, mapOf("messages" to listOf(m(1, 5))))
+        history.await()
+
+        c.disconnect()
+        val again = async { c.start() }
+        runCurrent()
+        val conn2 = factory.lastConnection!!
+        conn2.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        val chat = mapOf("id" to 100, "type" to "DIALOG", "status" to "ACTIVE", "owner" to 5, "lastEventTime" to 30, "lastMessage" to m(4, 30))
+        conn2.answer(Opcode.LOGIN, loginReply(null) + mapOf("chats" to listOf(chat)))
+        assertEquals(ClientState.Ready(5), again.await())
+        runCurrent()
+        // the hole is known, but nothing pages through it on its own
+        assertEquals(listOf(100L), c.store.state.value.historyGaps())
+        assertNull(conn2.takeWritten())
+        assertEquals(2, c.logins.value)
+        c.close()
     }
 
     /** Parks dispatched continuations while closed, so a reply can be received but not yet processed. */

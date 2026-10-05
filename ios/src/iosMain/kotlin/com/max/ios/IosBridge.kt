@@ -64,13 +64,23 @@ class MaxIosClient internal constructor(
     private val scope: CoroutineScope,
     private val factory: (CoroutineScope) -> MaxClient,
 ) {
-    constructor(namespace: String) : this(newScope(), { scope -> MaxClient(MaxClientConfig(namespace = namespace), scope = scope) })
+    /**
+     * The app keeps its own history, so the core does not page through every chat's history gap
+     * after each reconnect ([MaxClientConfig.fillGapsOnReconnect]): that burst of `CHAT_HISTORY`
+     * requests ran into `too.many.requests`. Open chats reload their history themselves.
+     */
+    constructor(namespace: String) : this(
+        newScope(),
+        { scope -> MaxClient(MaxClientConfig(namespace = namespace, fillGapsOnReconnect = false), scope = scope) },
+    )
 
     private val clientLock = NSLock()
     private var created: MaxClient? = null
     private val watches = mutableListOf<Watcher>()
     /** The user whose whole chat list was already paged in ([loadChats]). */
     private var pagedUser: Long? = null
+    /** [MaxClient.logins] when the chat list was last served; a newer login already synced it. */
+    private var listedLogins: Int = -1
     /** Identical reads in flight share one request (a chat card asked by the header and the profile at once). */
     private val flights = SingleFlight()
     /**
@@ -135,15 +145,19 @@ class MaxIosClient internal constructor(
         runUnit(onResult) {
             it.logout()
             // The store is empty now: the next login pages the whole chat list again.
-            clientLock.locked { pagedUser = null }
+            clientLock.locked {
+                pagedUser = null
+                listedLogins = -1
+            }
         }
     }
 
     /**
      * The chat list. The first call after each login pages through the whole list
      * ([MaxClient.loadAllChats]) and resyncs the folders with the pinned chats
-     * ([MaxClient.loadFolders], best effort: the `LOGIN` config normally has them already);
-     * later calls (polls) refresh only the newest page.
+     * ([MaxClient.loadFolders], best effort: the `LOGIN` config normally has them already).
+     * The first call after a re-login (reconnect) is answered from the store: the `LOGIN` reply
+     * has just brought the changed chats. Later calls (polls) refresh only the newest page.
      */
     fun loadChats(onResult: (List<IosChat>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c -> flights.share("chats") { chatList(c) } }
@@ -151,12 +165,19 @@ class MaxIosClient internal constructor(
 
     private suspend fun chatList(c: MaxClient): List<IosChat> {
         val user = c.userId.value
-        if (user != null && clientLock.locked { pagedUser } != user) {
-            c.loadAllChats()
-            syncFolders(c)
-            clientLock.locked { pagedUser = user }
-        } else {
-            c.loadChats()
+        val logins = c.logins.value
+        when {
+            user != null && clientLock.locked { pagedUser } != user -> {
+                c.loadAllChats()
+                syncFolders(c)
+                clientLock.locked {
+                    pagedUser = user
+                    listedLogins = logins
+                }
+            }
+            user != null && logins > 0 && clientLock.locked { listedLogins } != logins ->
+                clientLock.locked { listedLogins = logins }
+            else -> c.loadChats()
         }
         val chats = c.store.state.value.chats.values
         // Dialog peers and the authors of groups' last messages, so rows can name them.

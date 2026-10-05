@@ -256,6 +256,13 @@ class MaxClient @Throws(Exception::class) constructor(
     /** Own user id once logged in. */
     val userId: StateFlow<Long?> get() = loggedIn
 
+    /**
+     * How many `LOGIN` replies this client has applied to [store] (the first login and every
+     * re-login after a reconnect). Each reply already carries the changed chats, so a caller can
+     * tell that the stored list is fresh without asking `CHATS_LIST` again.
+     */
+    val logins: StateFlow<Int> get() = loginCount
+
     /** `true` when a login token is stored. */
     val hasStoredToken: Boolean get() = credentials.load()?.token != null
 
