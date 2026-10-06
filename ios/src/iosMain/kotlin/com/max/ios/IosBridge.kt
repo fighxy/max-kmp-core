@@ -286,6 +286,51 @@ class MaxIosClient internal constructor(
     }
 
     /**
+     * A continuous history page around a point of the chat (`CHAT_HISTORY` 49 with `forward`),
+     * oldest first, with the authors resolved: up to [forward] messages from [fromMs] on and up to
+     * [backward] older ones. With [fromMs] `0` the point is message [messageId]: its time comes from
+     * the store or `MSG_GET`; an unknown message gives an empty list. The app opens such a page to
+     * jump to a reply, a pinned or a found message far above its newest history, and pages on from
+     * the page's edges. The page is not put into the store: it is not the newest history.
+     */
+    fun loadHistoryAround(
+        chatId: String,
+        messageId: String,
+        fromMs: Long,
+        forward: Int,
+        backward: Int,
+        onResult: (List<IosMessage>, String?, String?) -> Unit,
+    ) {
+        perform(onResult, { emptyList() }) { c ->
+            flights.share("around:$chatId:$messageId:$fromMs:$forward:$backward") {
+                pacer.priority {
+                    val chat = parseId(chatId)
+                    val from = if (fromMs > 0) {
+                        fromMs
+                    } else {
+                        val id = parseId(messageId)
+                        c.store.state.value.messagesOf(chat).firstOrNull { it.id == id }?.time
+                            ?: c.api.messages.getMessages(chat, listOf(id)).firstOrNull()?.time
+                    }
+                    if (from == null || from <= 0) {
+                        emptyList()
+                    } else {
+                        val page = c.api.messages.getChatHistory(
+                            chat,
+                            from = from,
+                            forward = forward.coerceIn(0, 100),
+                            backward = backward.coerceIn(0, 100),
+                        )
+                        resolveUsers(c, page.messages.mapNotNull { it.sender })
+                        val state = c.store.state.value
+                        page.messages.sortedBy { it.time }.map { messageSnapshot(it, chatId, state) }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Shared media of a chat from the server (`CHAT_MEDIA` 51), not limited to the loaded history:
      * messages with [attachTypes] (`PHOTO`, `VIDEO`, `FILE`, `AUDIO`, `SHARE`) around [anchorId],
      * [forward] newer and [backward] older, with their authors resolved. The first page is

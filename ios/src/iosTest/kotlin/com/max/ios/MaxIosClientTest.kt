@@ -73,6 +73,10 @@ class MaxIosClientTest {
         assertEquals("UNKNOWN", send.second)
         val history = callback<Pair<Int, String?>> { d -> c.loadHistory("x", 0, 10) { list, k, _ -> d.complete(list.size to k) } }
         assertEquals(0 to "UNKNOWN", history)
+        val around = callback<Pair<Int, String?>> { d -> c.loadHistoryAround("x", "1", 0, 20, 20) { list, k, _ -> d.complete(list.size to k) } }
+        assertEquals(0 to "UNKNOWN", around)
+        val aroundMessage = callback<Pair<Int, String?>> { d -> c.loadHistoryAround("1", "y", 0, 20, 20) { list, k, _ -> d.complete(list.size to k) } }
+        assertEquals(0 to "UNKNOWN", aroundMessage)
         val read = callback<String?> { d -> c.markRead("1", "2") { k, _ -> d.complete(k) } }
         assertEquals("NETWORK", read)
         val code = callback<String?> { d -> c.requestCode("+79990000000", false) { _, k, _ -> d.complete(k) } }
