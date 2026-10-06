@@ -1,9 +1,14 @@
 package com.max.ios
 
+import com.max.core.calls.CallSignaling
+import com.max.core.calls.ConversationParams
+import com.max.core.events.MaxEvent
 import com.max.core.media.HttpResponse
 import com.max.core.media.MediaHttp
 import com.max.core.transport.ConnectionClosedException
 import com.max.core.transport.ConnectionFactory
+import com.max.core.session.UserAgentInfo
+import com.max.core.state.MaxState
 import com.max.core.transport.TransportConfig
 import com.max.shared.InMemoryKeyValueStore
 import com.max.shared.MaxClient
@@ -105,5 +110,69 @@ class MaxIosClientTest {
         // after close every call still answers exactly once, with an error kind
         val kind = callback<String?> { d -> c.sendText("1", "late") { _, k, _ -> d.complete(k) } }
         assertNotNull(kind)
+    }
+
+    @Test
+    fun callsAnswerWithErrorKindsOffline() {
+        val c = offlineClient()
+        val badCallee = callback<Pair<IosCallStart?, String?>> { d -> c.startCall("x", false) { s, k, _ -> d.complete(s to k) } }
+        assertEquals(null to "UNKNOWN", badCallee)
+        val call = callback<Pair<IosCallStart?, String?>> { d -> c.startCall("5", true) { s, k, _ -> d.complete(s to k) } }
+        assertEquals(null to "NETWORK", call)
+        val notALink = callback<Pair<IosCallStart?, String?>> { d -> c.joinCall("https://example.com/a b", false) { s, k, _ -> d.complete(s to k) } }
+        assertEquals(null to "UNKNOWN", notALink)
+        val link = callback<Pair<IosCallLink?, String?>> { d -> c.createCallLink { l, k, _ -> d.complete(l to k) } }
+        assertEquals(null to "NETWORK", link)
+        val badDelete = callback<String?> { d -> c.deleteCallHistory(listOf("x")) { k, _ -> d.complete(k) } }
+        assertEquals("UNKNOWN", badDelete)
+        val delete = callback<String?> { d -> c.deleteCallHistory(listOf("1")) { k, _ -> d.complete(k) } }
+        assertEquals("NETWORK", delete)
+        c.watchIncomingCalls { }.cancel()
+        callback<Unit> { d -> c.close { d.complete(Unit) } }
+    }
+
+    @Test
+    fun incomingCallCarriesTheSignalingAddressAndIceServers() {
+        val params = ConversationParams(
+            token = "tok",
+            wsEndpoint = "wss://sig.test/ws",
+            stun = "stun:s.test:3478",
+            turn = listOf("turn:t.test:3478?transport=udp", "turn:t.test:443?transport=tcp"),
+            turnUser = "1700000000:77",
+            turnPassword = "pw",
+            expiresAt = 1_700_000_100,
+        )
+        val event = MaxEvent.CallStart(
+            callerId = 5, conversationId = "conv", type = "VIDEO", chatId = 9, isContact = true,
+            vcp = null, params = params, opcode = 137, raw = null,
+        )
+        val call = incomingCallSnapshot(event, params, MaxState(), UserAgentInfo())
+        assertEquals("conv", call.conversationId)
+        assertEquals("5", call.callerId)
+        assertEquals("", call.callerName)
+        assertEquals("9", call.chatId)
+        assertTrue(call.isVideo)
+        assertEquals(77L, call.callsUserId)
+        assertEquals(
+            "wss://sig.test/ws?userId=77&entityType=USER&conversationId=conv&token=tok&version=5&capabilities=3c02f" +
+                "&device=Google%2FPixel%208&platform=ANDROID&clientType=ONE_ME&appVersion=sdk-0.2.1.3&osVersion=34",
+            call.ws2Url,
+        )
+        assertEquals(listOf("stun:s.test:3478"), call.stunUrls)
+        assertEquals(2, call.turnUrls.size)
+        assertEquals("1700000000:77", call.turnUsername)
+        assertEquals("pw", call.turnPassword)
+        assertEquals(1_700_000_100_000L, call.expiresAtMs)
+    }
+
+    @Test
+    fun startedCallOpensTheEndpointAsTheCallSdk() {
+        val signal = CallSignaling("conv", "wss://sig.test/ws?userId=3&token=t", callsUserId = 3, peerExternalId = 20, isVideo = false)
+        val start = callStart(signal, UserAgentInfo(), joinLink = "")
+        assertEquals("conv", start.conversationId)
+        assertEquals(3L, start.callsUserId)
+        assertEquals(20L, start.peerCallsUserId)
+        assertTrue(start.ws2Url.startsWith("wss://sig.test/ws?userId=3&token=t&platform=ANDROID&version=5&capabilities=3c02f"))
+        assertTrue(start.ws2Url.endsWith("&tgt=start"))
     }
 }

@@ -127,12 +127,13 @@ class CallsApi(
     /**
      * Joins by link (`VIDEO_CHAT_JOIN_BY_LINK` 166, Komet `joinByLink`):
      * `{joinLink, internalParams, isVideo}`. The endpoint is read from `internalParams`, then
-     * `internalCallerParams`.
+     * `internalCallerParams`. [joinLink] may be a `https://max.ru/joincall/<token>` link,
+     * `joincall/<token>` or the bare token: the server gets the token, as Komet sends it.
      */
     suspend fun joinByLink(joinLink: String, isVideo: Boolean = false, deviceId: String = ""): CallSignaling {
-        require(joinLink.isNotEmpty()) { "joinLink is empty" }
+        require(joinLink.isNotBlank()) { "joinLink is empty" }
         val payload = linkedMapOf<String, Any?>(
-            "joinLink" to joinLink,
+            "joinLink" to (CallLink.token(joinLink) ?: joinLink.trim()),
             "internalParams" to internalParams(deviceId),
             "isVideo" to isVideo,
         )
@@ -144,6 +145,36 @@ class CallsApi(
             callsUserId = endpoint.callsUserId,
             peerExternalId = endpoint.external ?: 0L,
             isVideo = isVideo,
+        )
+    }
+
+    /**
+     * Deletes call log entries on the server (`VIDEO_CHAT_DELETE_HISTORY` 164, Komet
+     * `CallsModule.deleteHistory`): `{historyIds}` are [CallLogEntry.messageId]s. An empty list
+     * sends nothing.
+     *
+     * @throws com.max.core.transport.ServerErrorException for an ERROR reply.
+     */
+    suspend fun deleteHistory(historyIds: List<Long>) {
+        if (historyIds.isEmpty()) return
+        sink.request(Opcode.VIDEO_CHAT_DELETE_HISTORY, linkedMapOf("historyIds" to historyIds))
+    }
+
+    /**
+     * What a call link leads to before joining (`LINK_INFO` 89 with `{link: "joincall/<token>"}`,
+     * Komet `resolveCallLink`). `null` for a string that is not a call link or a reply without
+     * `videoConference`.
+     */
+    suspend fun linkInfo(link: String): CallLinkInfo? {
+        val token = CallLink.token(link) ?: return null
+        val map = rawMap(sink.request(Opcode.LINK_INFO, linkedMapOf("link" to CallLink.path(token))))
+        val conference = map["videoConference"] as? Map<*, *> ?: return null
+        return CallLinkInfo(
+            token = token,
+            conferenceId = conference["conferenceId"]?.toString(),
+            callName = (conference["callName"] as? String)?.trim()?.takeIf { it.isNotEmpty() },
+            participantsCount = (conference["participantsCount"] as? Number)?.toInt() ?: 0,
+            isVideo = conference["callType"] == "VIDEO",
         )
     }
 
@@ -270,5 +301,37 @@ data class CreatedConference(
     val callName: String?,
     val chatId: Long?,
 )
+
+/** [CallsApi.linkInfo]: a conference behind a call link. */
+data class CallLinkInfo(
+    val token: String,
+    val conferenceId: String?,
+    val callName: String?,
+    val participantsCount: Int,
+    val isVideo: Boolean,
+)
+
+/**
+ * Call links as Max shares them: `https://max.ru/joincall/<token>` (Komet `CallLink`). The
+ * server takes the bare token to join and `joincall/<token>` to describe the link.
+ */
+object CallLink {
+    const val BASE: String = "https://max.ru/joincall/"
+
+    private val web = Regex("^https?://(?:[^/\\s]+\\.)?max\\.ru/joincall/([A-Za-z0-9_-]+)", RegexOption.IGNORE_CASE)
+    private val bare = Regex("^(?:joincall/)?([A-Za-z0-9_-]+)$", RegexOption.IGNORE_CASE)
+
+    /** The token of a link, of `joincall/<token>` or of a bare token; `null` for anything else. */
+    fun token(link: String): String? {
+        val value = link.trim()
+        return web.find(value)?.groupValues?.get(1) ?: bare.matchEntire(value)?.groupValues?.get(1)
+    }
+
+    /** The link to share for [token]. */
+    fun url(token: String): String = BASE + token
+
+    /** The `LINK_INFO` path for [token]. */
+    fun path(token: String): String = "joincall/$token"
+}
 
 private data class CallerEndpoint(val endpoint: String, val callsUserId: Long, val external: Long?)

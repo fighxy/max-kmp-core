@@ -20,7 +20,13 @@ import com.max.core.media.UploadProgress
 import com.max.core.media.fileUploadSource
 import com.max.core.media.messageContentJson
 import com.max.core.media.reactionsJson
+import com.max.core.calls.CallLink
 import com.max.core.calls.CallLogEntry
+import com.max.core.calls.CallSignaling
+import com.max.core.calls.ConversationParams
+import com.max.core.calls.Ws2ClientInfo
+import com.max.core.calls.ws2UrlFromEndpoint
+import com.max.core.session.UserAgentInfo
 import com.max.core.state.MaxState
 import com.max.core.auth.CodeRequestType
 import com.max.core.auth.VerifyResult
@@ -34,7 +40,9 @@ import com.max.shared.ReadPacer
 import com.max.shared.SingleFlight
 import com.max.shared.Watcher
 import com.max.shared.watch
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.withTimeoutOrNull
 import com.max.shared.ClientState
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -1142,26 +1150,70 @@ class MaxIosClient internal constructor(
     }
 
     /**
-     * Asks the server to start a call. Media is not opened here.
-     * `null` when the reply has no endpoint.
+     * Starts a 1:1 call ([com.max.core.calls.CallsApi.initiateCall], `VIDEO_CHAT_START_ACTIVE` 78).
+     * The app opens the call signaling at [IosCallStart.ws2Url]: the reply endpoint with the
+     * client params Komet adds (`Ws2Config.fromEndpoint`, [Ws2ClientInfo.forCalls]). ws2, WebRTC
+     * and the ringing stay in the app.
      */
-    fun signalCall(calleeId: String, isVideo: Boolean, onResult: (IosCallSignal?, String?, String?) -> Unit) {
+    fun startCall(calleeId: String, isVideo: Boolean, onResult: (IosCallStart?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
-            val conversationId = randomUuid()
-            val packet = c.session.request(
-                Opcode.VIDEO_CHAT_START_ACTIVE,
-                linkedMapOf(
-                    "conversationId" to conversationId,
-                    "calleeIds" to listOf(parseId(calleeId)),
-                    "internalParams" to callInternalParams(c.device.deviceId),
-                    "isVideo" to isVideo,
-                ),
-            )
-            val map = packet.payload as? Map<*, *> ?: return@perform null
-            val endpoint = endpointOf(map["internalCallerParams"] as? String) ?: return@perform null
-            val conversation = (map["conversationId"] as? String)?.takeIf { it.isNotEmpty() } ?: conversationId
-            IosCallSignal(conversation, endpoint)
+            val signal = c.api.calls.initiateCall(parseId(calleeId), isVideo, c.device.deviceId)
+            callStart(signal, c.device.userAgent, joinLink = "")
         }
+    }
+
+    /**
+     * Joins a group call by its link (`VIDEO_CHAT_JOIN_BY_LINK` 166). [link] may be
+     * `https://max.ru/joincall/<token>`, `joincall/<token>` or the token; anything else fails
+     * with `UNKNOWN` before a request.
+     */
+    fun joinCall(link: String, isVideo: Boolean, onResult: (IosCallStart?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val token = CallLink.token(link) ?: throw IllegalArgumentException("not a call link")
+            val signal = c.api.calls.joinByLink(token, isVideo, c.device.deviceId)
+            callStart(signal, c.device.userAgent, joinLink = CallLink.url(token))
+        }
+    }
+
+    /**
+     * A new group call with a link to share (`VIDEO_CHAT_START` 76, then
+     * `VIDEO_CHAT_CREATE_JOIN_LINK` 84 when the reply has no link). The creator joins it with
+     * [joinCall] like everybody else.
+     */
+    fun createCallLink(onResult: (IosCallLink?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val created = c.api.calls.createConference()
+            val token = CallLink.token(created.joinLink) ?: throw IllegalStateException("no call link")
+            IosCallLink(created.conversationId, CallLink.url(token), token, created.callName.orEmpty())
+        }
+    }
+
+    /** What a call link leads to (`LINK_INFO` 89); `null` when the link names no call. */
+    fun callLinkInfo(link: String, onResult: (IosCallLinkInfo?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            c.api.calls.linkInfo(link)?.let { IosCallLinkInfo(CallLink.url(it.token), it.callName.orEmpty(), it.participantsCount, it.isVideo) }
+        }
+    }
+
+    /** Deletes calls of the log on the server (`VIDEO_CHAT_DELETE_HISTORY` 164); [ids] are [IosCall.id]s. */
+    fun deleteCallHistory(ids: List<String>, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c -> c.api.calls.deleteHistory(ids.map(::parseId)) }
+    }
+
+    /**
+     * Incoming calls (`NOTIF_CALL_START` 137) with a readable `vcp`, in arrival order. An unknown
+     * caller waits up to [SENDER_WAIT_MS] for `CONTACT_INFO`, so the call shows a name. A push
+     * whose `vcp` is missing or corrupt is dropped: such a call cannot be answered.
+     */
+    fun watchIncomingCalls(onEach: (IosIncomingCall) -> Unit): IosWatch = watch { c ->
+        c.events.all
+            .filterIsInstance<MaxEvent.CallStart>()
+            .mapNotNull { event ->
+                val params = event.params ?: return@mapNotNull null
+                withTimeoutOrNull(SENDER_WAIT_MS) { resolveUsers(c, listOf(event.callerId)) }
+                incomingCallSnapshot(event, params, c.store.state.value, c.device.userAgent)
+            }
+            .watch(scope) { call -> guarded { onEach(call) } }
     }
 
     /** Turns the cloud password on. A blank hint is omitted. */
@@ -1658,50 +1710,6 @@ private fun longOf(value: Any?): Long? = when (value) {
     else -> null
 }
 
-/** `hexCapability` in the call body. Media is not opened from this JSON. */
-private fun callInternalParams(deviceId: String): String = buildString {
-    append("{\"platform\":\"ANDROID\",\"sdkVersion\":\"0.2.1.3\",\"clientAppKey\":\"CGPGAGLGDIHBABABA\",\"deviceId\":")
-    append('"')
-    append(deviceId.replace("\\", "\\\\").replace("\"", "\\\""))
-    append("\",\"protocolVersion\":5,\"onlyAdminCanRecord\":false,\"isWaitForAdminEnabled\":false,\"hexCapability\":\"3c02f\"}")
-}
-
-/** First `"endpoint"` string inside the call reply JSON. */
-private fun endpointOf(json: String?): String? {
-    if (json.isNullOrBlank()) return null
-    val needle = "\"endpoint\""
-    val at = json.indexOf(needle)
-    if (at < 0) return null
-    var i = json.indexOf(':', at + needle.length)
-    if (i < 0) return null
-    i++
-    while (i < json.length && json[i].isWhitespace()) i++
-    if (i >= json.length || json[i] != '"') return null
-    i++
-    val out = StringBuilder()
-    while (i < json.length) {
-        val c = json[i]
-        if (c == '\\' && i + 1 < json.length) {
-            out.append(json[i + 1])
-            i += 2
-            continue
-        }
-        if (c == '"') return out.toString().takeIf { it.isNotEmpty() }
-        out.append(c)
-        i++
-    }
-    return null
-}
-
-/** Version-4 UUID. `java.util.UUID` is not on the native target. */
-private fun randomUuid(): String {
-    val bytes = kotlin.random.Random.Default.nextBytes(16)
-    bytes[6] = ((bytes[6].toInt() and 0x0f) or 0x40).toByte()
-    bytes[8] = ((bytes[8].toInt() and 0x3f) or 0x80).toByte()
-    val hex = bytes.joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
-    return "${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}"
-}
-
 /** Decimal id from Swift; a malformed one becomes an [IllegalArgumentException] (error kind `UNKNOWN`). */
 private fun parseId(value: String): Long =
     value.toLongOrNull() ?: throw IllegalArgumentException("not a numeric id: \"$value\"")
@@ -1997,8 +2005,48 @@ class IosCommonChat(val id: String, val type: String, val title: String, val ico
 /** One complaint reason ([MaxIosClient.complaintReasons]). */
 class IosComplaintReason(val id: Int, val title: String)
 
-/** Server accepted a call signal. [endpoint] is the first `"endpoint"` in `internalCallerParams`. */
-class IosCallSignal(val conversationId: String, val endpoint: String)
+/**
+ * Where to open a call the server accepted ([MaxIosClient.startCall], [MaxIosClient.joinCall]).
+ * [ws2Url] is the signaling socket with every query param; [callsUserId] is the own id in the
+ * call (participants are numbered by it); [joinLink] is the shareable link of a group call, empty
+ * for a 1:1 call. ICE servers come later, in the ws2 `connection` notification.
+ */
+class IosCallStart(
+    val conversationId: String,
+    val ws2Url: String,
+    val callsUserId: Long,
+    val peerCallsUserId: Long,
+    val joinLink: String,
+    val isVideo: Boolean,
+)
+
+/** A new group call ([MaxIosClient.createCallLink]); [name] is empty when the server gave none. */
+class IosCallLink(val conversationId: String, val url: String, val token: String, val name: String)
+
+/** [MaxIosClient.callLinkInfo]: the call behind a link before joining. */
+class IosCallLinkInfo(val url: String, val name: String, val participants: Int, val isVideo: Boolean)
+
+/**
+ * An incoming call ([MaxIosClient.watchIncomingCalls]). [ws2Url] answers or rejects it (Komet
+ * `Ws2Config.fromVcp`); the ICE servers come from the push (`stne`, `trne`, `trnu`, `trnp`) and
+ * may be replaced by the ws2 `connection` notification. [expiresAtMs] is 0 when unknown.
+ * [callerName] and [callerAvatarUrl] are empty for a caller the store does not know.
+ */
+class IosIncomingCall(
+    val conversationId: String,
+    val callerId: String,
+    val callerName: String,
+    val callerAvatarUrl: String,
+    val chatId: String,
+    val isVideo: Boolean,
+    val ws2Url: String,
+    val callsUserId: Long,
+    val stunUrls: List<String>,
+    val turnUrls: List<String>,
+    val turnUsername: String,
+    val turnPassword: String,
+    val expiresAtMs: Long,
+)
 
 /** [MaxIosClient.loadStickerCatalog]: sets in panel order and recent sticker ids. */
 class IosStickerCatalog(val sets: List<IosStickerSet>, val recentStickerIds: List<String>)
@@ -2085,7 +2133,7 @@ class IosReactionUser(val userId: String, val name: String, val avatarUrl: Strin
  * [reactionsJson] as in [IosMessage]: set for `message` and `reactions`, empty for `edited` (an
  * edit keeps the reactions). For `reactions` it has no `yourReaction` key when the own reaction
  * is unknown (`NOTIF_MSG_REACTIONS_CHANGED` 155 carries only counters).
- * Call, presence and unknown pushes are not forwarded.
+ * Presence and unknown pushes are not forwarded; incoming calls come from `watchIncomingCalls`.
  */
 class IosEvent(
     val kind: String,
@@ -2358,6 +2406,39 @@ private fun forgetHistory(client: com.max.shared.MaxClient, chatId: Long) {
         )
     }
     client.store.closeHistoryGap(chatId)
+}
+
+internal fun callStart(signal: CallSignaling, userAgent: UserAgentInfo, joinLink: String): IosCallStart = IosCallStart(
+    conversationId = signal.conversationId,
+    ws2Url = ws2UrlFromEndpoint(signal.endpoint, Ws2ClientInfo.forCalls(userAgent)),
+    callsUserId = signal.callsUserId,
+    peerCallsUserId = signal.peerExternalId,
+    joinLink = joinLink,
+    isVideo = signal.isVideo,
+)
+
+internal fun incomingCallSnapshot(
+    event: MaxEvent.CallStart,
+    params: ConversationParams,
+    state: MaxState,
+    userAgent: UserAgentInfo,
+): IosIncomingCall {
+    val caller = state.users[event.callerId]
+    return IosIncomingCall(
+        conversationId = event.conversationId,
+        callerId = event.callerId.toString(),
+        callerName = caller?.displayName.orEmpty(),
+        callerAvatarUrl = caller?.baseUrl.orEmpty(),
+        chatId = event.chatId?.toString().orEmpty(),
+        isVideo = event.type == "VIDEO" || params.isVideo,
+        ws2Url = params.ws2Url(event.conversationId, Ws2ClientInfo.forCalls(userAgent)),
+        callsUserId = params.userId(),
+        stunUrls = listOfNotNull(params.stun?.takeIf { it.isNotEmpty() }),
+        turnUrls = params.turn,
+        turnUsername = params.turnUser.orEmpty(),
+        turnPassword = params.turnPassword.orEmpty(),
+        expiresAtMs = (params.expiresAt ?: 0L) * 1000,
+    )
 }
 
 private fun callSnapshot(entry: CallLogEntry, me: Long?, state: MaxState): IosCall {

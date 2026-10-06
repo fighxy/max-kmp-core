@@ -46,6 +46,49 @@ data class Ws2ClientInfo(
             appVersion = profile.appVersion,
             osVersion = profile.osVersion,
         )
+
+        /**
+         * What Komet (`Ws2Config`) sends to ws2 for [userAgent]: the call SDK identity
+         * (`capabilities` [CallsApi.HEX_CAPABILITY], `appVersion` `sdk-0.2.1.3`), the device as
+         * `manufacturer/model` and the Android API level instead of the release name. The server
+         * checks these against the `internalParams` of the call request.
+         */
+        fun forCalls(userAgent: UserAgentInfo = UserAgentInfo()): Ws2ClientInfo = Ws2ClientInfo(
+            capabilities = CallsApi.HEX_CAPABILITY,
+            device = callsDevice(userAgent.deviceName),
+            platform = "ANDROID",
+            clientType = "ONE_ME",
+            appVersion = CALLS_SDK_VERSION,
+            osVersion = androidApiLevel(userAgent.osVersion).toString(),
+        )
+
+        /** `appVersion` of the call SDK that the `internalParams` name (`sdkVersion` 0.2.1.3). */
+        const val CALLS_SDK_VERSION: String = "sdk-0.2.1.3"
+
+        /** `Google/Pixel 8` for a Pixel; otherwise the first word is the maker, the rest the model. */
+        internal fun callsDevice(deviceName: String): String {
+            val parts = deviceName.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (parts.isEmpty()) return "Google/Pixel 8"
+            if (parts.first().equals("Pixel", ignoreCase = true)) return "Google/${parts.joinToString(" ")}"
+            val model = if (parts.size > 1) parts.drop(1).joinToString(" ") else parts.first()
+            return "${parts.first()}/$model"
+        }
+
+        /** API level of `Android <release>` (34 when unknown), Komet's table. */
+        internal fun androidApiLevel(osVersion: String): Int {
+            val release = Regex("^Android\\s+(\\d+)").find(osVersion.trim())?.groupValues?.get(1)?.toIntOrNull()
+            return when {
+                release == null -> 34
+                release <= 9 -> 28
+                release == 10 -> 29
+                release == 11 -> 30
+                release == 12 -> 31
+                release == 13 -> 33
+                release == 14 -> 34
+                release == 15 -> 35
+                else -> 36
+            }
+        }
     }
 }
 
@@ -151,7 +194,9 @@ data class ConversationParams(
 
 /**
  * Append client params to an outgoing-call `endpoint` (already carries token and
- * conversation/user ids), overriding on key clash (kolibri `ws2_url_from_endpoint`).
+ * conversation/user ids), overriding on key clash (kolibri `ws2_url_from_endpoint`, plus the
+ * `osVersion` Komet's `Ws2Config.fromEndpoint` adds). Without `tgt=start` the server accepts the
+ * socket but never starts the conversation.
  */
 fun ws2UrlFromEndpoint(endpoint: String, client: Ws2ClientInfo = Ws2ClientInfo.DEFAULT): String =
     mergeQuery(
@@ -163,6 +208,7 @@ fun ws2UrlFromEndpoint(endpoint: String, client: Ws2ClientInfo = Ws2ClientInfo.D
             "clientType" to client.clientType,
             "appVersion" to client.appVersion,
             "device" to client.device,
+            "osVersion" to client.osVersion,
             "tgt" to "start",
         ),
     )

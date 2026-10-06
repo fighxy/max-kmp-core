@@ -94,6 +94,7 @@ class VcpTest {
         assertTrue(url.contains("device=Pixel%208"))
         assertTrue(url.contains("appVersion=26.25.0"))
         assertTrue(url.contains("tgt=start"))
+        assertTrue(url.contains("osVersion=Android%2014"))
         assertTrue(url.contains("version=5"))
         assertFalse(url.contains("platform=WEB"))
     }
@@ -160,5 +161,25 @@ class VcpTest {
         assertEquals("not-a-vcp", e.vcp)
         assertIs<MaxEvent.Unknown>(EventParser.parse(137, 0, mapOf("callerId" to 1)))
         assertIs<MaxEvent.Unknown>(EventParser.parse(137, 1, mapOf("callerId" to 1, "conversationId" to "c")))
+    }
+
+    @Test
+    fun callsClientInfoLooksLikeTheCallSdkOnTheProfileDevice() {
+        val info = Ws2ClientInfo.forCalls()
+        assertEquals("3c02f", info.capabilities)
+        assertEquals("Google/Pixel 8", info.device)
+        assertEquals("ANDROID", info.platform)
+        assertEquals("ONE_ME", info.clientType)
+        assertEquals("sdk-0.2.1.3", info.appVersion)
+        assertEquals("34", info.osVersion)
+        assertEquals("Samsung/Galaxy S24", Ws2ClientInfo.callsDevice("Samsung Galaxy S24"))
+        assertEquals("33", Ws2ClientInfo.androidApiLevel("Android 13").toString())
+        assertEquals(36, Ws2ClientInfo.androidApiLevel("Android 16"))
+        assertEquals(34, Ws2ClientInfo.androidApiLevel("iOS 18"))
+        val url = ws2UrlFromEndpoint("wss://sig/ws?userId=1&token=t", info)
+        assertEquals(
+            "wss://sig/ws?userId=1&token=t&platform=ANDROID&version=5&capabilities=3c02f&clientType=ONE_ME&appVersion=sdk-0.2.1.3&device=Google%2FPixel%208&osVersion=34&tgt=start",
+            url,
+        )
     }
 }

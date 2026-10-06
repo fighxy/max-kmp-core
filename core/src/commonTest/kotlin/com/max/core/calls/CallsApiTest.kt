@@ -182,4 +182,52 @@ class CallsApiTest {
         assertFailsWith<MalformedReplyException> { CallsApi(FakeSink(emptyMap<String, Any?>())).joinByLink("token") }
         assertFailsWith<IllegalArgumentException> { CallsApi(FakeSink()).joinByLink("") }
     }
+
+    @Test
+    fun joinByLinkSendsTheTokenOfAShareLink() = runTest {
+        val endpoint = """{"endpoint":"wss://join","id":{"internal":3}}"""
+        val sink = FakeSink(mapOf("internalCallerParams" to endpoint))
+        CallsApi(sink).joinByLink(" https://max.ru/joincall/AbC_1-x ", isVideo = true)
+        assertEquals("AbC_1-x", (sink.sent.single().second as Map<*, *>)["joinLink"])
+        assertEquals(true, (sink.sent.single().second as Map<*, *>)["isVideo"])
+    }
+
+    @Test
+    fun deleteHistorySendsMessageIdsAndSkipsAnEmptyList() = runTest {
+        val sink = FakeSink()
+        val api = CallsApi(sink)
+        api.deleteHistory(emptyList())
+        assertEquals(0, sink.sent.size)
+        api.deleteHistory(listOf(11L, 12L))
+        assertEquals(Opcode.VIDEO_CHAT_DELETE_HISTORY, sink.sent.single().first)
+        assertEquals(164, Opcode.VIDEO_CHAT_DELETE_HISTORY.value)
+        assertEquals(mapOf("historyIds" to listOf(11L, 12L)), sink.sent.single().second)
+    }
+
+    @Test
+    fun linkInfoAsksWithTheJoincallPath() = runTest {
+        val sink = FakeSink(
+            mapOf("videoConference" to mapOf("conferenceId" to 77L, "callName" to " Планёрка ", "participantsCount" to 3, "callType" to "VIDEO")),
+        )
+        val info = CallsApi(sink).linkInfo("https://web.max.ru/joincall/tok")
+        assertEquals(Opcode.LINK_INFO, sink.sent.single().first)
+        assertEquals(mapOf("link" to "joincall/tok"), sink.sent.single().second)
+        assertEquals(CallLinkInfo("tok", "77", "Планёрка", 3, true), info)
+        assertNull(CallsApi(FakeSink(emptyMap<String, Any?>())).linkInfo("tok"))
+        val none = FakeSink()
+        assertNull(CallsApi(none).linkInfo("https://example.com/x y"))
+        assertEquals(0, none.sent.size)
+    }
+
+    @Test
+    fun callLinksNormalizeToTheToken() {
+        assertEquals("abc", CallLink.token("https://max.ru/joincall/abc"))
+        assertEquals("abc", CallLink.token("HTTP://web.MAX.ru/joincall/abc?x=1"))
+        assertEquals("abc", CallLink.token("joincall/abc"))
+        assertEquals("a_b-C9", CallLink.token(" a_b-C9 "))
+        assertNull(CallLink.token("https://max.ru/join/abc"))
+        assertNull(CallLink.token(""))
+        assertEquals("https://max.ru/joincall/abc", CallLink.url("abc"))
+        assertEquals("joincall/abc", CallLink.path("abc"))
+    }
 }
