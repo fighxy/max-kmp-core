@@ -76,9 +76,9 @@ import platform.Foundation.NSLock
  */
 class MaxIosClient internal constructor(
     private val scope: CoroutineScope,
-    private val factory: (CoroutineScope) -> MaxClient,
     /** How long a call waits for an authorized session that is reconnecting ([awaitSession]). */
     private val sessionWaitMs: Long = SESSION_WAIT_MS,
+    private val factory: (CoroutineScope) -> MaxClient,
 ) {
     /**
      * The app keeps its own history, so the core does not page through every chat's history gap
@@ -87,7 +87,7 @@ class MaxIosClient internal constructor(
      */
     constructor(namespace: String) : this(
         newScope(),
-        { scope -> MaxClient(MaxClientConfig(namespace = namespace, fillGapsOnReconnect = false), scope = scope) },
+        factory = { scope -> MaxClient(MaxClientConfig(namespace = namespace, fillGapsOnReconnect = false), scope = scope) },
     )
 
     private val clientLock = NSLock()

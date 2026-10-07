@@ -109,9 +109,9 @@ class MaxIosClientTest {
         val kv = InMemoryKeyValueStore()
         CredentialStore(kv, "max.default").save(StoredCredentials("device", "instance", token = "tok", userId = 5))
         val retrying = TransportConfig(host = "api.test", pingInterval = Duration.INFINITE, autoReconnect = true)
-        val c = MaxIosClient(scope(), { s ->
+        val c = MaxIosClient(scope(), sessionWaitMs = 600) { s ->
             MaxClient(MaxClientConfig(host = "api.test", transport = retrying), kv, offline, noHttp, s)
-        }, sessionWaitMs = 600)
+        }
         callback<String?> { d -> c.start { p, _, _ -> d.complete(p) } }
         assertTrue(c.phaseName() in setOf("reconnecting", "connecting"), c.phaseName())
         val started = TimeSource.Monotonic.markNow()
