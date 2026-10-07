@@ -50,8 +50,9 @@ import kotlin.time.Duration
  *   nobody waits for are dropped; everything else goes to [pushes];
  * - requests time out after [TransportConfig.requestTimeout], counted from before the write (wait
  *   for the write lock, the write, the reply); a write still running at the deadline closes the
- *   connection so a blocked socket cannot hold the caller or later writers. The connect (TCP +
- *   proxy + TLS) times out after [TransportConfig.connectTimeout];
+ *   connection so a blocked socket cannot hold the caller or later writers, and so does a timeout
+ *   during which not a byte came from the server (a dead socket, as after iOS suspended the app).
+ *   The connect (TCP + proxy + TLS) times out after [TransportConfig.connectTimeout];
  * - PING (opcode 1, `{"interactive": true}`) every [TransportConfig.pingInterval], first one after
  *   one interval, fire-and-forget (the reply is dropped);
  * - on a drop every pending request fails with [ConnectionClosedException]; with
