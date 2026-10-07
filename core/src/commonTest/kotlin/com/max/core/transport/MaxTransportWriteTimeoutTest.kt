@@ -78,7 +78,25 @@ class MaxTransportWriteTimeoutTest {
     }
 
     @Test
-    fun slowReplyAloneDoesNotCloseTheConnection() = runTest {
+    fun slowReplyFromALiveServerDoesNotCloseTheConnection() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val t = MaxTransport(config, factory, scope = backgroundScope)
+        t.connect()
+        val r = async { runCatching { t.request(Opcode.CHAT_INFO, null) } }
+        runCurrent()
+        // other traffic arrives: the socket is alive, only this reply is late
+        advanceTimeBy(2.seconds.inWholeMilliseconds)
+        factory.lastConnection!!.feed(push(Opcode.NOTIF_TYPING.value, mapOf("chatId" to 1)))
+        advanceTimeBy(3.seconds.inWholeMilliseconds + 1)
+        runCurrent()
+        assertIs<RequestTimeoutException>(r.await().exceptionOrNull())
+        assertEquals(0, t.pendingCount())
+        assertEquals(ConnectionState.Connected, t.state.value)
+        t.close()
+    }
+
+    @Test
+    fun silentServerClosesTheConnectionAfterATimeout() = runTest {
         val factory = ScriptedConnectionFactory()
         val t = MaxTransport(config, factory, scope = backgroundScope)
         t.connect()
@@ -87,8 +105,8 @@ class MaxTransportWriteTimeoutTest {
         advanceTimeBy(5.seconds.inWholeMilliseconds + 1)
         runCurrent()
         assertIs<RequestTimeoutException>(r.await().exceptionOrNull())
-        assertEquals(0, t.pendingCount())
-        assertEquals(ConnectionState.Connected, t.state.value)
-        t.close()
+        // not a byte for the whole timeout: the dead socket is closed instead of kept
+        assertEquals(ConnectionState.Disconnected, t.state.value)
+        assertIs<ConnectionClosedException>(runCatching { t.request(Opcode.PING, null) }.exceptionOrNull())
     }
 }

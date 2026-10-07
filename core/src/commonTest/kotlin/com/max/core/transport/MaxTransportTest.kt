@@ -136,15 +136,37 @@ class MaxTransportTest {
         t.connect()
         val conn = factory.lastConnection!!
         val start = currentTime
-        val e = assertFailsWith<RequestTimeoutException> { t.request(Opcode.SYNC, null) }
+        val pending = async { runCatching { t.request(Opcode.SYNC, null) } }
+        conn.takeWritten()
+        // the server is alive (a push arrives), it is just slow with this reply
+        advanceTimeBy(10_000)
+        conn.feed(push(Opcode.NOTIF_TYPING.value, mapOf("chatId" to 1)))
+        val e = assertIs<RequestTimeoutException>(pending.await().exceptionOrNull())
         assertEquals(30_000, currentTime - start)
         assertEquals(1, e.seq)
         assertEquals(Opcode.SYNC.value, e.opcode)
         // a late reply is dropped: it is neither a push nor a crash
-        conn.takeWritten()
         conn.feed(ok(1, Opcode.SYNC.value))
         runCurrent()
         assertEquals(ConnectionState.Connected, t.state.value)
+    }
+
+    @Test
+    fun silentConnectionIsDroppedAfterATimeoutAndReconnects() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val t = transport(factory, quiet.copy(autoReconnect = true))
+        t.connect()
+        val first = factory.lastConnection!!
+        // not a byte from the server for the whole timeout: the socket is dead
+        assertFailsWith<RequestTimeoutException> { t.request(Opcode.SYNC, null) }
+        runCurrent()
+        assertEquals(ConnectionState.Disconnected, t.state.value)
+        advanceTimeBy(2_001)
+        runCurrent()
+        assertEquals(2, factory.openCount)
+        assertTrue(factory.lastConnection !== first)
+        assertEquals(ConnectionState.Connected, t.state.value)
+        t.close()
     }
 
     @Test

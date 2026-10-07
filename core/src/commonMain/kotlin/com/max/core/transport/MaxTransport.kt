@@ -130,6 +130,10 @@ class MaxTransport(
     private val seq = SeqCounter()
     private val pending = PendingRequests()
     private var connection: RawConnection? = null
+
+    /** Chunks read from the server so far (any connection): a request that heard none timed out on a dead socket. */
+    @kotlin.concurrent.Volatile
+    private var inboundChunks = 0L
     private var readerJob: Job? = null
     private var pingJob: Job? = null
     private var supervisorJob: Job? = null
@@ -183,6 +187,7 @@ class MaxTransport(
             val s = seq.next()
             Triple(conn, s, pending.register(s))
         }
+        val heard = inboundChunks
         try {
             // one deadline for the write lock, the write itself and the reply
             return withTimeout(config.requestTimeout) {
@@ -192,6 +197,11 @@ class MaxTransport(
                 }
             }
         } catch (e: TimeoutCancellationException) {
+            // Not a byte from the server for the whole timeout (no reply, no push, no ping reply):
+            // the socket is dead without knowing it, as after iOS suspended the app. Closing it lets
+            // the reader end and the supervisor reconnect; otherwise every next request on it would
+            // wait out its own timeout too.
+            if (inboundChunks == heard) withContext(NonCancellable) { closeIfCurrent(conn) }
             throw RequestTimeoutException(
                 opcode, seqValue,
                 "no reply to ${Opcode.nameOf(opcode)} (seq $seqValue) within ${config.requestTimeout}",
@@ -311,6 +321,11 @@ class MaxTransport(
     }
 
     /** Closes the current connection, stops reader/ping, fails pending requests. */
+    /** Closes [conn] if it is still the live connection; the reader then sees the drop. */
+    private suspend fun closeIfCurrent(conn: RawConnection) {
+        if (stateLock.withLock { connection === conn }) runCatching { conn.close() }
+    }
+
     private suspend fun dropConnection(cause: Throwable) {
         val (conn, reader, ping) = stateLock.withLock {
             val snapshot = Triple(connection, readerJob, pingJob)
@@ -333,6 +348,7 @@ class MaxTransport(
                 val n = conn.read(buffer, 0, buffer.size)
                 if (n < 0) break
                 if (n == 0) continue
+                inboundChunks++
                 rawChunks.tryEmit(buffer.copyOf(n))
                 for (frame in reassembler.feed(buffer, 0, n)) dispatch(frame)
             }
