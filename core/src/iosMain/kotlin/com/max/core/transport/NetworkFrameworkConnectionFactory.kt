@@ -2,6 +2,7 @@
 
 package com.max.core.transport
 
+import com.max.core.transport.nw.max_nw_connection_receive
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.addressOf
@@ -31,7 +32,6 @@ import platform.Network.nw_content_context_create
 import platform.Network.nw_content_context_set_is_final
 import platform.Network.nw_connection_cancel
 import platform.Network.nw_connection_create
-import platform.Network.nw_connection_receive
 import platform.Network.nw_connection_send
 import platform.Network.nw_connection_set_queue
 import platform.Network.nw_connection_set_state_changed_handler
@@ -113,7 +113,7 @@ import kotlin.time.Duration
  *   `nw_privacy_context`), iOS 17+ only; below 17 [open] throws [ProxyException]. TLS still runs
  *   end-to-end to the target through the tunnel, and the target host name is passed to the proxy
  *   (so `socks5` behaves like `socks5h`, matching the common handshake).
- * - I/O: [RawConnection.read] is `nw_connection_receive` (min 1 byte, max
+ * - I/O: [RawConnection.read] is `nw_connection_receive` via `nwshim.def` (min 1 byte, max
  *   [nativeReceiveMax]), [RawConnection.write] is `nw_connection_send` with the default stream
  *   context, [RawConnection.close] is `nw_connection_cancel`.
  *
@@ -349,9 +349,10 @@ internal class NwRawConnection(
         val max = nativeReceiveMax(length)
         return suspendCancellableCoroutine { cont ->
             cont.invokeOnCancellation { cancelConnection() }
-            nw_connection_receive(connection, 1u, max.toUInt()) { content, _, isComplete, error ->
+            // Through the shim: the content context never crosses into Kotlin (see nwshim.def).
+            max_nw_connection_receive(connection, 1u, max.toUInt()) { content, isComplete, error ->
                 // after cancellation the caller no longer owns the buffer: do not touch it
-                if (!cont.isActive) return@nw_connection_receive
+                if (!cont.isActive) return@max_nw_connection_receive
                 val n = if (content != null) copyInto(content, buffer, offset, max) else 0
                 when {
                     n > 0 -> {

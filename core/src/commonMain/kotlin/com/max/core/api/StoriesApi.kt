@@ -32,10 +32,15 @@ class StoriesApi(private val sink: RequestSink, private val clock: () -> Long) {
         return (map["storiesPreviews"] as? List<*>).orEmpty().mapNotNull(StoryPreview::from)
     }
 
-    /** The full stories of [owners] and their current rings. An owner missing from the reply has none. */
+    /**
+     * The full stories of [owners] and their current rings. An owner missing from the reply has none.
+     * Owners without a positive id (a group or channel chat id is negative) are not sent: the server
+     * answers them with a validation error and drops the session.
+     */
     suspend fun byOwners(owners: List<StoryOwner>): OwnerStories {
-        if (owners.isEmpty()) return OwnerStories(emptyList(), emptyList())
-        val map = rawMap(sink.request(Opcode.STORIES_GET_BY_OWNER, linkedMapOf("owners" to owners.map { it.toPayload() })))
+        val valid = owners.filter { it.ownerId > 0 }
+        if (valid.isEmpty()) return OwnerStories(emptyList(), emptyList())
+        val map = rawMap(sink.request(Opcode.STORIES_GET_BY_OWNER, linkedMapOf("owners" to valid.map { it.toPayload() })))
         return OwnerStories.from(map)
     }
 

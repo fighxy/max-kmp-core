@@ -11,6 +11,14 @@ kotlin {
         iosArm64(),
         iosSimulatorArm64(),
     ).forEach { target ->
+        target.compilations.getByName("main") {
+            cinterops {
+                // Network.framework receive without bridging the content context (nwshim.def).
+                val nwshim by creating {
+                    defFile(project.file("src/nativeInterop/cinterop/nwshim.def"))
+                }
+            }
+        }
         target.binaries.framework {
             baseName = "MaxCore"
             isStatic = true

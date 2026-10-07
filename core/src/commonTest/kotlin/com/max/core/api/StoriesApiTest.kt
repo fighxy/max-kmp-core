@@ -56,6 +56,16 @@ class StoriesApiTest {
     }
 
     @Test
+    fun ownersWithoutPositiveIdAreNotSent() = runTest {
+        val sink = ScriptSink(mapOf("storiesPreviews" to listOf(preview(7, 1, 0))))
+        val api = StoriesApi(sink) { now }
+        val none = api.byOwners(listOf(StoryOwner(-68053921871269, StoryOwner.Type.CHANNEL), StoryOwner(0)))
+        assertTrue(none.previews.isEmpty() && sink.sent.isEmpty())
+        api.byOwners(listOf(StoryOwner(-69354109913842, StoryOwner.Type.CHAT), StoryOwner(7)))
+        assertEquals(mapOf("owners" to listOf(mapOf<String, Any?>("ownerId" to 7L, "type" to 0))), sink.sent.single().second)
+    }
+
+    @Test
     fun markPublishAndDeletePayloads() = runTest {
         val published = mapOf(
             "storiesPreview" to preview(5, 1, 0),

@@ -4,6 +4,7 @@ package com.max.core.transport
 
 import com.max.core.protocol.Opcode
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -22,6 +23,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -108,6 +110,24 @@ class NetworkFrameworkConnectionFactoryTest {
         } finally {
             raw.close()
         }
+    }
+
+    @Test
+    fun cancelledReadDoesNotBridgeContext(): Unit = runBlocking {
+        val queue = assertNotNull(dispatch_queue_create("com.max.core.test.cancelled-read", null))
+        val endpoint = assertNotNull(nw_endpoint_create_host("127.0.0.1", "9"))
+        val parameters = assertNotNull(NetworkFrameworkConnectionFactory.secureTcpParameters("localhost", TlsOptions()))
+        val connection = assertNotNull(nw_connection_create(endpoint, parameters))
+        nw_connection_set_queue(connection, queue)
+        val raw = NwRawConnection(connection, queue, "offline-read")
+        // A receive queued before start completes only when the timeout cancels the connection:
+        // its completion then runs with whatever context Network.framework hands back.
+        assertFailsWith<TimeoutCancellationException> {
+            withTimeout(1.seconds) { raw.read(ByteArray(16), 0, 16) }
+        }
+        assertFailsWith<ConnectionClosedException> { raw.read(ByteArray(16), 0, 16) }
+        // Let the cancelled receive's completion run before the test ends.
+        delay(300.milliseconds)
     }
 
     // ── integration (network, Max servers) ─────────────────────────
