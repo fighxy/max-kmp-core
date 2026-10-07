@@ -41,6 +41,7 @@ import com.max.shared.SingleFlight
 import com.max.shared.Watcher
 import com.max.shared.watch
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.withTimeoutOrNull
@@ -76,6 +77,8 @@ import platform.Foundation.NSLock
 class MaxIosClient internal constructor(
     private val scope: CoroutineScope,
     private val factory: (CoroutineScope) -> MaxClient,
+    /** How long a call waits for an authorized session that is reconnecting ([awaitSession]). */
+    private val sessionWaitMs: Long = SESSION_WAIT_MS,
 ) {
     /**
      * The app keeps its own history, so the core does not page through every chat's history gap
@@ -119,11 +122,11 @@ class MaxIosClient internal constructor(
     fun mediaUserAgent(): String = attempt(DeviceProfile.android.httpUserAgent) { client().config.userAgent.httpUserAgent }
 
     fun start(onResult: (String?, String?, String?) -> Unit) {
-        perform(onResult, { null }) { phaseOf(it.start()) }
+        perform(onResult, { null }, waitsForSession = false) { phaseOf(it.start()) }
     }
 
     fun requestCode(phone: String, resend: Boolean, onResult: (IosCodeRequest?, String?, String?) -> Unit) {
-        perform(onResult, { null }) { c ->
+        perform(onResult, { null }, waitsForSession = false) { c ->
             val type = if (resend) CodeRequestType.RESEND else CodeRequestType.START_AUTH
             val code = c.requestCode(phone, type)
             IosCodeRequest(code.token, code.codeLength ?: 0)
@@ -131,7 +134,7 @@ class MaxIosClient internal constructor(
     }
 
     fun verifyCode(token: String, code: String, onResult: (IosAuthStep?, String?, String?) -> Unit) {
-        perform(onResult, { null }) { c ->
+        perform(onResult, { null }, waitsForSession = false) { c ->
             when (val result = c.verifyCode(token, code)) {
                 is VerifyResult.LoggedIn -> loggedInStep(c)
                 is VerifyResult.PasswordRequired -> IosAuthStep("password", result.trackId, result.hint.orEmpty(), "", "")
@@ -141,21 +144,21 @@ class MaxIosClient internal constructor(
     }
 
     fun checkPassword(trackId: String, password: String, onResult: (IosAuthStep?, String?, String?) -> Unit) {
-        perform(onResult, { null }) { c ->
+        perform(onResult, { null }, waitsForSession = false) { c ->
             c.checkPassword(trackId, password)
             loggedInStep(c)
         }
     }
 
     fun register(registerToken: String, firstName: String, lastName: String, onResult: (IosAuthStep?, String?, String?) -> Unit) {
-        perform(onResult, { null }) { c ->
+        perform(onResult, { null }, waitsForSession = false) { c ->
             c.register(registerToken, firstName, lastName.takeIf { it.isNotBlank() })
             loggedInStep(c)
         }
     }
 
     fun logout(onResult: (String?, String?) -> Unit) {
-        runUnit(onResult) {
+        runUnit(onResult, waitsForSession = false) {
             it.logout()
             // The store is empty now: the next login pages the whole chat list again.
             clientLock.locked {
@@ -1600,10 +1603,17 @@ class MaxIosClient internal constructor(
      * `(fallback, kind, errorKey)` on any failure. ATOMIC start: the body runs (and reports
      * `CANCELLED`) even when the scope is already cancelled by [close].
      */
-    private fun <T> perform(onResult: (T, String?, String?) -> Unit, fallback: () -> T, body: suspend (MaxClient) -> T): Job =
+    private fun <T> perform(
+        onResult: (T, String?, String?) -> Unit,
+        fallback: () -> T,
+        waitsForSession: Boolean = true,
+        body: suspend (MaxClient) -> T,
+    ): Job =
         scope.launch(start = CoroutineStart.ATOMIC) {
             val outcome = try {
-                Result.success(body(client()))
+                val c = client()
+                if (waitsForSession) awaitSession(c)
+                Result.success(body(c))
             } catch (t: Throwable) {
                 Result.failure(t)
             }
@@ -1617,10 +1627,28 @@ class MaxIosClient internal constructor(
             )
         }
 
-    private fun runUnit(onResult: (String?, String?) -> Unit, body: suspend (MaxClient) -> Unit) {
-        perform<Unit>({ _, kind, key -> onResult(kind, key) }, { }) { body(it) }
+    private fun runUnit(onResult: (String?, String?) -> Unit, waitsForSession: Boolean = true, body: suspend (MaxClient) -> Unit) {
+        perform<Unit>({ _, kind, key -> onResult(kind, key) }, { }, waitsForSession) { body(it) }
+    }
+
+    /**
+     * A call made while an authorized session reconnects (the app woke up, the network changed)
+     * waits for it instead of failing at once with "not connected", or with `proto.state` when it
+     * slipped onto the new socket before `LOGIN`. The app asks for the call log, stories and read
+     * marks right when it comes to the foreground, which is exactly when iOS has dropped the
+     * socket. Bounded by [sessionWaitMs]: then the call runs and fails as before.
+     */
+    private suspend fun awaitSession(c: MaxClient) {
+        fun reconnecting(state: ClientState): Boolean =
+            (state is ClientState.Reconnecting || state == ClientState.Connecting) &&
+                (c.userId.value != null || c.hasStoredToken)
+        if (!reconnecting(c.state.value)) return
+        withTimeoutOrNull(sessionWaitMs) { c.state.first { !reconnecting(it) } }
     }
 }
+
+/** How long a call waits for a reconnecting session before it runs anyway. */
+private const val SESSION_WAIT_MS = 15_000L
 
 /** How long a push from an unknown sender waits for the sender's profile. */
 private const val SENDER_WAIT_MS = 3_000L

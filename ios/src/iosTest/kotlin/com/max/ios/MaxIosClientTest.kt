@@ -10,9 +10,11 @@ import com.max.core.transport.ConnectionFactory
 import com.max.core.session.UserAgentInfo
 import com.max.core.state.MaxState
 import com.max.core.transport.TransportConfig
+import com.max.shared.CredentialStore
 import com.max.shared.InMemoryKeyValueStore
 import com.max.shared.MaxClient
 import com.max.shared.MaxClientConfig
+import com.max.shared.StoredCredentials
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,7 +28,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /** The Swift facade reports every failure through its callback; nothing throws or aborts. */
 class MaxIosClientTest {
@@ -97,6 +101,24 @@ class MaxIosClientTest {
         assertEquals(null to "UNKNOWN", owner)
         val story = callback<Pair<IosPublishedStory?, String?>> { d -> c.publishStory("/nope.gif", "gif", 0, 1, { }) { p, k, _ -> d.complete(p to k) } }
         assertEquals(null to "UNKNOWN", story)
+        callback<Unit> { d -> c.close { d.complete(Unit) } }
+    }
+
+    @Test
+    fun callsWaitForAReconnectingSessionThenFailAsBefore() {
+        val kv = InMemoryKeyValueStore()
+        CredentialStore(kv, "max.default").save(StoredCredentials("device", "instance", token = "tok", userId = 5))
+        val retrying = TransportConfig(host = "api.test", pingInterval = Duration.INFINITE, autoReconnect = true)
+        val c = MaxIosClient(scope(), { s ->
+            MaxClient(MaxClientConfig(host = "api.test", transport = retrying), kv, offline, noHttp, s)
+        }, sessionWaitMs = 600)
+        callback<String?> { d -> c.start { p, _, _ -> d.complete(p) } }
+        assertTrue(c.phaseName() in setOf("reconnecting", "connecting"), c.phaseName())
+        val started = TimeSource.Monotonic.markNow()
+        val read = callback<String?> { d -> c.markRead("1", "2") { k, _ -> d.complete(k) } }
+        // The call waited for the session, then ran and failed the old way.
+        assertTrue(started.elapsedNow() >= 550.milliseconds, "waited ${started.elapsedNow()}")
+        assertEquals("NETWORK", read)
         callback<Unit> { d -> c.close { d.complete(Unit) } }
     }
 
