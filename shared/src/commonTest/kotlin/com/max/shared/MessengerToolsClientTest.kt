@@ -93,16 +93,44 @@ class MessengerToolsClientTest {
         assertTrue(failed.await().isFailure)
         assertEquals(listOf(1L, 2L, 3L), c.store.state.value.messagesOf(7).map { it.id })
 
-        val ok = async { c.deleteMessages(7, listOf(2, 3, 3), forMe = true) }
+        // the server refuses one id: only the others leave the store
+        val partly = async { c.deleteMessages(7, listOf(1, 2)) }
+        runCurrent()
+        conn.answer(Opcode.MSG_DELETE, mapOf("messageIds" to listOf(1L, 2L), "failedMessageIds" to listOf(1L)))
+        val partial = partly.await()
+        assertEquals(listOf(2L), partial.deleted)
+        assertEquals(listOf(1L), partial.failed)
+        assertEquals(listOf(1L, 3L), c.store.state.value.messagesOf(7).map { it.id })
+
+        val ok = async { c.deleteMessages(7, listOf(3, 3), forMe = true) }
         runCurrent()
         val sent = conn.answer(Opcode.MSG_DELETE, emptyMap<String, Any?>())
-        ok.await()
+        assertEquals(listOf(3L), ok.await().deleted)
         assertEquals(7L, sent["chatId"].long())
-        assertEquals(listOf(2L, 3L), (sent["messageIds"] as List<*>).map { it.long() })
+        assertEquals(listOf(3L), (sent["messageIds"] as List<*>).map { it.long() })
         assertEquals(true, sent["forMe"])
         assertFalse("itemType" in sent)
+        assertFalse("postId" in sent)
         assertEquals(listOf(1L), c.store.state.value.messagesOf(7).map { it.id })
         assertEquals(1L, c.store.state.value.chats.getValue(7).lastMessage?.id)
+    }
+
+    @Test
+    fun forwardingSendsTheCommentFirstAndKnownMessagesOldestFirst() = runTest {
+        val chats = listOf(mapOf("id" to 7, "type" to "CHAT", "status" to "ACTIVE"), mapOf("id" to 8, "type" to "CHAT", "status" to "ACTIVE"))
+        val (c, conn) = loggedIn(backgroundScope, chats, mapOf("7" to listOf(message(21, 100), message(22, 200))))
+        val batch = async { c.forwardMessages(toChatId = 8, fromChatId = 7, messageIds = listOf(99, 22, 21), comment = "смотри") }
+        runCurrent()
+        val comment = conn.answer(Opcode.MSG_SEND, mapOf("message" to message(200, 500, "смотри")))
+        assertEquals("смотри", (comment["message"] as Map<*, *>)["text"])
+        val ids = mutableListOf<Any?>()
+        for (id in 201L..203L) {
+            runCurrent()
+            ids += ((conn.answer(Opcode.MSG_SEND, mapOf("message" to message(id, 500 + id)))["message"] as Map<*, *>)["link"] as Map<*, *>)["messageId"]
+        }
+        assertTrue(batch.await().complete)
+        assertEquals<List<Any?>>(listOf("21", "22", "99"), ids)
+        assertEquals(listOf(200L, 201L, 202L, 203L), c.store.state.value.messagesOf(8).map { it.id }.sorted())
     }
 
     @Test
@@ -191,10 +219,22 @@ class MessengerToolsClientTest {
     }
 
     @Test
-    fun contactEditsAndPhoneBookNames() = runTest {
+    fun searchingMembersSendsTheQuery() = runTest {
+        val chat = mapOf("id" to 70, "type" to "CHAT", "status" to "ACTIVE", "owner" to 1L)
+        val (c, conn) = loggedIn(backgroundScope, listOf(chat))
+        val search = async { c.searchChatMembers(70, "Ow") }
+        runCurrent()
+        val sent = conn.answer(Opcode.CHAT_MEMBERS, mapOf("members" to listOf(mapOf("contact" to user(1, "Owner")))))
+        assertEquals<Map<*, *>>(mapOf("chatId" to 70L, "type" to "MEMBER", "query" to "Ow"), sent.mapValues { (_, v) -> if (v is Number) v.toLong() else v })
+        assertEquals(ChatMemberRole.OWNER, search.await().single().role)
+        assertEquals("Owner", c.displayName(1))
+    }
+
+    @Test
+    fun contactEditsAndAddressBookNames() = runTest {
         val (c, conn) = loggedIn(backgroundScope, contacts = listOf(user(5, "Ivan", 79990000005), user(6, "Petr", 79990000006)))
         assertEquals(setOf(5L, 6L), c.store.state.value.contactIds)
-        c.setAddressBook(listOf(PhoneContact("+7 999 000-00-05", "Брат")))
+        c.setAddressBook(listOf(PhoneContact("8 (999) 000-00-05", "Брат")))
         assertEquals("Брат", c.displayName(5))
 
         val rename = async { c.renameContact(5, "Ваня") }
@@ -203,26 +243,71 @@ class MessengerToolsClientTest {
         rename.await()
         assertEquals("UPDATE", sent["action"])
         assertEquals("Ваня", sent["firstName"])
-        assertEquals("Ваня", c.displayName(5)) // own contact name wins over the book
+        assertTrue("lastName" in sent && sent["lastName"] == null)
+        assertEquals("Брат", c.displayName(5)) // the address book stays first
+        c.setAddressBook(emptyList())
+        assertEquals("Ваня", c.displayName(5)) // then the own contact name
 
         val remove = async { c.removeContact(5) }
         runCurrent()
-        assertEquals("REMOVE", conn.answer(Opcode.CONTACT_UPDATE, emptyMap<String, Any?>())["action"])
-        remove.await()
+        assertEquals("REMOVE", conn.answer(Opcode.CONTACT_UPDATE, mapOf("contact" to user(5, "Ivan", 79990000005)))["action"])
+        assertEquals(5L, remove.await()?.id)
         assertEquals(setOf(6L), c.store.state.value.contactIds)
-        assertEquals("Брат", c.displayName(5)) // back to the book name
+        assertEquals("Ivan", c.displayName(5))
 
-        val import = async { c.importPhoneBook(listOf(PhoneContact("+79990000007", "Маша"), PhoneContact("+79990000008", "Никто"))) }
+        val add = async { c.addContactByPhone("+79990000007", "Маша") }
         runCurrent()
-        val body = conn.answer(Opcode.SYNC, mapOf("contacts" to listOf(user(7, "Maria", 79990000007))))
-        val result = import.await()
-        assertEquals(setOf("+79990000007", "+79990000008"), (body["contactList"] as Map<*, *>).keys)
-        assertEquals(7L, result.byPhone.getValue("+79990000007").id)
+        val body = conn.answer(Opcode.CONTACT_ADD_BY_PHONE, mapOf("contact" to user(7, "Maria", 79990000007, custom = "Маша"), "new" to true))
+        val added = add.await()
+        assertEquals<Map<*, *>>(mapOf("phone" to "+79990000007", "firstName" to "Маша"), body)
+        assertTrue(added.isNew)
+        assertTrue(7L in c.store.state.value.contactIds)
         assertEquals("Маша", c.displayName(7))
-        // the import also keeps the entries as address book
-        c.setLocalName(7, null)
-        assertEquals("Маша", c.displayName(7))
-        c.setAddressBook(emptyList())
-        assertEquals("Maria", c.displayName(7))
+        assertEquals("Участник", c.displayLabel(404))
+        // nothing went to the server for the address book
+        assertNull(conn.takeWritten(Duration.ZERO))
+    }
+
+    @Test
+    fun draftsComeWithLoginAndAreSavedByPeerOrChat() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val c = MaxClient(MaxClientConfig(host = "api.test", transport = quiet), InMemoryKeyValueStore(), factory, noHttp, backgroundScope)
+        val login = async { c.loginWithToken("login-1") }
+        runCurrent()
+        val conn = factory.lastConnection!!
+        conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to 1L))
+        runCurrent()
+        val dialogId = 9L xor 20L
+        val chats = listOf(
+            mapOf("id" to dialogId, "type" to "DIALOG", "status" to "ACTIVE", "participants" to mapOf("9" to 0, "20" to 0)),
+            mapOf("id" to 70, "type" to "CHAT", "status" to "ACTIVE"),
+        )
+        val drafts = mapOf("users" to mapOf("saved" to mapOf("20" to mapOf("saveTime" to 600L, "text" to "привет"))))
+        conn.answer(
+            Opcode.LOGIN,
+            mapOf("profile" to mapOf("contact" to mapOf("id" to 9)), "chats" to chats, "drafts" to drafts, "time" to 1700L),
+        )
+        login.await()
+        runCurrent()
+        assertEquals("привет", c.drafts.getValue(dialogId).text)
+
+        val save = async { c.saveDraft(70, "черновик", listOf(TextElement.strong(0, 4), TextElement.strong(5, 40))) }
+        runCurrent()
+        val saved = conn.answer(Opcode.DRAFT_SAVE, mapOf("time" to 900L))
+        assertEquals(900L, save.await().updateTime)
+        assertEquals(70L, saved["chatId"].long())
+        assertEquals(1, ((saved["draft"] as Map<*, *>)["elements"] as List<*>).size)
+        assertEquals("черновик", c.drafts.getValue(70).text)
+
+        val discard = async { c.discardDraft(dialogId) }
+        runCurrent()
+        val body = conn.answer(Opcode.DRAFT_DISCARD, emptyMap<String, Any?>())
+        assertTrue(discard.await())
+        assertEquals(20L, body["userId"].long())
+        assertEquals(600L, body["time"].long())
+        assertFalse("chatId" in body)
+        assertFalse(dialogId in c.drafts)
+        assertFalse(c.discardDraft(12345))
+        assertNull(conn.takeWritten(Duration.ZERO))
     }
 }

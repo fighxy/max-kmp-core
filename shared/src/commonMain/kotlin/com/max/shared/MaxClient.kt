@@ -6,7 +6,13 @@ import com.max.core.api.Chat
 import com.max.core.api.ChatFolders
 import com.max.core.api.ChatHistory
 import com.max.core.api.ChatMembersResult
+import com.max.core.api.ChatMemberEntry
 import com.max.core.api.ChatRoles
+import com.max.core.api.ContactByPhone
+import com.max.core.api.DeleteResult
+import com.max.core.api.Drafts
+import com.max.core.api.MaxDraft
+import com.max.core.api.MemberListType
 import com.max.core.api.ChatsApi
 import com.max.core.api.Folder
 import com.max.core.api.FolderUpdate
@@ -17,7 +23,6 @@ import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.MessageReader
 import com.max.core.api.MessageReaders
-import com.max.core.api.PhoneBookImport
 import com.max.core.api.PhoneContact
 import com.max.core.api.TextElement
 import com.max.core.api.Transcription
@@ -707,18 +712,34 @@ class MaxClient @Throws(Exception::class) constructor(
         val t = ticket()
         val page = api.chats.getChatMembers(chatId, marker, count)
         val result = ChatMembersResult.of(page, marker, ChatRoles.of(store.state.value.chats[chatId]))
-        commit(t) {
-            store.putUsers(result.members.mapNotNull { it.user })
-            for (m in result.members) {
-                val id = m.userId ?: continue
-                val p = m.member.presenceInfo ?: continue
-                // A live NOTIF_PRESENCE may be newer than the page.
-                val known = store.state.value.presence[id]?.seen
-                if (known != null && (p.seen == null || p.seen!! <= known)) continue
-                store.apply(MaxEvent.Presence(id, p.seen, p.status, Opcode.CHAT_MEMBERS.value, m.member.presence))
-            }
-        }
+        commit(t) { putMembers(result.members) }
         return result
+    }
+
+    /**
+     * Searches the members of group/channel [chatId] by [query] (`CHAT_MEMBERS` 59, `{chatId, type,
+     * query}`; [type] is a [MemberListType] constant). The found profiles and their presence go
+     * into [store]; the roles come from [ChatRoles] of the stored chat.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun searchChatMembers(chatId: Long, query: String, type: String = MemberListType.MEMBER): List<ChatMemberEntry> {
+        val t = ticket()
+        val roles = ChatRoles.of(store.state.value.chats[chatId])
+        val found = api.chats.searchChatMembers(chatId, query, type).map { ChatMemberEntry.of(it, roles) }
+        commit(t) { putMembers(found) }
+        return found
+    }
+
+    private fun putMembers(members: List<ChatMemberEntry>) {
+        store.putUsers(members.mapNotNull { it.user })
+        for (m in members) {
+            val id = m.userId ?: continue
+            val p = m.member.presenceInfo ?: continue
+            // A live NOTIF_PRESENCE may be newer than the page.
+            val known = store.state.value.presence[id]?.seen
+            if (known != null && (p.seen == null || p.seen!! <= known)) continue
+            store.apply(MaxEvent.Presence(id, p.seen, p.status, Opcode.CHAT_MEMBERS.value, m.member.presence))
+        }
     }
 
     /**
@@ -841,12 +862,12 @@ class MaxClient @Throws(Exception::class) constructor(
 
     /**
      * Renames contact [userId] for this account (`CONTACT_UPDATE` 34, `{contactId, action:
-     * "UPDATE", firstName, lastName}`, KometTeam/Komet `updateContact`). The renamed contact
-     * goes into [store]; its name is the `CUSTOM` entry, which wins over every other name
-     * ([MaxState.displayName]).
+     * "UPDATE", firstName, lastName}`; a blank [lastName] is sent as `null`, each name at most
+     * 64 characters). The renamed contact goes into [store]; its name is the `CUSTOM` entry
+     * ([MaxState.displayName]: only the address book is above it).
      */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun renameContact(userId: Long, firstName: String, lastName: String = ""): MaxUser {
+    suspend fun renameContact(userId: Long, firstName: String, lastName: String? = null): MaxUser {
         val t = ticket()
         val user = api.users.renameContact(userId, firstName, lastName)
         commit(t) { store.putContacts(listOf(user)) }
@@ -855,34 +876,35 @@ class MaxClient @Throws(Exception::class) constructor(
 
     /**
      * Removes contact [userId] (`CONTACT_UPDATE` 34, `{contactId, action: "REMOVE"}`). [store]
-     * drops it from the contact list and forgets its `CUSTOM` name; the user stays known.
+     * drops it from the contact list and forgets its `CUSTOM` name; the user stays known (with
+     * the contact of the reply when there is one). Undo is [addContactByPhone] or `ADD`.
      */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun removeContact(userId: Long) {
+    suspend fun removeContact(userId: Long): MaxUser? {
         val t = ticket()
-        api.users.removeContact(userId)
-        commit(t) { store.removeContact(userId) }
+        val reply = api.users.removeContact(userId)
+        commit(t) { store.removeContact(userId, reply) }
+        return reply
     }
 
     /**
-     * Imports phone-book entries (`SYNC` 21, `{contactList: {<phone>: {firstName}}}`) and maps each
-     * phone to the Max user it belongs to ([PhoneBookImport.byPhone]). [store] gets the users, the
-     * entries as address book, and each matched user's phone-book name as its local name, so
-     * [MaxState.displayName] shows the name from the phone unless the user is a renamed contact.
-     * Large books should be sent in parts (the server limit is unknown).
+     * Adds a contact by phone number (`CONTACT_ADD_BY_PHONE` 41, `{phone, firstName?, lastName?}`
+     * -> `{contact, new}`). The contact goes into [store]. [ContactByPhone.isNew] says whether it
+     * was not a contact before.
      */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun importPhoneBook(entries: List<PhoneContact>): PhoneBookImport {
+    suspend fun addContactByPhone(phone: String, firstName: String? = null, lastName: String? = null): ContactByPhone {
         val t = ticket()
-        val result = api.users.importPhoneBook(entries)
-        commit(t) { store.putPhoneBookImport(entries, result) }
-        return result
+        val added = api.users.addContactByPhone(phone, firstName, lastName)
+        commit(t) { store.putContacts(listOf(added.user)) }
+        return added
     }
 
     /**
-     * Replaces the device address book kept in [store] (no request): entries are matched to users
-     * by phone for [MaxState.displayName]. It survives a switch to another account and is dropped
-     * by [logout].
+     * Replaces the device address book kept in [store] (no request, nothing goes to the server):
+     * entries are matched to users by normalized phone ([com.max.core.api.PhoneNumbers]) for
+     * [MaxState.displayName]; for a number listed twice the first non-empty name wins. It
+     * survives a switch to another account and is dropped by [logout].
      */
     fun setAddressBook(entries: List<PhoneContact>) = store.setAddressBook(entries)
 
@@ -890,10 +912,52 @@ class MaxClient @Throws(Exception::class) constructor(
     fun setLocalName(userId: Long, name: String?) = store.setLocalName(userId, name)
 
     /**
-     * The name to show for [userId]: the own contact name (`CUSTOM`), else the address-book name,
-     * else the profile name; `null` when nothing is known.
+     * The name to show for [userId]: address book, else the own contact name (`CUSTOM`), else the
+     * own profile name (`ONEME`), else the first `names` entry, else the phone; `null` when
+     * nothing is known ([displayLabel] falls back to "Участник").
      */
     fun displayName(userId: Long): String? = store.state.value.displayName(userId)
+
+    /** [displayName] or "Участник". */
+    fun displayLabel(userId: Long): String = store.state.value.displayLabel(userId)
+
+    /** Server drafts kept in [store] by chat id (from `LOGIN` and [saveDraft]). */
+    val drafts: Map<Long, MaxDraft> get() = store.state.value.drafts
+
+    /**
+     * Saves the draft of [chatId] on the server (`DRAFT_SAVE` 176). Dialogs and Saved Messages are
+     * addressed by the peer's `userId`, other chats by `chatId` ([Drafts.address]). The server
+     * time of the reply becomes the draft's `updateTime`; the draft goes into [store].
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun saveDraft(chatId: Long, text: String, elements: List<TextElement> = emptyList(), replyTo: Long? = null): MaxDraft {
+        val state = store.state.value
+        val address = Drafts.address(chatId, state.chats[chatId], state.me)
+        val kept = elements.filter { it.fits(text.length) }
+        val t = ticket()
+        val time = api.drafts.saveDraft(address, text, kept, replyTo)
+        val draft = MaxDraft(chatId, text, kept, replyTo, time)
+        commit(t) { store.putDraft(draft) }
+        return draft
+    }
+
+    /**
+     * Discards the draft of [chatId] (`DRAFT_DISCARD` 177, `{chatId | userId, time}`). [time]
+     * defaults to the stored draft's `updateTime`; without either nothing is sent and `false` is
+     * returned. [store] drops the draft.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun discardDraft(chatId: Long, time: Long? = null): Boolean {
+        val state = store.state.value
+        val at = time ?: state.draftOf(chatId)?.updateTime ?: run {
+            store.removeDraft(chatId)
+            return false
+        }
+        val t = ticket()
+        api.drafts.discardDraft(Drafts.address(chatId, state.chats[chatId], state.me), at)
+        commit(t) { store.removeDraft(chatId) }
+        return true
+    }
 
     /** Active sessions (`SESSIONS_INFO` 96). */
     @Throws(CancellationException::class, Exception::class)
@@ -986,28 +1050,53 @@ class MaxClient @Throws(Exception::class) constructor(
     }
 
     /**
-     * Deletes the selected messages of [chatId] in one `MSG_DELETE` 66 (`{chatId, messageIds,
-     * forMe}`, plus `itemType` when set). [forMe] `true` removes them only for this account. After
-     * the server accepted, [store] drops them as for a delete push (own deletes are not pushed back).
+     * Deletes the selected messages of [chatId] in one `MSG_DELETE` 66 (`{chatId, postId?,
+     * messageIds, forMe}`, plus `itemType` when set). [forMe] `true` removes them only for this
+     * account. [store] drops the ids the server deleted ([DeleteResult.deleted]); the ids of
+     * `failedMessageIds` ([DeleteResult.failed]) stay. Other devices get push 142.
      */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun deleteMessages(chatId: Long, messageIds: List<Long>, forMe: Boolean = false, itemType: HistoryItemType? = null) {
+    suspend fun deleteMessages(
+        chatId: Long,
+        messageIds: List<Long>,
+        forMe: Boolean = false,
+        itemType: HistoryItemType? = null,
+        postId: Long? = null,
+    ): DeleteResult {
         val ids = messageIds.distinct()
         val t = ticket()
-        val raw = api.messages.deleteMessages(chatId, ids, forMe, itemType)
-        commit(t) { store.apply(MaxEvent.MessagesDeleted(chatId, ids, null, null, false, Opcode.MSG_DELETE.value, raw)) }
+        val result = api.messages.deleteMessages(chatId, ids, forMe, itemType, postId)
+        commit(t) {
+            if (result.deleted.isNotEmpty()) {
+                store.apply(MaxEvent.MessagesDeleted(chatId, result.deleted, null, null, false, Opcode.MSG_DELETE.value, result.raw))
+            }
+        }
+        return result
     }
 
     /**
      * Forwards the selected messages of [fromChatId] to [toChatId], one `MSG_SEND` with a
-     * `FORWARD` link per message in the given order (pass them oldest first; the protocol has no
-     * batch form). The first failure stops the rest ([ForwardBatch.failedIndex]); the messages
-     * sent so far go into [store] either way.
+     * `FORWARD` link per message (the protocol has no batch form). Messages known to [store] are
+     * sent oldest first (by `time`), the rest keep their place after them in the given order. An
+     * optional [comment] is sent first as a plain text message. The first failure stops the rest
+     * ([ForwardBatch.failedIndex]); the messages sent so far go into [store] either way.
      */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun forwardMessages(toChatId: Long, fromChatId: Long, messageIds: List<Long>, notify: Boolean = true): ForwardBatch {
+    suspend fun forwardMessages(
+        toChatId: Long,
+        fromChatId: Long,
+        messageIds: List<Long>,
+        notify: Boolean = true,
+        comment: String? = null,
+    ): ForwardBatch {
+        require(messageIds.isNotEmpty()) { "messageIds must not be empty" }
+        val times = store.state.value.messagesOf(fromChatId).associate { it.id to it.time }
+        val ordered = messageIds.distinct().withIndex()
+            .sortedWith(compareBy({ times[it.value] == null }, { times[it.value] ?: 0L }, { it.index }))
+            .map { it.value }
+        if (!comment.isNullOrBlank()) sendText(toChatId, comment)
         val t = ticket()
-        val batch = api.messages.forwardMessages(toChatId, fromChatId, messageIds, notify)
+        val batch = api.messages.forwardMessages(toChatId, fromChatId, ordered, notify)
         commit(t) { batch.sent.forEach { store.putSentMessage(toChatId, it) } }
         return batch
     }

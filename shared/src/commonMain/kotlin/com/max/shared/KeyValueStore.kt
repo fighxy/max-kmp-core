@@ -80,6 +80,7 @@ class CredentialStore(private val kv: KeyValueStore, private val prefix: String 
         put("sync.chats", c.sync.chatsSync.toString())
         put("sync.contacts", c.sync.contactsSync.toString())
         put(DRAFTS_SYNC_KEY, c.sync.draftsSync.toString())
+        put("sync.drafts", null) // the legacy key
         put("sync.presence", c.sync.presenceSync.toString())
         put("sync.configHash", encodeHash(c.sync.configHash))
     }
@@ -93,7 +94,7 @@ class CredentialStore(private val kv: KeyValueStore, private val prefix: String 
     /** Forgets everything, including the identity. */
     fun clearAll() {
         listOf(
-            "deviceId", "instanceId", "token", "userId", "sync.chats", "sync.contacts", "sync.drafts", "sync.presence", "sync.configHash",
+            "deviceId", "instanceId", "token", "userId", "sync.chats", "sync.contacts", "sync.drafts", DRAFTS_SYNC_KEY, "sync.presence", "sync.configHash",
         ).forEach { kv.remove("$prefix.$it") }
     }
 
