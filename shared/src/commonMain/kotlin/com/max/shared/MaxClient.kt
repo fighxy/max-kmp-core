@@ -32,7 +32,10 @@ import com.max.core.api.MaxUser
 import com.max.core.api.MessageReader
 import com.max.core.api.MessageReaders
 import com.max.core.api.PhoneContact
+import com.max.core.api.GhostMode
+import com.max.core.api.LocalRead
 import com.max.core.api.PresenceInfo
+import com.max.core.api.ReadState
 import com.max.core.api.PresenceStatus
 import com.max.core.api.TextElement
 import com.max.core.api.Transcription
@@ -226,6 +229,14 @@ class MaxClient @Throws(Exception::class) constructor(
     private val ownsScope = scope == null
     private val scope: CoroutineScope = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default + swallowUncaught)
     private val credentials = CredentialStore(keyValueStore, "max.${config.namespace}")
+    private val settings: KeyValueStore = keyValueStore
+    private val ghostKey = "max.${config.namespace}.ghostMode"
+    private val hideReadsKey = "max.${config.namespace}.hideReadReceipts"
+    private fun localReadsKey(userId: Long) = "max.${config.namespace}.localReads.$userId"
+
+    /** The account whose [MaxState.localReads] are in [store] and saved under its key; guarded by [lifecycle]. */
+    @kotlin.concurrent.Volatile
+    private var localReadsOwner: Long? = null
     private val tokenLogin = MutableStateFlow<TokenLogin?>(null)
     private val loggedIn = MutableStateFlow<Long?>(null)
     private val loggedInFlag = MutableStateFlow(false)
@@ -283,6 +294,17 @@ class MaxClient @Throws(Exception::class) constructor(
 
     /** Local state (chats, messages, users, presence, typing, read marks). */
     val store: MaxStore = MaxStore(config.messageLimit)
+
+    init {
+        // both switches are device settings: back from the last run, in force before any request
+        store.setGhostMode(readSetting(ghostKey) == "1")
+        store.setHideReadReceipts(readSetting(hideReadsKey) == "1")
+        session.transport.outboundGuard = GhostMode.guard(
+            ghostMode = { store.state.value.ghostMode },
+            hideReadReceipts = { store.state.value.hideReadReceipts },
+        )
+        session.transport.presetPingInteractive(sentInteractive)
+    }
 
     /**
      * Applies pushes to [store] and runs handlers registered with [EventRouter.on]. It reads the
@@ -419,7 +441,7 @@ class MaxClient @Throws(Exception::class) constructor(
                 // [store] is not persisted: saved markers describe a snapshot this process does not
                 // have, and a LOGIN with them would return only the delta. Ask for everything instead.
                 val sync = if (snapshotLoaded) c.sync else SyncState()
-                tokenLogin.value = TokenLogin(c.token, device, config.fingerprint, sync, interactiveFlag)
+                tokenLogin.value = TokenLogin(c.token, device, config.fingerprint, sync, sentInteractive)
             }
         }
         try {
@@ -484,7 +506,7 @@ class MaxClient @Throws(Exception::class) constructor(
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun loginWithToken(token: String): LoginResult {
-        val login = TokenLogin(token, device, config.fingerprint, interactive = interactiveFlag)
+        val login = TokenLogin(token, device, config.fingerprint, interactive = sentInteractive)
         lifecycle.withLock { tokenLogin.value = login }
         val handshake = session.connect()
         if (login.result.value == null) {
@@ -498,13 +520,14 @@ class MaxClient @Throws(Exception::class) constructor(
     /**
      * Approves a web / desktop QR login from this account. As in Komet, the approval is preceded by
      * `PING` 1 `{interactive: true}` and `SESSIONS_INFO` 96 and a [qrApproveDelayMs] pause; the
-     * server rejects `AUTH_QR_APPROVE` 290 `{qrLink}` without them.
+     * server rejects `AUTH_QR_APPROVE` 290 `{qrLink}` without them. In [ghostMode] that `PING`
+     * carries `interactive: false` (unverified whether the server then still approves).
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun approveQrLogin(qrLink: String): QrApproval {
         val link = qrLink.trim()
         require(link.isNotEmpty()) { "qrLink is blank" }
-        session.request(Opcode.PING, linkedMapOf("interactive" to true))
+        session.request(Opcode.PING, linkedMapOf("interactive" to !store.state.value.ghostMode))
         api.users.getSessions()
         delay(qrApproveDelayMs)
         return auth.approveQrLogin(link)
@@ -542,6 +565,8 @@ class MaxClient @Throws(Exception::class) constructor(
             router.stop()
             lifecycle.withLock {
                 store.clear()
+                // the saved local reads stay on the device for the next login of this account
+                localReadsOwner = null
                 snapshotLoaded = false
                 serverConfigLoaded = false
                 _accountConfig.value = null
@@ -576,7 +601,16 @@ class MaxClient @Throws(Exception::class) constructor(
             if (sameAccount) {
                 stale = before.presence.filter { (id, p) -> p.status == PresenceStatus.ONLINE && id !in refreshed }.keys.toList()
             }
+            val owner = r.userId ?: loggedIn.value
+            val savedReads = if (owner != null && owner != localReadsOwner) LocalRead.decode(readSetting(localReadsKey(owner))) else null
+            // put before the snapshot when it is the same account, so no observer sees the server counters alone
+            if (savedReads != null && store.state.value.me.let { it == null || it == owner }) store.setLocalReads(savedReads)
             store.applyLogin(r)
+            if (savedReads != null) {
+                store.setLocalReads(savedReads)
+                localReadsOwner = owner
+            }
+            saveLocalReads()
             // the reply's presence is in the store now: the next LOGIN may ask only for the delta
             login.presenceApplied(r)
             snapshotLoaded = true
@@ -946,8 +980,171 @@ class MaxClient @Throws(Exception::class) constructor(
         return presence
     }
 
-    /** Whether the app is in the foreground ([setInteractive]); starts as [TransportConfig.pingInteractive]. */
+    /**
+     * Whether the app is in the foreground ([setInteractive]); starts as
+     * [TransportConfig.pingInteractive]. In [ghostMode] it is remembered, not sent.
+     */
     val isInteractive: Boolean get() = interactiveFlag
+
+    /** The `interactive` that goes to the server: [isInteractive], but always `false` in [ghostMode]. */
+    private val sentInteractive: Boolean get() = interactiveFlag && !store.state.value.ghostMode
+
+    /**
+     * Ghost mode ([GhostMode]): while on, nothing tells the server that the user is online or
+     * busy in a chat. `PING` and `LOGIN` (also the first one of a run, and the `PING` before a
+     * QR approval) carry `interactive: false` whatever [setInteractive] says (the app state is
+     * remembered), and `MSG_TYPING` of every type (typing, recording, uploading, stickers) is
+     * not sent. Read marks are a separate switch, [hideReadReceipts]. The guard sits in the
+     * transport, so a direct [api] call is held back too
+     * ([com.max.core.transport.OutboundBlockedException]).
+     *
+     * A device setting, saved in the key-value store: it survives logout, account switches and
+     * restarts. Default `false`. Setting it sends one `PING` with the new `interactive` at once
+     * when that changed (turning it off in the foreground: `interactive: true` right away), in
+     * the background; [setGhostMode] does the same and waits.
+     */
+    var ghostMode: Boolean
+        get() = store.state.value.ghostMode
+        set(value) {
+            storeGhostMode(value)
+            scope.launch { syncInteractive() }
+        }
+
+    /** Sets [ghostMode] and sends the `PING` with the resulting `interactive` when it changed; `true` when that `PING` was written. */
+    @Throws(CancellationException::class)
+    suspend fun setGhostMode(enabled: Boolean): Boolean {
+        storeGhostMode(enabled)
+        return syncInteractive()
+    }
+
+    private fun storeGhostMode(enabled: Boolean) {
+        store.setGhostMode(enabled)
+        writeSetting(ghostKey, if (enabled) "1" else null)
+    }
+
+    /**
+     * Hidden read receipts ([GhostMode]): while on, `CHAT_MARK` `READ_MESSAGE` (and story views,
+     * delivery receipts) are not sent. [markRead] reads the chat on this device only
+     * ([localReadMarks]): its unread counter drops locally and stays down across reconnects,
+     * new `LOGIN`s and restarts until the server's own mark catches up. Turning it off sends
+     * nothing for the reads kept meanwhile; the next real mark of a chat (a later [markRead])
+     * covers everything up to its message. Independent of [ghostMode]; a device setting saved
+     * like it, default `false`.
+     */
+    var hideReadReceipts: Boolean
+        get() = store.state.value.hideReadReceipts
+        set(value) {
+            store.setHideReadReceipts(value)
+            writeSetting(hideReadsKey, if (value) "1" else null)
+        }
+
+    /** Puts [sentInteractive] into the next `LOGIN` and the `PING`s (one at once when it changed). */
+    private suspend fun syncInteractive(): Boolean {
+        val value = sentInteractive
+        tokenLogin.value?.interactive = value
+        return session.transport.setPingInteractive(value)
+    }
+
+    /**
+     * Chats read on this device only ([hideReadReceipts]), by chat id ([LocalRead]: newest message read
+     * and its time). Their unread counters count only later messages, also after a restart or a
+     * new `LOGIN`, until the server's own read mark reaches the local one. Saved per account.
+     */
+    val localReadMarks: Map<Long, LocalRead> get() = store.state.value.localReads
+
+    /**
+     * Asks the server how it sees this account's presence right now: `CONTACT_PRESENCE` 35 with
+     * the own id, as Komet's self check does (`status` 1 online, `seen` the last time online,
+     * Unix seconds), always a fresh request (no cache). For checking ghost mode. `null` when the
+     * server's reply has no entry for the own id (nothing is made up); the entry also goes into
+     * [store]. Needs a login. The core does not poll: an app that shows it asks every 10–30 s
+     * while its profile screen is visible and the app is in the foreground. The request itself
+     * is not an activity signal ([GhostMode] lets it through in either mode).
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun checkOwnPresence(): PresenceInfo? {
+        val me = store.state.value.me ?: loggedIn.value ?: throw IllegalStateException("not logged in")
+        val t = ticket()
+        val reply = api.users.getPresenceReply(listOf(me))
+        val own = com.max.core.api.Presences.parseMap(reply["presence"])?.get(me) ?: return null
+        commit(t) { store.putPresence(mapOf(me to own)) }
+        return own
+    }
+
+    /**
+     * Marks [chatId] read up to [messageId] (`CHAT_MARK` 50 `READ_MESSAGE`). [mark] is the read
+     * boundary in ms (server time of that message); `null` looks the message up in [store] and
+     * falls back to the current time. The reply goes into [store] (own read mark and unread
+     * counter), unless the store already holds a newer own mark; the server's count replaces the
+     * stored one only when it is lower and no message arrived since.
+     *
+     * With [hideReadReceipts] nothing is sent: the chat is read locally ([localReadMarks]) and
+     * the result has [ReadState.local] `true` with the local unread count.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun markRead(chatId: Long, messageId: Long, mark: Long? = null): ReadState {
+        val before = store.state.value
+        val time = mark?.takeIf { it > 0 }
+            ?: before.messagesOf(chatId).firstOrNull { it.id == messageId }?.time
+            ?: before.chats[chatId]?.lastMessage?.takeIf { it.id == messageId }?.time
+        if (before.hideReadReceipts) {
+            val t = ticket()
+            commit(t) { store.putLocalRead(chatId, LocalRead(messageId, time ?: GhostMode.nowMs())) }
+            saveLocalReads()
+            val after = store.state.value
+            return ReadState(after.chats[chatId]?.newMessages ?: 0, after.localReads[chatId]?.time ?: time ?: 0L, emptyMap<String, Any?>(), local = true)
+        }
+        val lastBefore = before.chats[chatId]?.lastMessage?.id
+        val t = ticket()
+        val reply = api.messages.markRead(chatId, messageId, time)
+        commit(t) {
+            val state = store.state.value
+            val me = state.me
+            if (me != null && reply.mark >= (state.readMarks[chatId]?.get(me) ?: 0L)) {
+                store.apply(MaxEvent.MessageRead(chatId, me, reply.mark, false, Opcode.CHAT_MARK.value, null))
+                val after = store.state.value.chats[chatId]
+                if (after != null && after.lastMessage?.id == lastBefore && reply.unread in 0 until after.newMessages) {
+                    store.putChats(listOf(after.copy(newMessages = reply.unread)))
+                }
+            }
+        }
+        saveLocalReads()
+        return reply
+    }
+
+    /**
+     * Marks story [storyId] of [owner] seen (`STORIES_MARK` 214). With [hideReadReceipts] nothing
+     * is sent and the result is `false` (the owner does not see this account among the viewers);
+     * `true` once the server accepted it.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun markStorySeen(owner: com.max.core.api.StoryOwner, storyId: Long): Boolean {
+        if (store.state.value.hideReadReceipts) return false
+        api.stories.mark(owner, storyId)
+        return true
+    }
+
+    private fun readSetting(key: String): String? = try {
+        settings.get(key)
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Saves (or with `null` removes) a setting; a failing store keeps the in-memory value. */
+    private fun writeSetting(key: String, value: String?) {
+        try {
+            if (value == null) settings.remove(key) else settings.put(key, value)
+        } catch (e: Exception) {
+            // best effort: the setting holds for this process
+        }
+    }
+
+    /** Saves the local reads of [localReadsOwner] (removes the key when there are none). */
+    private fun saveLocalReads() {
+        val owner = localReadsOwner ?: return
+        val reads = store.state.value.localReads
+        writeSetting(localReadsKey(owner), if (reads.isEmpty()) null else LocalRead.encode(reads))
+    }
 
     /**
      * Tells the server whether the user is looking at the app: `true` in the foreground, `false`
@@ -957,13 +1154,13 @@ class MaxClient @Throws(Exception::class) constructor(
      * once (as kolibri does), so the server need not wait for the next 30 s tick. The references
      * have no explicit "going offline" request: after `interactive: false` the server decides the
      * presence by itself. Returns `true` when that immediate `PING` was written; never throws
-     * for a send error.
+     * for a send error. In [ghostMode] the value is only remembered (the server keeps getting
+     * `interactive: false`); turning ghost mode off sends it.
      */
     @Throws(CancellationException::class)
     suspend fun setInteractive(interactive: Boolean): Boolean {
         interactiveFlag = interactive
-        tokenLogin.value?.interactive = interactive
-        return session.transport.setPingInteractive(interactive)
+        return syncInteractive()
     }
 
     /**
@@ -1458,11 +1655,12 @@ class MaxClient @Throws(Exception::class) constructor(
      * [com.max.core.api.TypingType] constant (`TEXT`, `AUDIO`, `VIDEO_MSG`, `PHOTO`, `VIDEO`,
      * `FILE`, `STICKER`); any other string is sent as given. [postId] marks typing a comment under
      * that channel post. No throttling: every call sends a frame, so call it at most once per 6 s
-     * per chat while the user is busy. The store does not change.
+     * per chat while the user is busy. The store does not change. In [ghostMode] nothing is sent
+     * and the result is `false`.
      */
     @Throws(CancellationException::class)
     suspend fun sendTyping(chatId: Long, type: String, postId: Long? = null): Boolean =
-        api.messages.sendTyping(chatId, type, postId)
+        if (store.state.value.ghostMode) false else api.messages.sendTyping(chatId, type, postId)
 
     /**
      * Marks [chatId] unread from [mark] (message time, ms) and stores the read boundary one
@@ -1472,6 +1670,9 @@ class MaxClient @Throws(Exception::class) constructor(
     suspend fun markUnread(chatId: Long, mark: Long): Int {
         val t = ticket()
         val state = api.messages.markUnread(chatId, mark)
+        // an explicit "unread" ends the local read of the chat
+        store.dropLocalRead(chatId)
+        saveLocalReads()
         val me = store.state.value.me
         if (me != null) {
             val boundary = if (mark > 0) mark - 1 else mark

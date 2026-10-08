@@ -38,6 +38,17 @@ class UsersApi(private val sink: RequestSink) {
         return out
     }
 
+    /**
+     * The raw `CONTACT_PRESENCE` 35 reply for [userIds] (one request, at most [PRESENCE_BATCH]
+     * ids): `{presence: {"<id>": {seen?, status?}}}`, nothing filled in for an id the server
+     * left out (unlike [getPresence]).
+     */
+    suspend fun getPresenceReply(userIds: List<Long>): Map<*, *> {
+        val ids = userIds.distinct()
+        require(ids.isNotEmpty() && ids.size <= PRESENCE_BATCH) { "1..$PRESENCE_BATCH user ids" }
+        return rawMap(sink.request(Opcode.CONTACT_PRESENCE, linkedMapOf("contactIds" to ids)))
+    }
+
     /** One user via [getUsers], or `null` if the server did not return it (PyMax `get_user`). */
     suspend fun getUser(userId: Long): MaxUser? = getUsers(listOf(userId)).firstOrNull { it.id == userId }
 

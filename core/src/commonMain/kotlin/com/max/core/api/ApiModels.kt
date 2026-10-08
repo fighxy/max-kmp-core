@@ -92,8 +92,11 @@ data class ChatHistory(val messages: List<MaxMessage>, val chat: Chat?, val raw:
 /** `CHAT_MEDIA` reply: messages with the asked attachment types and the server's [total], if sent. */
 data class ChatMediaPage(val messages: List<MaxMessage>, val total: Int?, val raw: Map<*, *>)
 
-/** `CHAT_MARK` reply (PyMax `ReadState`, both fields required). */
-data class ReadState(val unread: Int, val mark: Long, val raw: Map<*, *>)
+/**
+ * `CHAT_MARK` reply (PyMax `ReadState`, both fields required). [local] is `true` for a read kept
+ * on the device only (ghost mode): nothing was sent, [unread] is the local counter.
+ */
+data class ReadState(val unread: Int, val mark: Long, val raw: Map<*, *>, val local: Boolean = false)
 
 /** One reaction counter (PyMax `ReactionCounter`). */
 data class ReactionCounter(val reaction: String, val count: Int)

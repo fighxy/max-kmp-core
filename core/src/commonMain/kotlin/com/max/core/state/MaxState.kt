@@ -10,6 +10,7 @@ import com.max.core.api.FolderList
 import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
+import com.max.core.api.LocalRead
 import com.max.core.api.MessageReaders
 import com.max.core.api.PhoneContact
 import com.max.core.api.PhoneNumbers
@@ -73,6 +74,15 @@ import com.max.core.events.MaxEvent
  *   wins over the contact name this account set, `false` the other way round
  *   ([ContactNames.resolve]). A client setting: it survives a `LOGIN` of another account and
  *   [MaxStore.clear].
+ * @property ghostMode ghost mode ([com.max.core.api.GhostMode]): nothing tells the server that
+ *   the user is online or typing. A client setting like [preferAddressBookNames].
+ * @property hideReadReceipts hidden read receipts ([com.max.core.api.GhostMode]): read marks are
+ *   not sent, chats are read locally ([localReads]). A client setting like [ghostMode].
+ * @property localReads chats read while read receipts were hidden, by chat id ([LocalRead]): the unread
+ *   counter of such a chat only counts messages after the local mark, on top of the server's
+ *   counter ([StateReducer.applyLocalReads], applied after every change of the store). An entry
+ *   goes once the server's own read mark of [me] reaches its time. Account data: a `LOGIN` of
+ *   another account and [MaxStore.clear] drop it.
  */
 data class MaxState(
     val me: Long? = null,
@@ -92,7 +102,21 @@ data class MaxState(
     val draftDiscards: Map<Long, Long> = emptyMap(),
     val presenceTimes: Map<Long, Long> = emptyMap(),
     val preferAddressBookNames: Boolean = true,
+    val ghostMode: Boolean = false,
+    val hideReadReceipts: Boolean = false,
+    val localReads: Map<Long, LocalRead> = emptyMap(),
 ) {
+    /**
+     * The own read mark of [chatId] the server knows: the later of the chat's `participants`
+     * entry and a `NOTIF_MARK` / `CHAT_MARK` reply for [me]; `null` when neither is known.
+     */
+    fun ownServerReadMark(chatId: Long): Long? {
+        val me = me ?: return null
+        val a = chats[chatId]?.participants?.get(me)
+        val b = readMarks[chatId]?.get(me)
+        return if (a == null) b else if (b == null) a else maxOf(a, b)
+    }
+
     /**
      * Presence of [userId] at local time [now] (ms): the stored entry, but an `ONLINE` one that has
      * not been refreshed for more than [ttlMs] reads as offline with the last known time
@@ -309,7 +333,13 @@ object StateReducer {
     fun login(state: MaxState, result: LoginResult, messageLimit: Int, now: Long): MaxState {
         // Another account: a fresh snapshot, but the device address book and the name rule stay.
         val base = if (result.userId != null && state.me != null && result.userId != state.me) {
-            MaxState(addressBook = state.addressBook, localNames = state.localNames, preferAddressBookNames = state.preferAddressBookNames)
+            MaxState(
+                addressBook = state.addressBook,
+                localNames = state.localNames,
+                preferAddressBookNames = state.preferAddressBookNames,
+                ghostMode = state.ghostMode,
+                hideReadReceipts = state.hideReadReceipts,
+            )
         } else {
             state
         }
@@ -408,6 +438,67 @@ object StateReducer {
                 if (p.status == PresenceStatus.ONLINE) Presences.degrade(p, state.presenceTimes[id]) else p
             },
         )
+    }
+
+    /** Sets [MaxState.ghostMode]. */
+    fun setGhostMode(state: MaxState, on: Boolean): MaxState =
+        if (state.ghostMode == on) state else state.copy(ghostMode = on)
+
+    /** Sets [MaxState.hideReadReceipts]; the local reads stay either way. */
+    fun setHideReadReceipts(state: MaxState, on: Boolean): MaxState =
+        if (state.hideReadReceipts == on) state else state.copy(hideReadReceipts = on)
+
+    /**
+     * Records a local read of [chatId] up to [read] (hidden read receipts). A mark only moves forward: an
+     * older one than the stored mark is ignored, and so is one the server's own read mark already
+     * covers. Then [applyLocalReads].
+     */
+    fun putLocalRead(state: MaxState, chatId: Long, read: LocalRead): MaxState {
+        val known = state.localReads[chatId]
+        if (known != null && known.time >= read.time) return applyLocalReads(state)
+        val server = state.ownServerReadMark(chatId)
+        if (server != null && server >= read.time) return applyLocalReads(state)
+        return applyLocalReads(state.copy(localReads = state.localReads + (chatId to read)))
+    }
+
+    /** Drops the local read of [chatId] (an explicit "mark unread"). The counter stays as it is. */
+    fun dropLocalRead(state: MaxState, chatId: Long): MaxState =
+        if (chatId !in state.localReads) state else state.copy(localReads = state.localReads - chatId)
+
+    /** Replaces [MaxState.localReads] (loaded from the device), then [applyLocalReads]. */
+    fun setLocalReads(state: MaxState, reads: Map<Long, LocalRead>): MaxState =
+        applyLocalReads(if (state.localReads == reads) state else state.copy(localReads = reads))
+
+    /**
+     * Puts [MaxState.localReads] on top of the server's read state: an entry the server's own
+     * mark ([MaxState.ownServerReadMark]) reached is dropped; for the others the chat's
+     * `newMessages` becomes the messages after the local mark when that is fewer: `0` when the
+     * last message is not newer than the mark, else the stored messages of other users after it
+     * when the store holds all of them, else the server's counter stays. A chat not in the store
+     * keeps its entry for later.
+     */
+    fun applyLocalReads(state: MaxState): MaxState {
+        if (state.localReads.isEmpty()) return state
+        var reads = state.localReads
+        var chats = state.chats
+        for ((chatId, read) in state.localReads) {
+            val server = state.ownServerReadMark(chatId)
+            if (server != null && server >= read.time) {
+                reads = reads - chatId
+                continue
+            }
+            val chat = chats[chatId] ?: continue
+            val unread = localUnread(state, chatId, chat, read.time)
+            if (unread < chat.newMessages) chats = chats + (chatId to chat.copy(newMessages = unread))
+        }
+        return if (reads === state.localReads && chats === state.chats) state else state.copy(localReads = reads, chats = chats)
+    }
+
+    private fun localUnread(state: MaxState, chatId: Long, chat: Chat, mark: Long): Int {
+        if ((chat.lastMessage?.time ?: Long.MIN_VALUE) <= mark) return 0
+        val cached = state.messagesOf(chatId)
+        if (!coversSince(state, chatId, cached, mark)) return chat.newMessages
+        return cached.count { it.time > mark && (it.sender == null || it.sender != state.me) }
     }
 
     /** Sets [MaxState.preferAddressBookNames]. */

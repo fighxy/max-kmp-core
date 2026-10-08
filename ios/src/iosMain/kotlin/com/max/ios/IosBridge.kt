@@ -452,7 +452,8 @@ class MaxIosClient internal constructor(
      * `STICKER`); any other string is sent as given.
      * A non-empty [postId] marks typing a comment under that channel post. [onResult] gets a null
      * error kind once the frame is written; an id that is not a number or a frame that could not
-     * be sent (not connected) gets an error kind.
+     * be sent (not connected) gets an error kind. In [ghostMode] nothing is sent and [onResult]
+     * gets no error.
      */
     fun sendTyping(chatId: String, type: String, postId: String, onResult: (String?, String?) -> Unit) {
         // Typing is sent every few seconds and is worthless once missed: a failure goes to the
@@ -461,7 +462,9 @@ class MaxIosClient internal constructor(
             val (kind, key) = try {
                 val chat = parseId(chatId)
                 val post = postId.takeIf { it.isNotBlank() }?.let(::parseId)
-                if (client().sendTyping(chat, type, post)) null to null else "NETWORK" to null
+                val c = client()
+                // ghost mode holds typing back on purpose: no error for the app
+                if (c.ghostMode || c.sendTyping(chat, type, post)) null to null else "NETWORK" to null
             } catch (t: Throwable) {
                 classify(t)
             }
@@ -989,8 +992,12 @@ class MaxIosClient internal constructor(
         return attempt(false) { client().isMessageReadersAvailable(id) }
     }
 
+    /**
+     * Marks [chatId] read up to [messageId] ([MaxClient.markRead]); with [hideReadReceipts] on
+     * the chat is read on this device only and nothing is sent.
+     */
     fun markRead(chatId: String, messageId: String, onResult: (String?, String?) -> Unit) {
-        runUnit(onResult) { it.api.messages.markRead(parseId(chatId), parseId(messageId)) }
+        runUnit(onResult) { it.markRead(parseId(chatId), parseId(messageId)) }
     }
 
     /**
@@ -1004,27 +1011,13 @@ class MaxIosClient internal constructor(
      * already holds a newer own mark: replies to two marks in a row may arrive out of order. The
      * store also feeds chat events, so a stale counter there would bring the badge back. The
      * server's count replaces the store's only when it is lower and no message arrived since.
-     * [onResult] gets the server's unread count and the mark it kept.
+     * [onResult] gets the server's unread count and the mark it kept ([MaxClient.markRead]).
+     * With [hideReadReceipts] on nothing is sent: the chat is read on this device only and
+     * [onResult] gets the local count and mark.
      */
     fun markReadAt(chatId: String, messageId: String, mark: Long, onResult: (IosReadMark, String?, String?) -> Unit) {
         perform(onResult, { IosReadMark(0, 0) }) { c ->
-            val id = parseId(chatId)
-            val message = parseId(messageId)
-            val before = c.store.state.value
-            val lastBefore = before.chats[id]?.lastMessage?.id
-            val time = mark.takeIf { it > 0 }
-                ?: before.messagesOf(id).firstOrNull { it.id == message }?.time
-                ?: before.chats[id]?.lastMessage?.takeIf { it.id == message }?.time
-            val reply = c.api.messages.markRead(id, message, time)
-            val state = c.store.state.value
-            val me = state.me
-            if (me != null && reply.mark >= (state.readMarks[id]?.get(me) ?: 0L)) {
-                c.store.apply(MaxEvent.MessageRead(id, me, reply.mark, false, Opcode.CHAT_MARK.value, null))
-                val after = c.store.state.value.chats[id]
-                if (after != null && after.lastMessage?.id == lastBefore && reply.unread in 0 until after.newMessages) {
-                    c.store.putChats(listOf(after.copy(newMessages = reply.unread)))
-                }
-            }
+            val reply = c.markRead(parseId(chatId), parseId(messageId), mark.takeIf { it > 0 })
             IosReadMark(reply.unread, reply.mark)
         }
     }
@@ -1313,11 +1306,15 @@ class MaxIosClient internal constructor(
         }
     }
 
-    /** Marks story [storyId] of the owner seen (`STORIES_MARK` 214); paced like other background writes of the viewer. */
+    /**
+     * Marks story [storyId] of the owner seen (`STORIES_MARK` 214, [MaxClient.markStorySeen]);
+     * paced like other background writes of the viewer. With [hideReadReceipts] on nothing is
+     * sent and [onResult] gets no error (keep the ring seen locally).
+     */
     fun markStorySeen(ownerId: String, type: Int, storyId: String, onResult: (String?, String?) -> Unit) {
         runUnit(onResult) { c ->
             val owner = StoryOwner(parseId(ownerId), storyOwnerType(type))
-            pacer.background { c.api.stories.mark(owner, parseId(storyId)) }
+            pacer.background { c.markStorySeen(owner, parseId(storyId)) }
         }
     }
 
@@ -1501,10 +1498,73 @@ class MaxIosClient internal constructor(
     }
 
     /**
+     * Ghost mode ([MaxClient.ghostMode]): while on, `PING` / `LOGIN` say "not interactive" (the
+     * server does not show the account online) whatever [setAppActive] says, and typing of
+     * every kind (text, voice, video message, photo, video, file, sticker) is not sent. Saved on
+     * the device; survives logout and restarts. Turning it on or off sends one `PING` with the
+     * new state at once (off in the foreground: online again right away). A `ghostMode` event
+     * of [watchEvents] follows every change. Read receipts are the separate
+     * [setHideReadReceipts].
+     */
+    fun setGhostMode(enabled: Boolean) {
+        val c = attempt<MaxClient?>(null) { client() } ?: return
+        scope.launch {
+            try {
+                c.setGhostMode(enabled)
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                // the switch is set; the next PING carries it anyway
+            }
+        }
+    }
+
+    /** [setGhostMode]; `false` when the client cannot be created. */
+    fun ghostMode(): Boolean = attempt(false) { client().ghostMode }
+
+    /**
+     * Hidden read receipts ([MaxClient.hideReadReceipts]): while on, [markRead] / [markReadAt]
+     * send nothing and read the chat on this device only (its unread count drops and stays
+     * down after reconnects and restarts until the server's own mark catches up); story views
+     * are not sent either. Turning it off sends nothing retroactively: the next mark of a chat
+     * covers everything up to its message. Saved on the device. A `hideReadReceipts` event of
+     * [watchEvents] follows every change.
+     */
+    fun setHideReadReceipts(enabled: Boolean) {
+        val c = attempt<MaxClient?>(null) { client() } ?: return
+        c.hideReadReceipts = enabled
+    }
+
+    /** [setHideReadReceipts]; `false` when the client cannot be created. */
+    fun hideReadReceipts(): Boolean = attempt(false) { client().hideReadReceipts }
+
+    /** The local read mark of [chatId] (message time, ms) kept while read receipts are hidden; `0` when none. */
+    fun localReadMarkOf(chatId: String): Long = attempt(0L) {
+        client().localReadMarks[parseId(chatId)]?.time ?: 0L
+    }
+
+    /**
+     * How the server sees this account right now ([MaxClient.checkOwnPresence], a fresh
+     * `CONTACT_PRESENCE` 35 for the own id, never the cache): [onResult] gets [IosPresence.status]
+     * `1` online, otherwise the last-seen code with the last time online in `seenMs` (`0`
+     * unknown); `null` and no error when the server sent no entry for the own id. For the "last seen" line under the phone number that proves ghost
+     * mode works: ask every 10–30 s while that screen is visible and the app is in the
+     * foreground; the core does not poll by itself.
+     */
+    fun checkOwnPresence(onResult: (IosPresence?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val me = c.store.state.value.me ?: throw IllegalStateException("not logged in")
+            c.checkOwnPresence()?.let { presenceSnapshot(me, it) }
+        }
+    }
+
+    /**
      * The app went to the foreground (`true`) or the background (`false`): the next `PING`
      * carries `interactive` accordingly, one goes out at once when the value changed, and a
      * reconnect `LOGIN` sends it too. The server decides the presence from it; there is no
-     * explicit "going offline" request in the protocol. Fire-and-forget, never fails.
+     * explicit "going offline" request in the protocol. Fire-and-forget, never fails. While
+     * [ghostMode] is on the state is only remembered (the server keeps getting `false`) and
+     * goes out when ghost mode is turned off.
      */
     fun setAppActive(active: Boolean) {
         val c = attempt<MaxClient?>(null) { client() } ?: return
@@ -3039,6 +3099,8 @@ object IosTypingType {
  * 152 / 153, `LOGIN`, `saveDraft`, or cleared by a send); [draft] is the draft now, `null` when
  * it is gone; [text], [marks], [messageId] (the answered message, empty for none) and [timeMs]
  * (its update time, `0` when gone) repeat it.
+ * `ghostMode` / `hideReadReceipts`: that switch changed ([MaxIosClient.setGhostMode],
+ * [MaxIosClient.setHideReadReceipts]); [text] is `on` or `off`. Reported also while logged out.
  * Unknown pushes are not forwarded; incoming calls come from `watchIncomingCalls`.
  */
 class IosEvent(
@@ -3148,6 +3210,7 @@ private fun storeChanges(state: StateFlow<MaxState>): Flow<IosEventSource> = flo
 }
 
 /**
+ * `ghostMode` / `hideReadReceipts` events when a switch changed (always), then
  * `presence` and `draft` events between two store snapshots: one per user whose stored presence
  * changed and one per chat whose draft or discard mark changed (set, replaced or removed; a
  * gone draft carries the mark's time, [draftEvent]). Nothing on logout
@@ -3155,8 +3218,11 @@ private fun storeChanges(state: StateFlow<MaxState>): Flow<IosEventSource> = flo
  * session reports its presence and drafts.
  */
 internal fun storeEvents(prev: MaxState, next: MaxState): List<IosEvent> {
-    if (next.me == null || (prev.me != null && prev.me != next.me)) return emptyList()
     val out = ArrayList<IosEvent>()
+    // device settings: reported whatever the account
+    if (prev.ghostMode != next.ghostMode) out += switchEvent("ghostMode", next.ghostMode)
+    if (prev.hideReadReceipts != next.hideReadReceipts) out += switchEvent("hideReadReceipts", next.hideReadReceipts)
+    if (next.me == null || (prev.me != null && prev.me != next.me)) return out
     if (prev.presence !== next.presence) {
         for ((id, p) in next.presence) {
             if (prev.presence[id] == p) continue
@@ -3177,6 +3243,9 @@ internal fun storeEvents(prev: MaxState, next: MaxState): List<IosEvent> {
     }
     return out
 }
+
+/** A `ghostMode` / `hideReadReceipts` event: [IosEvent.text] `on` or `off`. */
+internal fun switchEvent(kind: String, on: Boolean): IosEvent = iosEvent(kind = kind, text = if (on) "on" else "off")
 
 /** A `presence` event of [userId] ([IosEvent.presence], `seen` in [IosEvent.timeMs]). */
 internal fun presenceEvent(userId: Long, info: PresenceInfo?): IosEvent =
@@ -3569,7 +3638,8 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
     is MaxEvent.MessagesDeleted -> event.messageIds.map { id ->
         iosEvent(kind = "deleted", chatId = event.chatId.toString(), messageId = id.toString())
     }
-    is MaxEvent.ChatUpdated -> listOf(chatEvent(event.chat, state))
+    // the stored chat: its counter has the local reads applied
+    is MaxEvent.ChatUpdated -> listOf(chatEvent(state.chats[event.chat.id] ?: event.chat, state))
     is MaxEvent.Typing -> listOf(typingEvent(event))
     is MaxEvent.MessageRead -> listOf(
         iosEvent(
