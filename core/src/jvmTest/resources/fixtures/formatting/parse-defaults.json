@@ -1,0 +1,189 @@
+{
+  "kind": "parse",
+  "name": "parse-defaults",
+  "description": "Значения по умолчанию и обрезка: from нет — 0, length нет — до конца текста, нулевая длина выпадает, хвост за концом обрезается, отрезок за концом выпадает.",
+  "cases": [
+    {
+      "name": "missing-from",
+      "text": "Привет, мир",
+      "elements": [
+        {
+          "type": "STRONG",
+          "length": 6
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 0,
+            "length": 6,
+            "text": "Привет"
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-length",
+      "text": "Привет, мир",
+      "elements": [
+        {
+          "type": "EMPHASIZED",
+          "from": 8
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "EMPHASIZED",
+            "from": 8,
+            "length": 3,
+            "text": "мир"
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-both",
+      "text": "Привет, мир",
+      "elements": [
+        {
+          "type": "UNDERLINE"
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "UNDERLINE",
+            "from": 0,
+            "length": 11,
+            "text": "Привет, мир"
+          }
+        ]
+      }
+    },
+    {
+      "name": "zero-length-dropped",
+      "text": "Привет, мир",
+      "elements": [
+        {
+          "type": "STRONG",
+          "from": 2,
+          "length": 0
+        },
+        {
+          "type": "EMPHASIZED",
+          "from": 0,
+          "length": 1
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "EMPHASIZED",
+            "from": 0,
+            "length": 1,
+            "text": "П"
+          }
+        ]
+      }
+    },
+    {
+      "name": "negative-dropped",
+      "text": "Привет, мир",
+      "elements": [
+        {
+          "type": "STRONG",
+          "from": -1,
+          "length": 3
+        },
+        {
+          "type": "STRONG",
+          "from": 0,
+          "length": -2
+        }
+      ],
+      "expect": {
+        "spans": []
+      }
+    },
+    {
+      "name": "tail-clipped",
+      "text": "Привет, мир",
+      "elements": [
+        {
+          "type": "STRIKETHROUGH",
+          "from": 8,
+          "length": 100
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "STRIKETHROUGH",
+            "from": 8,
+            "length": 3,
+            "text": "мир"
+          }
+        ]
+      }
+    },
+    {
+      "name": "beyond-end-dropped",
+      "text": "Привет, мир",
+      "elements": [
+        {
+          "type": "STRONG",
+          "from": 11,
+          "length": 2
+        },
+        {
+          "type": "STRONG",
+          "from": 40,
+          "length": 1
+        }
+      ],
+      "expect": {
+        "spans": []
+      }
+    },
+    {
+      "name": "string-numbers",
+      "text": "Привет, мир",
+      "elements": [
+        {
+          "type": "STRONG",
+          "from": "8",
+          "length": "3"
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 8,
+            "length": 3,
+            "text": "мир"
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty-text-drops-all",
+      "text": "",
+      "elements": [
+        {
+          "type": "STRONG"
+        },
+        {
+          "type": "STRONG",
+          "from": 0,
+          "length": 2
+        }
+      ],
+      "expect": {
+        "spans": []
+      }
+    }
+  ]
+}

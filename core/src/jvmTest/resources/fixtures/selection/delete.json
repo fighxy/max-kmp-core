@@ -1,0 +1,479 @@
+{
+  "kind": "delete",
+  "name": "delete",
+  "description": "Удаление выбранных сообщений. scopes — для каждого сообщения all (у всех) / self (у себя) / none (нельзя). editTimeout — edit-timeout сервера в секундах; нет поля — 0, как в веб-клиенте (у всех своё не удалить). Время — мс.",
+  "cases": [
+    {
+      "name": "dialog-own-fresh",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "5",
+        "type": "DIALOG",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "11",
+          "author": "1",
+          "time": 1799999940000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 86400,
+      "expect": {
+        "scopes": {
+          "11": "all"
+        },
+        "canDelete": true,
+        "showsForEveryone": true,
+        "forEveryoneByDefault": true,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "dialog-own-expired",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "5",
+        "type": "DIALOG",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "11",
+          "author": "1",
+          "time": 1799910000000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 86400,
+      "expect": {
+        "scopes": {
+          "11": "self"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "dialog-own-at-limit",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "5",
+        "type": "DIALOG",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "11",
+          "author": "1",
+          "time": 1799913600000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 86400,
+      "expect": {
+        "scopes": {
+          "11": "self"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "dialog-peer",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "5",
+        "type": "DIALOG",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "12",
+          "author": "5",
+          "time": 1799999990000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 86400,
+      "expect": {
+        "scopes": {
+          "12": "self"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "dialog-mixed-own-and-peer",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "5",
+        "type": "DIALOG",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "11",
+          "author": "1",
+          "time": 1799999990000,
+          "state": "sent"
+        },
+        {
+          "id": "12",
+          "author": "5",
+          "time": 1799999990000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 86400,
+      "expect": {
+        "scopes": {
+          "11": "all",
+          "12": "self"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "dialog-timeout-absent",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "5",
+        "type": "DIALOG",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "11",
+          "author": "1",
+          "time": 1799999990000,
+          "state": "sent"
+        }
+      ],
+      "expect": {
+        "scopes": {
+          "11": "self"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "dialog-timeout-zero",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "5",
+        "type": "DIALOG",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "11",
+          "author": "1",
+          "time": 1799999990000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 0,
+      "expect": {
+        "scopes": {
+          "11": "self"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "dialog-unsent",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "5",
+        "type": "DIALOG",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "local-1",
+          "author": "1",
+          "time": 1799999999000,
+          "state": "sending"
+        },
+        {
+          "id": "local-2",
+          "author": "1",
+          "time": 1799999999000,
+          "state": "failed"
+        }
+      ],
+      "editTimeout": 86400,
+      "expect": {
+        "scopes": {
+          "local-1": "self",
+          "local-2": "self"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "group-own-fresh",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "-10",
+        "type": "CHAT",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "21",
+          "author": "1",
+          "time": 1799999900000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 3600,
+      "expect": {
+        "scopes": {
+          "21": "all"
+        },
+        "canDelete": true,
+        "showsForEveryone": true,
+        "forEveryoneByDefault": true,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "group-own-expired",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "-10",
+        "type": "CHAT",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "21",
+          "author": "1",
+          "time": 1799996000000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 3600,
+      "expect": {
+        "scopes": {
+          "21": "self"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "group-other",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "-10",
+        "type": "CHAT",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "22",
+          "author": "7",
+          "time": 1799999900000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 3600,
+      "expect": {
+        "scopes": {
+          "22": "self"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "group-admin-any",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "-10",
+        "type": "CHAT",
+        "admin": true
+      },
+      "messages": [
+        {
+          "id": "21",
+          "author": "1",
+          "time": 1799000001000,
+          "state": "sent"
+        },
+        {
+          "id": "22",
+          "author": "7",
+          "time": 1799000001000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 3600,
+      "expect": {
+        "scopes": {
+          "21": "all",
+          "22": "all"
+        },
+        "canDelete": true,
+        "showsForEveryone": true,
+        "forEveryoneByDefault": true,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "channel-admin",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "-20",
+        "type": "CHANNEL",
+        "admin": true
+      },
+      "messages": [
+        {
+          "id": "31",
+          "author": "1",
+          "time": 1799000001000,
+          "state": "sent"
+        },
+        {
+          "id": "32",
+          "author": "1",
+          "time": 1799999995000,
+          "state": "sent"
+        }
+      ],
+      "expect": {
+        "scopes": {
+          "31": "all",
+          "32": "all"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": true
+      }
+    },
+    {
+      "name": "channel-subscriber",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "-20",
+        "type": "CHANNEL",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "31",
+          "author": "8",
+          "time": 1799999995000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 3600,
+      "expect": {
+        "scopes": {
+          "31": "none"
+        },
+        "canDelete": false,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "saved",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "0",
+        "type": "DIALOG",
+        "admin": false
+      },
+      "messages": [
+        {
+          "id": "41",
+          "author": "1",
+          "time": 1799999995000,
+          "state": "sent"
+        },
+        {
+          "id": "42",
+          "author": "9",
+          "time": 1799999995000,
+          "state": "sent"
+        }
+      ],
+      "editTimeout": 86400,
+      "expect": {
+        "scopes": {
+          "41": "self",
+          "42": "self"
+        },
+        "canDelete": true,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    },
+    {
+      "name": "empty-selection",
+      "me": "1",
+      "now": 1800000000000,
+      "chat": {
+        "id": "5",
+        "type": "DIALOG",
+        "admin": false
+      },
+      "messages": [],
+      "editTimeout": 86400,
+      "expect": {
+        "scopes": {},
+        "canDelete": false,
+        "showsForEveryone": false,
+        "forEveryoneByDefault": false,
+        "forcesForEveryone": false
+      }
+    }
+  ]
+}

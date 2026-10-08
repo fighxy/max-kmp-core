@@ -1,0 +1,135 @@
+{
+  "kind": "parse",
+  "name": "parse-unknown",
+  "description": "Незнакомые типы (SPOILER, EMOJI…) сохраняются как есть: тип, смещения и остальные ключи (attributes, entityId) — и при правке уходят обратно без изменений; показ их не рисует. Элемент без type и LINK без адреса пропускаются; нет elements или null — разметки нет.",
+  "cases": [
+    {
+      "name": "unknown-types",
+      "text": "Текст со ссылкой",
+      "elements": [
+        {
+          "type": "SPOILER",
+          "from": 0,
+          "length": 5
+        },
+        {
+          "type": "EMOJI",
+          "from": 0,
+          "length": 1,
+          "entityId": 42,
+          "attributes": {
+            "size": "big"
+          }
+        },
+        {
+          "type": "STRONG",
+          "from": 0,
+          "length": 5
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "SPOILER",
+            "from": 0,
+            "length": 5,
+            "text": "Текст"
+          },
+          {
+            "type": "EMOJI",
+            "from": 0,
+            "length": 1,
+            "entityId": 42,
+            "attributes": {
+              "size": "big"
+            },
+            "text": "Т"
+          },
+          {
+            "type": "STRONG",
+            "from": 0,
+            "length": 5,
+            "text": "Текст"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown-type-case-kept",
+      "text": "Текст",
+      "elements": [
+        {
+          "type": "Spoiler",
+          "from": 1,
+          "length": 2
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "Spoiler",
+            "from": 1,
+            "length": 2,
+            "text": "ек"
+          }
+        ]
+      }
+    },
+    {
+      "name": "link-without-url",
+      "text": "Текст со ссылкой",
+      "elements": [
+        {
+          "type": "LINK",
+          "from": 9,
+          "length": 7
+        },
+        {
+          "type": "LINK",
+          "from": 9,
+          "length": 7,
+          "attributes": {
+            "url": ""
+          }
+        },
+        {
+          "type": "LINK",
+          "from": 9,
+          "length": 7,
+          "attributes": {}
+        }
+      ],
+      "expect": {
+        "spans": []
+      }
+    },
+    {
+      "name": "no-type",
+      "text": "Текст со ссылкой",
+      "elements": [
+        {
+          "from": 0,
+          "length": 5
+        }
+      ],
+      "expect": {
+        "spans": []
+      }
+    },
+    {
+      "name": "elements-null",
+      "text": "Текст со ссылкой",
+      "elements": null,
+      "expect": {
+        "spans": []
+      }
+    },
+    {
+      "name": "elements-missing",
+      "text": "Текст со ссылкой",
+      "expect": {
+        "spans": []
+      }
+    }
+  ]
+}

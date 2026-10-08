@@ -1,0 +1,107 @@
+{
+  "kind": "parse",
+  "name": "parse-overlap",
+  "description": "Пересекающиеся и вложенные отрезки читаются как есть, в порядке сервера, без слияния.",
+  "cases": [
+    {
+      "name": "nested",
+      "text": "один два три",
+      "elements": [
+        {
+          "type": "STRONG",
+          "from": 0,
+          "length": 12
+        },
+        {
+          "type": "EMPHASIZED",
+          "from": 5,
+          "length": 3
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 0,
+            "length": 12,
+            "text": "один два три"
+          },
+          {
+            "type": "EMPHASIZED",
+            "from": 5,
+            "length": 3,
+            "text": "два"
+          }
+        ]
+      }
+    },
+    {
+      "name": "overlapping-same-type",
+      "text": "один два три",
+      "elements": [
+        {
+          "type": "STRONG",
+          "from": 0,
+          "length": 8
+        },
+        {
+          "type": "STRONG",
+          "from": 5,
+          "length": 7
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 0,
+            "length": 8,
+            "text": "один два"
+          },
+          {
+            "type": "STRONG",
+            "from": 5,
+            "length": 7,
+            "text": "два три"
+          }
+        ]
+      }
+    },
+    {
+      "name": "link-inside-bold",
+      "text": "один два три",
+      "elements": [
+        {
+          "type": "STRONG",
+          "from": 0,
+          "length": 12
+        },
+        {
+          "type": "LINK",
+          "from": 9,
+          "length": 3,
+          "attributes": {
+            "url": "https://a.ru"
+          }
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 0,
+            "length": 12,
+            "text": "один два три"
+          },
+          {
+            "type": "LINK",
+            "from": 9,
+            "length": 3,
+            "url": "https://a.ru",
+            "text": "три"
+          }
+        ]
+      }
+    }
+  ]
+}

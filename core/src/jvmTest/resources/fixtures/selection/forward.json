@@ -1,0 +1,180 @@
+{
+  "kind": "forward",
+  "name": "forward",
+  "description": "Пересылка выбранных сообщений в один или несколько чатов: один MSG_SEND на сообщение на чат. Сначала комментарий (если не пустой) в каждый чат, затем сообщения от старых к новым (равное время — по id как числу), каждое — во все чаты по порядку выбора. Повторы id и чатов выбрасываются.",
+  "cases": [
+    {
+      "name": "one-target-oldest-first",
+      "messages": [
+        {
+          "id": "30",
+          "time": 3000
+        },
+        {
+          "id": "10",
+          "time": 1000
+        },
+        {
+          "id": "20",
+          "time": 2000
+        }
+      ],
+      "targets": [
+        "A"
+      ],
+      "comment": null,
+      "expect": {
+        "requests": [
+          {
+            "target": "A",
+            "messageId": "10"
+          },
+          {
+            "target": "A",
+            "messageId": "20"
+          },
+          {
+            "target": "A",
+            "messageId": "30"
+          }
+        ]
+      }
+    },
+    {
+      "name": "two-targets-comment-first",
+      "messages": [
+        {
+          "id": "20",
+          "time": 2000
+        },
+        {
+          "id": "10",
+          "time": 1000
+        }
+      ],
+      "targets": [
+        "A",
+        "B"
+      ],
+      "comment": "  смотри  ",
+      "expect": {
+        "requests": [
+          {
+            "target": "A",
+            "comment": "смотри"
+          },
+          {
+            "target": "B",
+            "comment": "смотри"
+          },
+          {
+            "target": "A",
+            "messageId": "10"
+          },
+          {
+            "target": "B",
+            "messageId": "10"
+          },
+          {
+            "target": "A",
+            "messageId": "20"
+          },
+          {
+            "target": "B",
+            "messageId": "20"
+          }
+        ]
+      }
+    },
+    {
+      "name": "blank-comment-skipped",
+      "messages": [
+        {
+          "id": "10",
+          "time": 1000
+        }
+      ],
+      "targets": [
+        "A"
+      ],
+      "comment": "   ",
+      "expect": {
+        "requests": [
+          {
+            "target": "A",
+            "messageId": "10"
+          }
+        ]
+      }
+    },
+    {
+      "name": "same-time-by-id",
+      "messages": [
+        {
+          "id": "100",
+          "time": 1000
+        },
+        {
+          "id": "99",
+          "time": 1000
+        }
+      ],
+      "targets": [
+        "A"
+      ],
+      "comment": null,
+      "expect": {
+        "requests": [
+          {
+            "target": "A",
+            "messageId": "99"
+          },
+          {
+            "target": "A",
+            "messageId": "100"
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicates-dropped",
+      "messages": [
+        {
+          "id": "10",
+          "time": 1000
+        },
+        {
+          "id": "10",
+          "time": 1000
+        }
+      ],
+      "targets": [
+        "A",
+        "A"
+      ],
+      "comment": null,
+      "expect": {
+        "requests": [
+          {
+            "target": "A",
+            "messageId": "10"
+          }
+        ]
+      }
+    },
+    {
+      "name": "no-targets",
+      "messages": [
+        {
+          "id": "10",
+          "time": 1000
+        }
+      ],
+      "targets": [],
+      "comment": "привет",
+      "expect": {
+        "requests": []
+      }
+    }
+  ]
+}

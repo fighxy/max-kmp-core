@@ -1,0 +1,133 @@
+{
+  "kind": "parse",
+  "name": "parse-utf16",
+  "description": "Смещения в единицах UTF-16: эмодзи вне BMP — две единицы, ZWJ-последовательности и флаги — сумма своих единиц, кириллица — одна единица на букву.",
+  "cases": [
+    {
+      "name": "emoji-before",
+      "text": "👍 класс",
+      "elements": [
+        {
+          "type": "STRONG",
+          "from": 3,
+          "length": 5
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 3,
+            "length": 5,
+            "text": "класс"
+          }
+        ]
+      }
+    },
+    {
+      "name": "emoji-covered",
+      "text": "Ура 🎉🎉 готово",
+      "elements": [
+        {
+          "type": "EMPHASIZED",
+          "from": 4,
+          "length": 4
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "EMPHASIZED",
+            "from": 4,
+            "length": 4,
+            "text": "🎉🎉"
+          }
+        ]
+      }
+    },
+    {
+      "name": "zwj-family",
+      "text": "👨‍👩‍👧 семья",
+      "elements": [
+        {
+          "type": "UNDERLINE",
+          "from": 0,
+          "length": 8
+        },
+        {
+          "type": "STRONG",
+          "from": 9,
+          "length": 5
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "UNDERLINE",
+            "from": 0,
+            "length": 8,
+            "text": "👨‍👩‍👧"
+          },
+          {
+            "type": "STRONG",
+            "from": 9,
+            "length": 5,
+            "text": "семья"
+          }
+        ]
+      }
+    },
+    {
+      "name": "flag-and-smile",
+      "text": "Флаг 🇷🇺 и 😀",
+      "elements": [
+        {
+          "type": "MONOSPACED",
+          "from": 5,
+          "length": 4
+        },
+        {
+          "type": "STRIKETHROUGH",
+          "from": 12,
+          "length": 2
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "MONOSPACED",
+            "from": 5,
+            "length": 4,
+            "text": "🇷🇺"
+          },
+          {
+            "type": "STRIKETHROUGH",
+            "from": 12,
+            "length": 2,
+            "text": "😀"
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-length-after-emoji",
+      "text": "👍 класс",
+      "elements": [
+        {
+          "type": "STRONG",
+          "from": 3
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 3,
+            "length": 5,
+            "text": "класс"
+          }
+        ]
+      }
+    }
+  ]
+}

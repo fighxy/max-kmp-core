@@ -1,0 +1,196 @@
+{
+  "kind": "roles",
+  "name": "roles",
+  "description": "Значки и порядок. Роли — из карточки чата: owner и adminParticipants {userId: {alias?}}. Порядок: владелец, затем админы, затем остальные — каждый в порядке сервера. Значок: «владелец»; у админа — alias, а без него «админ»; у остальных нет (null). Владелец, который есть и в adminParticipants, — владелец.",
+  "cases": [
+    {
+      "name": "owner-admins-members",
+      "chat": {
+        "owner": "3",
+        "adminParticipants": {
+          "5": {},
+          "2": {
+            "alias": "модератор"
+          }
+        }
+      },
+      "members": [
+        {
+          "id": "1",
+          "name": "Участник 1"
+        },
+        {
+          "id": "2",
+          "name": "Участник 2"
+        },
+        {
+          "id": "3",
+          "name": "Участник 3"
+        },
+        {
+          "id": "4",
+          "name": "Участник 4"
+        },
+        {
+          "id": "5",
+          "name": "Участник 5"
+        }
+      ],
+      "expect": [
+        {
+          "id": "3",
+          "badge": "владелец"
+        },
+        {
+          "id": "2",
+          "badge": "модератор"
+        },
+        {
+          "id": "5",
+          "badge": "админ"
+        },
+        {
+          "id": "1",
+          "badge": null
+        },
+        {
+          "id": "4",
+          "badge": null
+        }
+      ]
+    },
+    {
+      "name": "owner-also-admin",
+      "chat": {
+        "owner": "1",
+        "adminParticipants": {
+          "1": {
+            "alias": "босс"
+          }
+        }
+      },
+      "members": [
+        {
+          "id": "2",
+          "name": "Участник 2"
+        },
+        {
+          "id": "1",
+          "name": "Участник 1"
+        }
+      ],
+      "expect": [
+        {
+          "id": "1",
+          "badge": "владелец"
+        },
+        {
+          "id": "2",
+          "badge": null
+        }
+      ]
+    },
+    {
+      "name": "no-roles",
+      "chat": {},
+      "members": [
+        {
+          "id": "2",
+          "name": "Участник 2"
+        },
+        {
+          "id": "1",
+          "name": "Участник 1"
+        }
+      ],
+      "expect": [
+        {
+          "id": "2",
+          "badge": null
+        },
+        {
+          "id": "1",
+          "badge": null
+        }
+      ]
+    },
+    {
+      "name": "blank-alias",
+      "chat": {
+        "adminParticipants": {
+          "2": {
+            "alias": "  "
+          }
+        }
+      },
+      "members": [
+        {
+          "id": "1",
+          "name": "Участник 1"
+        },
+        {
+          "id": "2",
+          "name": "Участник 2"
+        }
+      ],
+      "expect": [
+        {
+          "id": "2",
+          "badge": "админ"
+        },
+        {
+          "id": "1",
+          "badge": null
+        }
+      ]
+    },
+    {
+      "name": "owner-not-loaded",
+      "chat": {
+        "owner": "99",
+        "adminParticipants": {}
+      },
+      "members": [
+        {
+          "id": "1",
+          "name": "Участник 1"
+        }
+      ],
+      "expect": [
+        {
+          "id": "1",
+          "badge": null
+        }
+      ]
+    },
+    {
+      "name": "numeric-keys",
+      "chat": {
+        "owner": 3,
+        "adminParticipants": {
+          "4": {}
+        }
+      },
+      "members": [
+        {
+          "id": "4",
+          "name": "Участник 4"
+        },
+        {
+          "id": "3",
+          "name": "Участник 3"
+        }
+      ],
+      "expect": [
+        {
+          "id": "3",
+          "badge": "владелец"
+        },
+        {
+          "id": "4",
+          "badge": "админ"
+        }
+      ]
+    }
+  ]
+}

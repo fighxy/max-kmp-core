@@ -1,0 +1,228 @@
+{
+  "kind": "outgoing",
+  "name": "outgoing",
+  "description": "Какой запрос уходит, когда черновик в поле ввода сменился (уход из чата, фон): непустой и отличный от серверного — DRAFT_SAVE 176, пустой при черновике на сервере — DRAFT_DISCARD 177 с time = updateTime серверного, иначе ничего. Адрес: личный чат, бот и «Избранное» (id \"0\", адрес — свой id) — userId, группа и канал — chatId. Текст обрезается по краям, отрезки сдвигаются (как в formatting/serialize-trim). Пустой текст в DRAFT_SAVE не отправляется: ключа text нет (как у веб-клиента).",
+  "cases": [
+    {
+      "name": "dialog-save",
+      "me": "100",
+      "chat": {
+        "id": "9001",
+        "type": "DIALOG",
+        "peerId": "200"
+      },
+      "server": null,
+      "local": {
+        "text": "привет",
+        "updateTime": 5000
+      },
+      "expect": {
+        "request": "DRAFT_SAVE",
+        "payload": {
+          "userId": "200",
+          "draft": {
+            "text": "привет",
+            "elements": []
+          }
+        }
+      }
+    },
+    {
+      "name": "saved-messages-own-id",
+      "me": "100",
+      "chat": {
+        "id": "0",
+        "type": "DIALOG",
+        "peerId": null
+      },
+      "server": null,
+      "local": {
+        "text": "заметка",
+        "updateTime": 5000
+      },
+      "expect": {
+        "request": "DRAFT_SAVE",
+        "payload": {
+          "userId": "100",
+          "draft": {
+            "text": "заметка",
+            "elements": []
+          }
+        }
+      }
+    },
+    {
+      "name": "group-chat-id",
+      "me": "100",
+      "chat": {
+        "id": "-7000",
+        "type": "CHAT"
+      },
+      "server": null,
+      "local": {
+        "text": "  всем привет ",
+        "updateTime": 5000,
+        "replyTo": "321",
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 2,
+            "length": 4
+          }
+        ]
+      },
+      "expect": {
+        "request": "DRAFT_SAVE",
+        "payload": {
+          "chatId": "-7000",
+          "draft": {
+            "text": "всем привет",
+            "elements": [
+              {
+                "type": "STRONG",
+                "from": 0,
+                "length": 4
+              }
+            ],
+            "replyTo": "321"
+          }
+        }
+      }
+    },
+    {
+      "name": "channel-chat-id",
+      "me": "100",
+      "chat": {
+        "id": "-8000",
+        "type": "CHANNEL"
+      },
+      "server": null,
+      "local": {
+        "text": "пост",
+        "updateTime": 5000
+      },
+      "expect": {
+        "request": "DRAFT_SAVE",
+        "payload": {
+          "chatId": "-8000",
+          "draft": {
+            "text": "пост",
+            "elements": []
+          }
+        }
+      }
+    },
+    {
+      "name": "empty-discards-server",
+      "me": "100",
+      "chat": {
+        "id": "9001",
+        "type": "DIALOG",
+        "peerId": "200"
+      },
+      "server": {
+        "text": "старое",
+        "updateTime": 4000
+      },
+      "local": {
+        "text": "  ",
+        "updateTime": 6000
+      },
+      "expect": {
+        "request": "DRAFT_DISCARD",
+        "payload": {
+          "userId": "200",
+          "time": 4000
+        }
+      }
+    },
+    {
+      "name": "empty-nothing-on-server",
+      "me": "100",
+      "chat": {
+        "id": "9001",
+        "type": "DIALOG",
+        "peerId": "200"
+      },
+      "server": null,
+      "local": {
+        "text": "",
+        "updateTime": 6000
+      },
+      "expect": {
+        "request": null
+      }
+    },
+    {
+      "name": "same-as-server",
+      "me": "100",
+      "chat": {
+        "id": "-7000",
+        "type": "CHAT"
+      },
+      "server": {
+        "text": "то же",
+        "updateTime": 4000
+      },
+      "local": {
+        "text": "то же ",
+        "updateTime": 6000
+      },
+      "expect": {
+        "request": null
+      }
+    },
+    {
+      "name": "changed-reply-saves",
+      "me": "100",
+      "chat": {
+        "id": "-7000",
+        "type": "CHAT"
+      },
+      "server": {
+        "text": "то же",
+        "updateTime": 4000
+      },
+      "local": {
+        "text": "то же",
+        "updateTime": 6000,
+        "replyTo": "12"
+      },
+      "expect": {
+        "request": "DRAFT_SAVE",
+        "payload": {
+          "chatId": "-7000",
+          "draft": {
+            "text": "то же",
+            "elements": [],
+            "replyTo": "12"
+          }
+        }
+      }
+    },
+    {
+      "name": "reply-only-saves",
+      "me": "100",
+      "chat": {
+        "id": "-7000",
+        "type": "CHAT"
+      },
+      "server": null,
+      "local": {
+        "text": "",
+        "updateTime": 6000,
+        "replyTo": "12"
+      },
+      "expect": {
+        "request": "DRAFT_SAVE",
+        "payload": {
+          "chatId": "-7000",
+          "draft": {
+            "elements": [],
+            "replyTo": "12"
+          }
+        }
+      }
+    }
+  ]
+}

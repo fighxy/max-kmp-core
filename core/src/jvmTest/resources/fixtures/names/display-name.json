@@ -1,7 +1,7 @@
 {
   "kind": "display-name",
   "name": "display-name",
-  "description": "Имя пользователя: адресная книга (если включена и номер совпал) > своё имя контакта (CUSTOM, переименован) > имя, которое пользователь дал себе (ONEME) > первая запись names > номер («+» и цифры) > «Участник». Имя записи — name, иначе «firstName lastName» без пустых частей.",
+  "description": "Имя пользователя: адресная книга (если включена и номер совпал) > своё имя контакта (CUSTOM, переименован) > имя, которое пользователь дал себе (ONEME) > первая запись names > номер («+» и цифры) > «Участник». Имя записи — name, иначе «firstName lastName» без пустых частей; у CUSTOM наоборот: «firstName lastName», а name — только если обе части пустые. Номер с сервера бывает числом.",
   "cases": [
     {
       "name": "book-wins",
@@ -233,7 +233,7 @@
       "addressBookEnabled": true,
       "addressBook": [],
       "user": {
-        "phone": "8 913 123-45-67",
+        "phone": 89131234567,
         "names": [
           {
             "type": "ONEME",
@@ -241,7 +241,8 @@
           }
         ]
       },
-      "expect": "+79131234567"
+      "expect": "+79131234567",
+      "rule": "номер с сервера — число: 8 и 11 цифр → +7"
     },
     {
       "name": "nothing",
@@ -261,6 +262,48 @@
         "names": []
       },
       "expect": "Участник"
+    },
+    {
+      "name": "custom-parts-over-name",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "",
+        "names": [
+          {
+            "type": "ONEME",
+            "firstName": "Анна"
+          },
+          {
+            "type": "CUSTOM",
+            "name": "Анна Петрова",
+            "firstName": "Аня",
+            "lastName": "соседка"
+          }
+        ]
+      },
+      "expect": "Аня соседка"
+    },
+    {
+      "name": "custom-name-fallback",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "",
+        "names": [
+          {
+            "type": "ONEME",
+            "firstName": "Анна"
+          },
+          {
+            "type": "CUSTOM",
+            "name": "Аня с работы",
+            "firstName": " ",
+            "lastName": ""
+          }
+        ]
+      },
+      "expect": "Аня с работы"
     }
   ]
 }

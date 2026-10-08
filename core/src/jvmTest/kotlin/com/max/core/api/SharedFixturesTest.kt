@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
 
 /**
  * Replays the shared Orbitle fixtures vendored under `src/jvmTest/resources/fixtures/`.
- * Source: fighxy/Orbitle, branch `ios/evening`, commit 454e12d, `test-fixtures/` (see
+ * Source: fighxy/Orbitle, branch `ios/evening`, commit 8f859e1, `test-fixtures/` (see
  * `fixtures/SOURCE.md`); update the copies, not the cases, when the shared rule changes.
  */
 class SharedFixturesTest {
@@ -175,6 +175,181 @@ class SharedFixturesTest {
             val members = c["members"]!!.jsonArray.map { it.jsonObject }
             val found = MemberSearch.filter(members, c["query"]!!.jsonPrimitive.content, { it["name"].str() }, { it["mentionName"].str() })
             assertEquals(c["expect"]!!.jsonArray.map { it.jsonPrimitive.content }, found.map { it["id"]!!.jsonPrimitive.content }, c.name)
+        }
+    }
+
+    private fun JsonElement?.id(): Long? = this.str()?.toLongOrNull()
+
+    /** `formatting/parse-*`: [TextElement.parseAll] of the received `elements` over the text. */
+    @Test
+    fun formattingParse() {
+        val files = listOf("parse-defaults", "parse-overlap", "parse-types", "parse-unknown", "parse-utf16")
+        for (f in files) for (c in cases("formatting/$f.json")) {
+            val text = c["text"]!!.jsonPrimitive.content
+            val got = TextElement.parseAll(c["elements"]?.plain(), text.length)
+            val want = c["expect"]!!.jsonObject["spans"]!!.jsonArray.map { span ->
+                val o = span.jsonObject
+                val known = setOf("type", "from", "length", "url", "text")
+                buildMap<String, Any?> {
+                    put("type", o["type"]!!.jsonPrimitive.content)
+                    put("from", o["from"]!!.jsonPrimitive.longOrNull!!.toInt())
+                    put("length", o["length"]!!.jsonPrimitive.longOrNull!!.toInt())
+                    o["url"]?.let { put("attributes", mapOf("url" to it.jsonPrimitive.content)) }
+                    for ((k, v) in o) if (k !in known) put(k, v.plain())
+                }
+            }
+            assertEquals(want, got.map { e -> e.toPayload().mapValues { (k, v) -> if (k == "entityId") (v as Long) else v } }, "$f/${c.name}")
+            // what goes back out on an edit is the element as it came (unknown keys included)
+            assertEquals(got, TextElementsJson.parse(TextElementsJson.write(got), text.length), "$f/${c.name} round trip")
+        }
+    }
+
+    /**
+     * `drafts/outgoing`: the address ([Drafts.address]) and the request body [DraftsApi] sends for
+     * the expected draft. Whether to send (trim, compare with the server draft) is the apps' part.
+     */
+    @Test
+    fun draftOutgoingPayloads() = kotlinx.coroutines.test.runTest {
+        for (c in cases("drafts/outgoing.json")) {
+            val expect = c["expect"]!!.jsonObject
+            val request = expect["request"].str() ?: continue
+            val me = c["me"].id()!!
+            val chatJson = c["chat"]!!.jsonObject
+            val chatId = chatJson["id"].id()!!
+            val peer = chatJson["peerId"].id()
+            val chat = Chat.from(
+                buildMap {
+                    put("id", chatId)
+                    put("type", chatJson["type"]!!.jsonPrimitive.content)
+                    if (peer != null) put("participants", mapOf(me.toString() to 0L, peer.toString() to 0L))
+                },
+            )
+            val sink = ScriptSink(mapOf("time" to 1L))
+            val api = DraftsApi(sink)
+            val address = Drafts.address(chatId, chat, me)
+            val want = (expect["payload"]!!.plain() as Map<*, *>)
+            when (request) {
+                "DRAFT_SAVE" -> {
+                    val d = want["draft"] as Map<*, *>
+                    val text = d["text"] as? String ?: ""
+                    val elements = TextElement.parseAll(d["elements"], text.length)
+                    api.saveDraft(address, text, elements, (d["replyTo"] as? String)?.toLong())
+                }
+                "DRAFT_DISCARD" -> api.discardDraft(address, want["time"].toString().toLong())
+                else -> error("unknown request $request in ${c.name}")
+            }
+            assertEquals(normalize(want), normalize(sink.sent.single().second), c.name)
+        }
+    }
+
+    /** Ids as decimal strings, numbers as Long: the fixtures write ids as strings. */
+    private fun normalize(v: Any?): Any? = when (v) {
+        is Map<*, *> -> v.entries.associate { (k, x) -> k.toString() to normalize(x) }
+        is List<*> -> v.map(::normalize)
+        is Number -> v.toLong().toString()
+        else -> v
+    }
+
+    private fun member(o: JsonObject): ChatMember =
+        ChatMember(o["id"].id(), mapOf("id" to o["id"].id(), "names" to listOf(mapOf("name" to o["name"].str()))), null, emptyMap<Any?, Any?>())
+
+    /** `members/paging`: [ChatMembersResult.of] and [ChatMembersResult.appendTo] over the scripted pages. */
+    @Test
+    fun membersPaging() {
+        for (c in cases("members/paging.json")) {
+            val pages = c["pages"]!!.jsonArray.map { it.jsonObject }
+            val requests = ArrayList<Long>()
+            var loaded = emptyList<ChatMemberEntry>()
+            var marker: Long? = 0L
+            var i = 0
+            while (marker != null && i < pages.size) {
+                requests += marker
+                val p = pages[i++]
+                val page = ChatMembersPage(p["members"]!!.jsonArray.map { member(it.jsonObject) }, p["marker"].str()?.toLongOrNull(), emptyMap<Any?, Any?>())
+                val step = ChatMembersResult.of(page, marker, ChatRoles.NONE).appendTo(loaded)
+                loaded = step.members
+                marker = step.nextMarker
+            }
+            val expect = c["expect"]!!.jsonObject
+            assertEquals(expect["requests"]!!.jsonArray.map { it.jsonPrimitive.longOrNull }, requests, c.name)
+            assertEquals(expect["ids"]!!.jsonArray.map { it.id() }, loaded.map { it.userId }, c.name)
+        }
+    }
+
+    /** `members/roles`: roles from the chat card ([ChatRoles]), list order [ChatMembersResult.byRole], badge text in the test. */
+    @Test
+    fun membersRoles() {
+        for (c in cases("members/roles.json")) {
+            val roles = ChatRoles.of(c["chat"]!!.plain() as Map<*, *>)
+            val entries = c["members"]!!.jsonArray.map { ChatMemberEntry.of(member(it.jsonObject), roles) }
+            val got = ChatMembersResult.byRole(entries).map { e ->
+                val badge = when (e.role) {
+                    ChatMemberRole.OWNER -> "владелец"
+                    ChatMemberRole.ADMIN -> e.admin?.alias ?: "админ"
+                    ChatMemberRole.MEMBER -> null
+                }
+                e.userId.toString() to badge
+            }
+            val want = c["expect"]!!.jsonArray.map { it.jsonObject["id"].str() to it.jsonObject["badge"].str() }
+            assertEquals(want, got, c.name)
+        }
+    }
+
+    /** `selection/delete`: [MessageDeletion.scope] per message and [MessageDeletion.summary]. */
+    @Test
+    fun selectionDelete() {
+        for (c in cases("selection/delete.json")) {
+            val me = c["me"].id()
+            val chatJson = c["chat"]!!.jsonObject
+            val chatId = chatJson["id"].id()!!
+            val kind = DeleteChatKind.of(chatId, Chat.from(mapOf("id" to chatId, "type" to chatJson["type"]!!.jsonPrimitive.content)))
+            val admin = chatJson["admin"]?.jsonPrimitive?.booleanOrNull ?: false
+            val now = c["now"]!!.jsonPrimitive.longOrNull!!
+            val timeout = c["editTimeout"]?.jsonPrimitive?.longOrNull ?: 0L
+            val messages = c["messages"]!!.jsonArray.map { it.jsonObject }
+            // fixture ids may be local strings: index them
+            val scopes = LinkedHashMap<Long, DeleteScope>()
+            messages.forEachIndexed { i, m ->
+                scopes[i.toLong()] = MessageDeletion.scope(
+                    kind = kind,
+                    own = m["author"].id() == me,
+                    sent = m["state"].str() == "sent",
+                    timeMs = m["time"]!!.jsonPrimitive.longOrNull!!,
+                    nowMs = now,
+                    editTimeoutSeconds = timeout,
+                    canDeleteAny = admin,
+                )
+            }
+            val plan = MessageDeletion.summary(kind, scopes)
+            val expect = c["expect"]!!.jsonObject
+            val wantScopes = expect["scopes"]!!.jsonObject
+            assertEquals(messages.map { wantScopes[it["id"].str()]!!.jsonPrimitive.content }, scopes.values.map { it.name.lowercase() }, c.name)
+            assertEquals(expect["canDelete"]!!.jsonPrimitive.booleanOrNull, plan.canDelete, "${c.name} canDelete")
+            assertEquals(expect["showsForEveryone"]!!.jsonPrimitive.booleanOrNull, plan.showsForEveryone, "${c.name} showsForEveryone")
+            assertEquals(expect["forEveryoneByDefault"]!!.jsonPrimitive.booleanOrNull, plan.forEveryoneByDefault, "${c.name} forEveryoneByDefault")
+            assertEquals(expect["forcesForEveryone"]!!.jsonPrimitive.booleanOrNull, plan.forcesForEveryone, "${c.name} forcesForEveryone")
+        }
+    }
+
+    /**
+     * `selection/forward`: message order by [ForwardOrder.of]; the comment trimmed and skipped
+     * when blank, as `MaxClient.forwardMessages` does per target. Several targets (comment to
+     * each first, then each message to every target) are the apps' loop.
+     */
+    @Test
+    fun selectionForward() {
+        for (c in cases("selection/forward.json")) {
+            val messages = c["messages"]!!.jsonArray.map { it.jsonObject }
+            val times = messages.associate { it["id"].id()!! to it["time"]!!.jsonPrimitive.longOrNull!! }
+            val order = ForwardOrder.of(messages.map { it["id"].id()!! }, times)
+            val targets = c["targets"]!!.jsonArray.map { it.jsonPrimitive.content }.distinct()
+            val comment = c["comment"].str()?.trim().orEmpty()
+            val got = buildList {
+                if (comment.isNotEmpty()) for (t in targets) add(mapOf("target" to t, "comment" to comment))
+                for (id in order) for (t in targets) add(mapOf("target" to t, "messageId" to id.toString()))
+            }
+            val want = c["expect"]!!.jsonObject["requests"]!!.jsonArray.map { r -> r.jsonObject.mapValues { it.value.jsonPrimitive.content } }
+            assertEquals(want, got, c.name)
         }
     }
 }

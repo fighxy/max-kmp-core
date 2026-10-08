@@ -1,0 +1,151 @@
+{
+  "kind": "parse",
+  "name": "parse-types",
+  "description": "Все виды разметки сервера: шесть видов панели, цитата, заголовок и CODE (читается как MONOSPACED).",
+  "cases": [
+    {
+      "name": "toolbar-kinds",
+      "text": "Жирный курсив подчёркнутый зачёркнутый моно ссылка",
+      "elements": [
+        {
+          "type": "STRONG",
+          "from": 0,
+          "length": 6
+        },
+        {
+          "type": "EMPHASIZED",
+          "from": 7,
+          "length": 6
+        },
+        {
+          "type": "UNDERLINE",
+          "from": 14,
+          "length": 12
+        },
+        {
+          "type": "STRIKETHROUGH",
+          "from": 27,
+          "length": 11
+        },
+        {
+          "type": "MONOSPACED",
+          "from": 39,
+          "length": 4
+        },
+        {
+          "type": "LINK",
+          "from": 44,
+          "length": 6,
+          "attributes": {
+            "url": "https://max.ru"
+          }
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 0,
+            "length": 6,
+            "text": "Жирный"
+          },
+          {
+            "type": "EMPHASIZED",
+            "from": 7,
+            "length": 6,
+            "text": "курсив"
+          },
+          {
+            "type": "UNDERLINE",
+            "from": 14,
+            "length": 12,
+            "text": "подчёркнутый"
+          },
+          {
+            "type": "STRIKETHROUGH",
+            "from": 27,
+            "length": 11,
+            "text": "зачёркнутый"
+          },
+          {
+            "type": "MONOSPACED",
+            "from": 39,
+            "length": 4,
+            "text": "моно"
+          },
+          {
+            "type": "LINK",
+            "from": 44,
+            "length": 6,
+            "url": "https://max.ru",
+            "text": "ссылка"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quote-heading-code",
+      "text": "Заголовок\nцитата\nкод",
+      "elements": [
+        {
+          "type": "HEADING",
+          "from": 0,
+          "length": 9
+        },
+        {
+          "type": "QUOTE",
+          "from": 10,
+          "length": 6
+        },
+        {
+          "type": "CODE",
+          "from": 17,
+          "length": 3
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "HEADING",
+            "from": 0,
+            "length": 9,
+            "text": "Заголовок"
+          },
+          {
+            "type": "QUOTE",
+            "from": 10,
+            "length": 6,
+            "text": "цитата"
+          },
+          {
+            "type": "MONOSPACED",
+            "from": 17,
+            "length": 3,
+            "text": "код"
+          }
+        ]
+      }
+    },
+    {
+      "name": "type-case-insensitive",
+      "text": "abc",
+      "elements": [
+        {
+          "type": "strong",
+          "from": 0,
+          "length": 3
+        }
+      ],
+      "expect": {
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 0,
+            "length": 3,
+            "text": "abc"
+          }
+        ]
+      }
+    }
+  ]
+}

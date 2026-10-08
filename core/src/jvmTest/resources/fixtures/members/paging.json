@@ -1,0 +1,277 @@
+{
+  "kind": "paging",
+  "name": "paging",
+  "description": "Листание CHAT_MEMBERS 59 {chatId, type: MEMBER, marker, count: 50}. Первый marker — 0. В ответе нет marker (или null) — конец; marker 0 — тоже конец (это маркер первой страницы); тот же marker, что спрашивали, или страница без новых участников — конец. Повторы id выбрасываются, остаётся первый. pages — ответы сервера по порядку запросов; expect.requests — маркеры запросов, которые клиент послал.",
+  "cases": [
+    {
+      "name": "single-page-no-marker",
+      "pages": [
+        {
+          "members": [
+            {
+              "id": "1",
+              "name": "Участник 1"
+            },
+            {
+              "id": "2",
+              "name": "Участник 2"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "requests": [
+          0
+        ],
+        "ids": [
+          "1",
+          "2"
+        ]
+      }
+    },
+    {
+      "name": "two-pages",
+      "pages": [
+        {
+          "members": [
+            {
+              "id": "1",
+              "name": "Участник 1"
+            },
+            {
+              "id": "2",
+              "name": "Участник 2"
+            }
+          ],
+          "marker": 2
+        },
+        {
+          "members": [
+            {
+              "id": "3",
+              "name": "Участник 3"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "requests": [
+          0,
+          2
+        ],
+        "ids": [
+          "1",
+          "2",
+          "3"
+        ]
+      }
+    },
+    {
+      "name": "marker-null-ends",
+      "pages": [
+        {
+          "members": [
+            {
+              "id": "1",
+              "name": "Участник 1"
+            }
+          ],
+          "marker": null
+        }
+      ],
+      "expect": {
+        "requests": [
+          0
+        ],
+        "ids": [
+          "1"
+        ]
+      }
+    },
+    {
+      "name": "marker-zero-ends",
+      "pages": [
+        {
+          "members": [
+            {
+              "id": "1",
+              "name": "Участник 1"
+            }
+          ],
+          "marker": 0
+        }
+      ],
+      "expect": {
+        "requests": [
+          0
+        ],
+        "ids": [
+          "1"
+        ]
+      }
+    },
+    {
+      "name": "marker-string",
+      "pages": [
+        {
+          "members": [
+            {
+              "id": "1",
+              "name": "Участник 1"
+            }
+          ],
+          "marker": "50"
+        },
+        {
+          "members": [
+            {
+              "id": "2",
+              "name": "Участник 2"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "requests": [
+          0,
+          50
+        ],
+        "ids": [
+          "1",
+          "2"
+        ]
+      }
+    },
+    {
+      "name": "same-marker-ends",
+      "pages": [
+        {
+          "members": [
+            {
+              "id": "1",
+              "name": "Участник 1"
+            }
+          ],
+          "marker": 7
+        },
+        {
+          "members": [
+            {
+              "id": "2",
+              "name": "Участник 2"
+            }
+          ],
+          "marker": 7
+        }
+      ],
+      "expect": {
+        "requests": [
+          0,
+          7
+        ],
+        "ids": [
+          "1",
+          "2"
+        ]
+      }
+    },
+    {
+      "name": "dedupe-across-pages",
+      "pages": [
+        {
+          "members": [
+            {
+              "id": "1",
+              "name": "Участник 1"
+            },
+            {
+              "id": "2",
+              "name": "Участник 2"
+            }
+          ],
+          "marker": 2
+        },
+        {
+          "members": [
+            {
+              "id": "2",
+              "name": "Участник 2"
+            },
+            {
+              "id": "3",
+              "name": "Участник 3"
+            }
+          ],
+          "marker": 4
+        },
+        {
+          "members": [
+            {
+              "id": "4",
+              "name": "Участник 4"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "requests": [
+          0,
+          2,
+          4
+        ],
+        "ids": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ]
+      }
+    },
+    {
+      "name": "page-without-new-ends",
+      "pages": [
+        {
+          "members": [
+            {
+              "id": "1",
+              "name": "Участник 1"
+            }
+          ],
+          "marker": 1
+        },
+        {
+          "members": [
+            {
+              "id": "1",
+              "name": "Участник 1"
+            }
+          ],
+          "marker": 2
+        }
+      ],
+      "expect": {
+        "requests": [
+          0,
+          1
+        ],
+        "ids": [
+          "1"
+        ]
+      }
+    },
+    {
+      "name": "empty-first-page",
+      "pages": [
+        {
+          "members": []
+        }
+      ],
+      "expect": {
+        "requests": [
+          0
+        ],
+        "ids": []
+      }
+    }
+  ]
+}
