@@ -302,7 +302,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
-| 1 | `PING` | `PING` |  |
+| 1 | `PING` | `PING` | `{interactive}`; `MaxClient.setInteractive` / мост `setAppActive` меняют флаг, при смене сразу уходит один `PING` (opcodes.md, «Присутствие») |
 | 2 | `DEBUG` | `DEBUG` |  |
 | 3 | `RECONNECT` | `RECONNECT` |  |
 | 5 | `LOG` | `LOG` |  |
@@ -316,7 +316,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 16 | `PROFILE` | `PROFILE` |  |
 | 17 | `AUTH_REQUEST` | `AUTH_REQUEST` |  |
 | 18 | `AUTH` | `AUTH` |  |
-| 19 | `LOGIN` | `LOGIN` |  |
+| 19 | `LOGIN` | `LOGIN` | ответ: `presence {userId: {seen, status}}` читается в стор; `presenceSync` двигается только после этого; `interactive` — текущий флаг клиента |
 | 20 | `LOGOUT` | `LOGOUT` |  |
 | 21 | `SYNC` | `SYNC` | не используется: книга устройства на сервер не отправляется, форма не подтверждена (opcodes.md, «Контакты») |
 | 22 | `CONFIG` | `CONFIG` |  |
@@ -359,8 +359,8 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 31 | `—` | `SEARCH_FEEDBACK` | только PyMax |
 | 32 | `CONTACT_INFO` | `CONTACT_INFO` |  |
 | 33 | `CONTACT_ADD` | `CONTACT_ADD` |  |
-| 34 | `CONTACT_UPDATE` | `CONTACT_UPDATE` | `action`: `ADD`, `UPDATE` (`{contactId, action, firstName, lastName \| null}` → `{contact}`, имя до 64 символов), `REMOVE` (отмена — `ADD`), `BLOCK`, `UNBLOCK` |
-| 35 | `CONTACT_PRESENCE` | `CONTACT_PRESENCE` |  |
+| 34 | `CONTACT_UPDATE` | `CONTACT_UPDATE` | `action`: `ADD`, `UPDATE` (`{contactId, action, firstName, lastName \| null}` → `{contact}`, имя до 64 символов, пустое имя `""` разрешено), `REMOVE` (отмена — `ADD`), `BLOCK`, `UNBLOCK` |
+| 35 | `CONTACT_PRESENCE` | `CONTACT_PRESENCE` | `{contactIds}` → `{presence: {userId: {seen, status}}}`, пачки по 100; нет id в ответе — «давно» (`3`); `UsersApi.getPresence`, `MaxClient.loadPresence` |
 | 36 | `CONTACT_LIST` | `CONTACT_LIST` |  |
 | 37 | `CONTACT_SEARCH` | `CONTACT_SEARCH` |  |
 | 38 | `CONTACT_MUTUAL` | `CONTACT_MUTUAL` |  |
@@ -503,7 +503,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 129 | `NOTIF_TYPING` | `NOTIF_TYPING` | `{chatId, userId, type?}` → `MaxEvent.Typing`; нет `type` — `TEXT` |
 | 130 | `NOTIF_MARK` | `NOTIF_MARK` | `{chatId, userId, mark, setAsUnread}` → `MaxState.readMarks`; входит в «кто прочитал» |
 | 131 | `NOTIF_CONTACT` | `NOTIF_CONTACT` | `{contact}`: правка контакта с другого устройства, применяется, если `updateTime` не старее (`MaxEvent.ContactUpdated`) |
-| 132 | `NOTIF_PRESENCE` | `NOTIF_PRESENCE` |  |
+| 132 | `NOTIF_PRESENCE` | `NOTIF_PRESENCE` | `{userId, presence: {seen?, status?}}` → `MaxEvent.Presence`; без `seen` прежнее время сохраняется; в мосте — событие `presence` |
 | 134 | `NOTIF_CONFIG` | `NOTIF_CONFIG` | изменение конфига аккаунта (заглушение с другого устройства): `{config}` или разделы на верхнем уровне → `MaxEvent.ConfigUpdated`, слияние в `MaxClient.accountConfig`, `hash` → `configHash`; схема тела в референсах не описана (см. «Заглушение чатов») |
 | 135 | `NOTIF_CHAT` | `NOTIF_CHAT` |  |
 | 136 | `NOTIF_ATTACH` | `NOTIF_ATTACH` |  |
@@ -515,8 +515,8 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 147 | `NOTIF_LOCATION` | `NOTIF_LOCATION` |  |
 | 148 | `NOTIF_LOCATION_REQUEST` | `NOTIF_LOCATION_REQUEST` |  |
 | 150 | `NOTIF_ASSETS_UPDATE` | `NOTIF_ASSETS_UPDATE` |  |
-| 152 | `NOTIF_DRAFT` | `NOTIF_DRAFT` | веб-клиент игнорирует, тело не подтверждено; ядро не разбирает (`MaxEvent.Unknown`) |
-| 153 | `NOTIF_DRAFT_DISCARD` | `NOTIF_DRAFT_DISCARD` | веб-клиент игнорирует, тело не подтверждено; ядро не разбирает (`MaxEvent.Unknown`) |
+| 152 | `NOTIF_DRAFT` | `NOTIF_DRAFT` | веб-клиент игнорирует, тело не подтверждено; ядро читает терпимо как `{chatId \| userId, draft: {...}}` → `MaxEvent.DraftSaved` (заменяет только более поздний; битое — `MaxEvent.Unknown`); в мосте — событие `draft` |
+| 153 | `NOTIF_DRAFT_DISCARD` | `NOTIF_DRAFT_DISCARD` | веб-клиент игнорирует, тело не подтверждено; ядро читает терпимо как `{chatId \| userId, time}` → `MaxEvent.DraftDiscarded` (стирает, если наш не новее); в мосте — событие `draft` |
 | 154 | `NOTIF_MSG_DELAYED` | `NOTIF_MSG_DELAYED` |  |
 | 155 | `NOTIF_MSG_REACTIONS_CHANGED` | `NOTIF_MSG_REACTIONS_CHANGED` |  |
 | 156 | `NOTIF_MSG_YOU_REACTED` | `NOTIF_MSG_YOU_REACTED` |  |
@@ -540,7 +540,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 161 | `COMPLAIN` | `COMPLAIN` |  |
 | 162 | `COMPLAIN_REASONS_GET` | `COMPLAIN_REASONS_GET` |  |
 | 176 | `DRAFT_SAVE` | `DRAFT_SAVE` | `{chatId \| userId, draft: {text?, elements, replyTo?}}` → `{time}` (opcodes.md, «Черновики на сервере») |
-| 177 | `DRAFT_DISCARD` | `DRAFT_DISCARD` | `{chatId \| userId, time}`, `time` — `updateTime` черновика |
+| 177 | `DRAFT_DISCARD` | `DRAFT_DISCARD` | `{chatId \| userId, time}`, `time` — `updateTime` черновика; после успешной отправки в чат с черновиком ядро шлёт его само, один раз |
 | 196 | `CHAT_HIDE` | `CHAT_HIDE` |  |
 | 198 | `CHAT_SEARCH_COMMON_PARTICIPANTS` | `CHAT_SEARCH_COMMON_PARTICIPANTS` |  |
 | 199 | `PROFILE_DELETE` | `PROFILE_DELETE` |  |
