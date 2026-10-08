@@ -2,6 +2,7 @@
 
 package com.max.shared
 
+import com.max.core.api.DraftSupersededException
 import com.max.core.api.PresenceInfo
 import com.max.core.api.PresenceStatus
 import com.max.core.events.MaxEvent
@@ -29,6 +30,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 
 /** Presence, drafts and the applied-events flow through [MaxClient]. */
 class PresenceDraftsClientTest {
@@ -52,6 +54,19 @@ class PresenceDraftsClientTest {
         assertEquals(opcode.value, header.opcodeValue, "expected ${opcode.name}")
         feed(errorReply(header.seq, opcode.value, mapOf("error" to error, "message" to error)))
         return payload as Map<*, *>
+    }
+
+    /** The next request, checked to be [opcode], left unanswered: (seq, payload). */
+    private suspend fun FakeRawConnection.take(opcode: Opcode): Pair<Int, Map<*, *>> {
+        val (header, payload) = decodePayloadPacket(takeWritten()!!)
+        assertEquals(opcode.value, header.opcodeValue, "expected ${opcode.name}")
+        return header.seq to (payload as? Map<*, *> ?: emptyMap<Any?, Any?>())
+    }
+
+    /** Nothing more was written. */
+    private suspend fun FakeRawConnection.assertSilent() {
+        val next = takeWritten(100.milliseconds)
+        assertNull(next?.let { decodePayloadPacket(it).first.opcodeValue }, "unexpected request")
     }
 
     private fun loginReply(extra: Map<String, Any?> = emptyMap()) = mapOf(
@@ -348,5 +363,92 @@ class PresenceDraftsClientTest {
         assertEquals("Мама", t.c.displayName(peer))
         t.c.preferAddressBookNames = false
         assertEquals("Аня", t.c.displayName(peer))
+    }
+
+    @Test
+    fun aDraftSaveInFlightCannotLandAfterTheDiscardOfASend() = runTest {
+        val t = loggedIn(mapOf("drafts" to mapOf("chats" to mapOf("saved" to mapOf("-70" to mapOf("saveTime" to 1_000L, "text" to "старый"))))))
+        assertEquals("старый", t.c.drafts[-70L]?.text)
+        val save = async { runCatching { t.c.saveDraft(-70, "новый") } }
+        runCurrent()
+        val (saveSeq, saveBody) = t.conn.take(Opcode.DRAFT_SAVE)
+        assertEquals("новый", (saveBody["draft"] as Map<*, *>)["text"])
+        val send = async { t.c.sendText(-70, "привет") }
+        runCurrent()
+        t.conn.answer(Opcode.MSG_SEND, msg(1, -70))
+        send.await()
+        runCurrent()
+        // the 177 waits for the 176 in flight
+        t.conn.assertSilent()
+        assertNull(t.c.drafts[-70L])
+        t.conn.feed(ok(saveSeq, Opcode.DRAFT_SAVE.value, mapOf("time" to 1_200L)))
+        runCurrent()
+        val discard = t.conn.answer(Opcode.DRAFT_DISCARD, emptyMap<String, Any?>())
+        assertEquals(-70L, discard["chatId"].long())
+        assertEquals(1_200L, discard["time"].long()) // covers the late save, not only the old draft
+        runCurrent()
+        assertEquals(1_200L, assertIs<DraftSupersededException>(save.await().exceptionOrNull()).time)
+        assertNull(t.c.drafts[-70L])
+        assertEquals(1_200L, t.c.draftDiscardedAt(-70))
+        t.conn.assertSilent()
+    }
+
+    @Test
+    fun aQueuedSaveIsDroppedByASendAndASaveAfterTheSendStays() = runTest {
+        val t = loggedIn()
+        val first = async { runCatching { t.c.saveDraft(-70, "а") } }
+        runCurrent()
+        val second = async { runCatching { t.c.saveDraft(-70, "аб") } }
+        runCurrent()
+        val (firstSeq, _) = t.conn.take(Opcode.DRAFT_SAVE)
+        val send = async { t.c.sendText(-70, "абв") }
+        runCurrent()
+        // the second save waits behind the first, the send goes out
+        t.conn.answer(Opcode.MSG_SEND, msg(1, -70))
+        send.await()
+        runCurrent()
+        t.conn.feed(ok(firstSeq, Opcode.DRAFT_SAVE.value, mapOf("time" to 1_100L)))
+        runCurrent()
+        // the queued save never goes out; the discard covers the first one
+        assertEquals(1_100L, t.conn.answer(Opcode.DRAFT_DISCARD, emptyMap<String, Any?>())["time"].long())
+        runCurrent()
+        assertEquals(1_100L, assertIs<DraftSupersededException>(first.await().exceptionOrNull()).time)
+        assertNull(assertIs<DraftSupersededException>(second.await().exceptionOrNull()).time)
+        t.conn.assertSilent()
+        assertNull(t.c.drafts[-70L])
+
+        // a save called after a send started is a new draft: kept, not discarded
+        val send2 = async { t.c.sendText(-70, "ещё") }
+        runCurrent()
+        val (sendSeq, _) = t.conn.take(Opcode.MSG_SEND)
+        val later = async { t.c.saveDraft(-70, "после") }
+        runCurrent()
+        t.conn.answer(Opcode.DRAFT_SAVE, mapOf("time" to 1_300L))
+        assertEquals(1_300L, later.await().updateTime)
+        t.conn.feed(ok(sendSeq, Opcode.MSG_SEND.value, msg(2, -70)))
+        send2.await()
+        runCurrent()
+        t.conn.assertSilent()
+        assertEquals("после", t.c.drafts[-70L]?.text)
+    }
+
+    @Test
+    fun aFailedSaveInFlightStillLetsTheDiscardOut() = runTest {
+        val t = loggedIn(mapOf("drafts" to mapOf("chats" to mapOf("saved" to mapOf("-70" to mapOf("saveTime" to 1_000L, "text" to "старый"))))))
+        val save = async { runCatching { t.c.saveDraft(-70, "новый") } }
+        runCurrent()
+        val (saveSeq, _) = t.conn.take(Opcode.DRAFT_SAVE)
+        val send = async { t.c.sendText(-70, "привет") }
+        runCurrent()
+        t.conn.answer(Opcode.MSG_SEND, msg(1, -70))
+        send.await()
+        runCurrent()
+        t.conn.assertSilent()
+        t.conn.feed(errorReply(saveSeq, Opcode.DRAFT_SAVE.value, mapOf("error" to "boom", "message" to "boom")))
+        runCurrent()
+        assertEquals(1_000L, t.conn.answer(Opcode.DRAFT_DISCARD, emptyMap<String, Any?>())["time"].long())
+        assertTrue(save.await().isFailure)
+        runCurrent()
+        assertEquals(1_000L, t.c.draftDiscardedAt(-70))
     }
 }

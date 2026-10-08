@@ -16,6 +16,7 @@ import com.max.core.api.Presences
 import com.max.core.api.MaxDraft
 import com.max.core.api.MemberSearch
 import com.max.core.api.TextElement
+import com.max.core.api.DraftSupersededException
 import com.max.core.api.TextElementsJson
 import com.max.core.api.TextElementType
 import com.max.core.api.MaxMessage
@@ -761,12 +762,19 @@ class MaxIosClient internal constructor(
      * Saves the server draft of [chatId] (`DRAFT_SAVE` 176; dialogs and Saved Messages go by the
      * peer's user id). [elementsJson] as in [sendFormattedText], a non-empty [replyTo] is the
      * message the draft answers. [onResult] gets the server time of the draft (0 on failure).
+     * Saves of one chat go out in call order; a save called before a successful send into the
+     * same chat is dropped or covered by the discard after the send: then [onResult] gets `0`
+     * and no error (the composer was sent, there is no draft to keep).
      */
     fun saveDraft(chatId: String, text: String, elementsJson: String, replyTo: String, onResult: (Long, String?, String?) -> Unit) {
         perform(onResult, { 0L }) { c ->
             val elements = TextElementsJson.parse(elementsJson, text.length)
             val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
-            c.saveDraft(parseId(chatId), text, elements, reply).updateTime
+            try {
+                c.saveDraft(parseId(chatId), text, elements, reply).updateTime
+            } catch (e: DraftSupersededException) {
+                0L
+            }
         }
     }
 

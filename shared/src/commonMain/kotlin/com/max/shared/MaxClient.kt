@@ -15,6 +15,8 @@ import com.max.core.api.ChatMemberRole
 import com.max.core.api.ChatRights
 import com.max.core.api.DeletePlan
 import com.max.core.api.DeleteScope
+import com.max.core.api.DraftQueue
+import com.max.core.api.DraftSupersededException
 import com.max.core.api.Drafts
 import com.max.core.api.MessageDeletion
 import com.max.core.api.MaxDraft
@@ -230,6 +232,9 @@ class MaxClient @Throws(Exception::class) constructor(
     private val loginCount = MutableStateFlow(0)
     private val _accountConfig = MutableStateFlow<AccountConfig?>(null)
     private val lifecycle = Mutex()
+
+    /** Per-chat order of draft saves, discards and sends ([DraftQueue]). */
+    private val draftQueue = DraftQueue()
     /** Bumped on login, logout and token rejection so an in-flight gap fill cannot write afterwards. */
     private var sessionEpoch = 0
     /** Bumped on logout, token rejection and close; with the [TokenLogin] identity it names an account session. */
@@ -1203,17 +1208,29 @@ class MaxClient @Throws(Exception::class) constructor(
      * Saves the draft of [chatId] on the server (`DRAFT_SAVE` 176). Dialogs and Saved Messages are
      * addressed by the peer's `userId`, other chats by `chatId` ([Drafts.address]). The server
      * time of the reply becomes the draft's `updateTime`; the draft goes into [store].
+     *
+     * Draft requests of one chat go out one at a time in call order ([DraftQueue]). A save
+     * called before a send into the same chat ([sendText], [sendAttachments]) that succeeded
+     * cannot outlive it: if it had not gone out yet it is dropped, if it was in flight its
+     * draft is not stored and the discard after the send covers it; both throw
+     * [DraftSupersededException].
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun saveDraft(chatId: Long, text: String, elements: List<TextElement> = emptyList(), replyTo: Long? = null): MaxDraft {
-        val state = store.state.value
-        val address = Drafts.address(chatId, state.chats[chatId], state.me)
         val kept = elements.filter { it.fits(text.length) }
         val t = ticket()
-        val time = api.drafts.saveDraft(address, text, kept, replyTo)
-        val draft = MaxDraft(chatId, text, kept, replyTo, time)
-        commit(t) { store.putDraft(draft) }
-        return draft
+        return draftQueue.save(
+            chatId,
+            send = {
+                val state = store.state.value
+                api.drafts.saveDraft(Drafts.address(chatId, state.chats[chatId], state.me), text, kept, replyTo)
+            },
+            onSaved = { time ->
+                val draft = MaxDraft(chatId, text, kept, replyTo, time)
+                commit(t) { store.putDraft(draft) }
+                draft
+            },
+        )
     }
 
     /**
@@ -1224,15 +1241,19 @@ class MaxClient @Throws(Exception::class) constructor(
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun discardDraft(chatId: Long, time: Long? = null): Boolean {
-        val state = store.state.value
-        val at = time ?: state.draftOf(chatId)?.updateTime ?: run {
-            store.removeDraft(chatId)
-            return false
-        }
         val t = ticket()
-        api.drafts.discardDraft(Drafts.address(chatId, state.chats[chatId], state.me), at)
-        commit(t) { store.removeDraft(chatId, at) }
-        return true
+        return draftQueue.exclusive(chatId) {
+            val state = store.state.value
+            val at = time ?: state.draftOf(chatId)?.updateTime
+            if (at == null) {
+                store.removeDraft(chatId)
+                false
+            } else {
+                api.drafts.discardDraft(Drafts.address(chatId, state.chats[chatId], state.me), at)
+                commit(t) { store.removeDraft(chatId, at) }
+                true
+            }
+        }
     }
 
     /** Active sessions (`SESSIONS_INFO` 96). */
@@ -1303,33 +1324,55 @@ class MaxClient @Throws(Exception::class) constructor(
 
     private suspend fun sendTextImpl(chatId: Long, text: String, replyTo: Long?, elements: List<Map<String, Any?>>, discardDraft: Boolean): MaxMessage {
         val t = ticket()
+        val order = if (discardDraft) draftQueue.issueSend(chatId) else null
         val message = api.messages.sendMessage(chatId, text, replyTo, elements = elements)
-        val draft = commit(t) {
-            store.putSentMessage(chatId, message)
-            if (discardDraft) store.takeDraft(chatId) else null
-        }
-        draft?.let { discardSentDraft(t, it) }
+        afterSend(t, chatId, message, order)
         return message
+    }
+
+    /**
+     * Puts a sent [message] into [store]. With a send [order] ([DraftQueue.issueSend]) the chat's
+     * stored draft is taken at the same moment the send is recorded (unless a save issued after
+     * the send started stored it), and the discard follows when there was a draft or a save
+     * issued before the send is still open.
+     */
+    private suspend fun afterSend(t: Ticket, chatId: Long, message: MaxMessage, order: Long?) {
+        if (order == null) {
+            commit(t) { store.putSentMessage(chatId, message) }
+            return
+        }
+        val (draft, savesOpen) = draftQueue.sent(chatId, order) { consume ->
+            commit(t) {
+                store.putSentMessage(chatId, message)
+                if (consume) store.takeDraft(chatId) else null
+            }
+        }
+        if (draft != null || savesOpen) discardSentDraft(t, chatId, draft)
     }
 
     /**
      * After a successful send into a chat with a stored draft (MAX web client: the draft is sent,
      * then discarded on the server): the draft was already taken out of [store] atomically
      * ([MaxStore.takeDraft], so of two sends only one gets it); here `DRAFT_DISCARD` 177 goes out
-     * with its time, in the background. A failure goes to [onBackgroundError], never to the
-     * sender: the server then keeps the draft until it is replaced or discarded elsewhere.
+     * in the background, after the chat's saves still in flight ([DraftQueue.discardAfterSend]),
+     * at the latest of the consumed draft's time and the times of saves the send superseded
+     * (nothing goes out when there is neither). A failure goes to [onBackgroundError], never to
+     * the sender: the server then keeps the draft until it is replaced or discarded elsewhere.
      */
-    private fun discardSentDraft(t: Ticket, draft: MaxDraft) {
-        val state = store.state.value
-        val address = Drafts.address(draft.chatId, state.chats[draft.chatId], state.me)
+    private fun discardSentDraft(t: Ticket, chatId: Long, draft: MaxDraft?) {
         scope.launch {
             try {
-                if (t.gen != lifecycle.withLock { accountGen }) return@launch
-                api.drafts.discardDraft(address, draft.updateTime)
+                draftQueue.discardAfterSend(chatId) { superseded ->
+                    val at = listOfNotNull(draft?.updateTime, superseded).maxOrNull() ?: return@discardAfterSend
+                    if (t.gen != lifecycle.withLock { accountGen }) return@discardAfterSend
+                    val state = store.state.value
+                    api.drafts.discardDraft(Drafts.address(chatId, state.chats[chatId], state.me), at)
+                    if (superseded != null) commit(t) { store.removeDraft(chatId, at) }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                runCatching { onBackgroundError?.invoke("DRAFT_DISCARD after send to ${draft.chatId} failed", e) }
+                runCatching { onBackgroundError?.invoke("DRAFT_DISCARD after send to $chatId failed", e) }
             }
         }
     }
@@ -1480,6 +1523,7 @@ class MaxClient @Throws(Exception::class) constructor(
         discardDraft: Boolean,
     ): MaxMessage {
         val t = ticket()
+        val order = if (discardDraft) draftQueue.issueSend(chatId) else null
         val message = media.sendMessage(
             chatId,
             attachments,
@@ -1487,11 +1531,7 @@ class MaxClient @Throws(Exception::class) constructor(
             replyTo,
             notReadyAttempts = ATTACHMENT_SEND_ATTEMPTS,
         )
-        val draft = commit(t) {
-            store.putSentMessage(chatId, message)
-            if (discardDraft) store.takeDraft(chatId) else null
-        }
-        draft?.let { discardSentDraft(t, it) }
+        afterSend(t, chatId, message, order)
         return message
     }
 
