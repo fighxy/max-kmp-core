@@ -6,6 +6,7 @@ import com.max.core.api.FolderList
 import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
+import com.max.core.api.MessageReaders
 import com.max.core.api.PresenceInfo
 import com.max.core.api.ReactionInfo
 import com.max.core.api.TypingType
@@ -28,7 +29,8 @@ import com.max.core.events.MaxEvent
  * @property presence last presence per user id.
  * @property typing per chat id: user id → local clock time (ms) of the last `NOTIF_TYPING`.
  *   The protocol has no "stopped typing" push; see [typingUsers].
- * @property readMarks per chat id: user id → last read `mark` (`NOTIF_MARK` 130).
+ * @property readMarks per chat id: user id → last read `mark` (`NOTIF_MARK` 130). Merged with the
+ *   chat's `participants` marks by [chatReadMarks].
  * @property gapAnchors chat id → newest local message id when a hole was noticed (`lastMessage`
  *   moved ahead of the loaded tail). Cleared only when a history page contains that id
  *   ([StateReducer.putHistoryPage]), or when the server has nothing older
@@ -101,6 +103,15 @@ data class MaxState(
         val at = typing[chatId]?.get(userId) ?: return null
         return if (now - at <= ttlMs) typingTypes[chatId]?.get(userId) ?: TypingType.TEXT else null
     }
+
+    /**
+     * Read marks of [chatId] (user id → time of the last message read, ms): the [server] marks,
+     * by default `participants` of the stored chat ([Chat.participants]), merged with the
+     * `NOTIF_MARK` pushes in [readMarks]; for a user in both the later mark wins
+     * ([MessageReaders.mergeMarks]).
+     */
+    fun chatReadMarks(chatId: Long, server: Map<Long, Long> = chats[chatId]?.participants.orEmpty()): Map<Long, Long> =
+        MessageReaders.mergeMarks(server, readMarks[chatId])
 
     /**
      * Chats with an open history hole. The hole stays open until a `CHAT_HISTORY` page contains
