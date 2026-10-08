@@ -10,7 +10,7 @@
 | [KometTeam/kolibri](https://github.com/KometTeam/kolibri) (`kolibri-net`) | `a6cdce9` (`a6cdce9e0e75d33aa0c398988d3b45e25c8908ab`) | MIT OR Apache-2.0 |
 | [MaxApiTeam/PyMax](https://github.com/MaxApiTeam/PyMax) | ветка `origin/dev/2.5.0`, HEAD `190e391152150a0971cae13a573218dc41f1b80b`; версия пакета `2.4.1` (`pyproject.toml`) | MIT |
 
-Дата сборки документа: **2026-09-28**. Надёжность соединения (§C.3–C.4, §C.6, §D.5, K7/K8/K14, «Roadmap»), размеры картинок (§G.3) закрепы (§G.4) и отложенные сообщения с опросами (§G.5) обновлены **2026-10-09** по поведению релизного Android-клиента Max (статическое чтение декомпилированного кода; к серверам не подключались, ключи и сертификаты не извлекались).
+Дата сборки документа: **2026-09-28**. Надёжность соединения (§C.3–C.4, §C.6, §D.5, K7/K8/K14, «Roadmap»), размеры картинок (§G.3) закрепы (§G.4) и отложенные сообщения с опросами (§G.5) и журнал звонков (§H.4) обновлены **2026-10-09** по поведению релизного Android-клиента Max (статическое чтение декомпилированного кода; к серверам не подключались, ключи и сертификаты не извлекались).
 
 Префикс цитат: `kolibri:` — путь относительно корня репозитория kolibri; `PyMax:` — относительно корня PyMax. Если факт в коде не найден — «не найдено».
 
@@ -490,9 +490,12 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 76 | `VIDEO_CHAT_START` | `VIDEO_CHAT_START` |  |
 | 77 | `CHAT_MEMBERS_UPDATE` | `CHAT_MEMBERS_UPDATE` |  |
 | 78 | `VIDEO_CHAT_START_ACTIVE` | `VIDEO_CHAT_START_ACTIVE` |  |
-| 79 | `VIDEO_CHAT_HISTORY` | `VIDEO_CHAT_HISTORY` |  |
+| 79 | `VIDEO_CHAT_HISTORY` | `VIDEO_CHAT_HISTORY` | журнал как сообщения с вложением `CALL`; остаётся как был (§H.4) |
 | 84 | `VIDEO_CHAT_CREATE_JOIN_LINK` | `VIDEO_CHAT_CREATE_JOIN_LINK` |  |
 | 103 | `GET_INBOUND_CALLS` | `GET_INBOUND_CALLS` |  |
+| 163 | `—` | `CALL_HISTORY` | `{callHistorySync}` → `{callHistoryItems, callHistorySync, reset}`; курсор, не страница 79 |
+| 165 | `—` | `NOTIF_CALL_HISTORY` | пуш `{callHistorySync, prevCallHistorySync, action, callHistoryItems, historyIds}` → `MaxEvent.CallHistoryChanged` |
+| 167 | `—` | `VIDEO_CHAT_HANGUP` | `{conversationId, reason, peerId?, internalParams:""}` → `{error?}` |
 | 164 | `VIDEO_CHAT_DELETE_HISTORY` | `—` | только kolibri |
 | 166 | `VIDEO_CHAT_JOIN_BY_LINK` | `VIDEO_CHAT_JOIN` | разные имена: kolibri `VIDEO_CHAT_JOIN_BY_LINK` / PyMax `VIDEO_CHAT_JOIN` |
 | 195 | `VIDEO_CHAT_MEMBERS` | `VIDEO_CHAT_MEMBERS` |  |
@@ -909,6 +912,16 @@ JSON envelopes: command+sequence / response / notification; keepalive text `ping
 
 В PyMax **нет** каталога `src/pymax/calls/` (есть `transport/` — только TCP и WebSocket к основному API). Полнотекстовый поиск по репо (`vcp`, `ws2`, `webrtc`, `sdp`, `ice`, `transmit-data`, `accept-call`, `conversationParams`) — **не найдено**. Opcodes `NOTIF_CALL_START = 137`, `CALLS_TOKEN = 158`, `VIDEO_CHAT_*`, `GET_INBOUND_CALLS` только объявлены в enum; call sites — **не найдено**. Есть domain `CallAttachment` (`_type`, `duration`, `conversationId`, `contactIds`, `callType`, `hangupType`) — вложение сообщения, не сигналинг (`PyMax:src/pymax/types/domain/attachments/call.py:10-32`).
 
+### H.4 Отклонение входящего и журнал 163/165
+
+Сверено с релизным Android-клиентом (статическое чтение; к серверам не подключались; параметры медиа не копировались). Опкод 79 не менялся: пустой запрос, ответ `{history}` из сообщений с вложением `CALL`.
+
+**167** `VIDEO_CHAT_HANGUP`. Запрос как у отбоя: всегда `conversationId`, `reason` (имя перечисления: `REJECTED` для отклонения входящего, ещё `BUSY`, `MISSED`, `HUNGUP`, `CANCELED`, `TIMEOUT`, `CALL_TIMEOUT`, `FAILED`, `REMOVED`, `SERVICE_UNAVAILABLE`, `PARTICIPANT_LIMIT_EXCEEDED`, `OBSOLETE_CLIENT`, `BANNED`, `ANOTHER_DEVICE`, `KILLED`, `KILLED_WITHOUT_DELETE`, `ADMIN_CLOSED`, `SOCKET_CLOSED`, `INITIALLY_CLOSED`), `peerId` только если задан, `internalParams` пустая строка (приложение на этом пути шлёт пустое значение, не секрет). Ответ `{error?}`: нет строки или пустая — отбой принят. Ядро не открывает медиа.
+
+**163** `CALL_HISTORY` — синхронизация журнала, не карточка звонка. Запрос `{callHistorySync}` (первый раз `0`). Ответ `{callHistoryItems, callHistorySync, reset}`. `reset: true` — заменить локальный журнал. Элемент: `historyId`, `callId` (обязателен), `callName`, `callerId`, `messageId`, `chatId`, `callType` (`AUDIO` или `VIDEO`, иначе элемент выбрасывается), `hangupType` (`HUNGUP`, `CANCELED`, `REJECTED`, `MISSED`; иная строка — нет типа), `joinLink`, `time`, `durationMs`, `groupCallType` (`0` ссылка, `1` чат).
+
+**165** `NOTIF_CALL_HISTORY` — пуш того же журнала: `{callHistorySync, prevCallHistorySync, action, callHistoryItems, historyIds}`. `action`: `ADD` или `REMOVE`. Событие `MaxEvent.CallHistoryChanged`, в мосте `callLog` (`add` / `remove`). Хранилище его не пишет. Если `prevCallHistorySync` не сходится с сохранённым курсором, клиент заново зовёт 163.
+
 ---
 
 ## I. Чего нет в одном, но есть в другом
@@ -1142,7 +1155,7 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
 2. **`PHOTO_URL_REFRESH` (203) и лестница размеров** — сделано: `fn=sqr_N` / `fn=w_N`, выбор первого размера не меньше запрошенных пикселей, обновление протухших ссылок пачками (§G.3).
 3. **Закреплённые сообщения (240–243) и часть пропускаемых пушей** — сделано: состояние закрепа, 240/241/242, пуш 243, плюс типы для 156, 159, 293 и ошибки 136 (§G.4). 154, звонки, сторис и остальной каталог не трогались.
 4. **Отложенные сообщения и опросы** — сделано: список/создание/правка/отмена, пуш 154, чтение опроса 306 и голос 304 (§G.5). Пуша счётчиков нет. 305 не делался.
-5. По желанию: отклонение звонка (167) и журнал звонков (163/165).
+5. **Отклонение звонка (167) и журнал (163/165)** — сделано (§H.4). Медиа и сигналинг не трогались. Журнал 79 остаётся.
 
 ---
 
