@@ -318,7 +318,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 18 | `AUTH` | `AUTH` |  |
 | 19 | `LOGIN` | `LOGIN` |  |
 | 20 | `LOGOUT` | `LOGOUT` |  |
-| 21 | `SYNC` | `SYNC` |  |
+| 21 | `SYNC` | `SYNC` | `{contactList: {<телефон>: {firstName}}}` → `contacts` (+ `phones`?): импорт книги (opcodes.md, «Контакты») |
 | 22 | `CONFIG` | `CONFIG` |  |
 | 23 | `AUTH_CONFIRM` | `AUTH_CONFIRM` |  |
 
@@ -359,7 +359,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 31 | `—` | `SEARCH_FEEDBACK` | только PyMax |
 | 32 | `CONTACT_INFO` | `CONTACT_INFO` |  |
 | 33 | `CONTACT_ADD` | `CONTACT_ADD` |  |
-| 34 | `CONTACT_UPDATE` | `CONTACT_UPDATE` |  |
+| 34 | `CONTACT_UPDATE` | `CONTACT_UPDATE` | `action`: `ADD`, `UPDATE` (имя), `REMOVE`, `BLOCK`, `UNBLOCK` |
 | 35 | `CONTACT_PRESENCE` | `CONTACT_PRESENCE` |  |
 | 36 | `CONTACT_LIST` | `CONTACT_LIST` |  |
 | 37 | `CONTACT_SEARCH` | `CONTACT_SEARCH` |  |
@@ -385,7 +385,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 56 | `CHAT_CHECK_LINK` | `CHAT_CHECK_LINK` |  |
 | 57 | `CHAT_JOIN` | `CHAT_JOIN` |  |
 | 58 | `CHAT_LEAVE` | `CHAT_LEAVE` |  |
-| 59 | `CHAT_MEMBERS` | `CHAT_MEMBERS` | у участника `readMark` (opcodes.md, «Кто прочитал сообщение») |
+| 59 | `CHAT_MEMBERS` | `CHAT_MEMBERS` | у участника `readMark` (opcodes.md, «Кто прочитал сообщение»); роли из чата (`owner`, `admins`, `adminParticipants`), страницы по `marker` |
 | 60 | `PUBLIC_SEARCH` | `PUBLIC_SEARCH` |  |
 | 61 | `CHAT_PERSONAL_CONFIG` | `CHAT_PERSONAL_CONFIG` |  |
 | 62 | `—` | `CHAT_LIVESTREAM_INFO` | только PyMax |
@@ -395,10 +395,10 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
-| 64 | `MSG_SEND` | `MSG_SEND` |  |
+| 64 | `MSG_SEND` | `MSG_SEND` | `elements` — форматирование; пересылка — ссылка `FORWARD`, по кадру на сообщение |
 | 65 | `MSG_TYPING` | `MSG_TYPING` | `{chatId, type, postId?}`, без ожидания ответа; `type`: `TEXT`, `AUDIO`, `VIDEO_MSG`, `PHOTO`, `VIDEO`, `FILE`, `STICKER` (opcodes.md, «Печатает: 65 и 129») |
-| 66 | `MSG_DELETE` | `MSG_DELETE` |  |
-| 67 | `MSG_EDIT` | `MSG_EDIT` |  |
+| 66 | `MSG_DELETE` | `MSG_DELETE` | `{chatId, messageIds, forMe, itemType?}`: весь выбор одним запросом |
+| 67 | `MSG_EDIT` | `MSG_EDIT` | `{chatId, messageId, text, elements, attachments}`; ответ без реакций |
 | 68 | `CHAT_SEARCH` | `CHAT_SEARCH` |  |
 | 70 | `MSG_SHARE_PREVIEW` | `MSG_SHARE_PREVIEW` |  |
 | 71 | `MSG_GET` | `MSG_GET` |  |
@@ -501,7 +501,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 128 | `NOTIF_MESSAGE` | `NOTIF_MESSAGE` |  |
 | 129 | `NOTIF_TYPING` | `NOTIF_TYPING` | `{chatId, userId, type?}` → `MaxEvent.Typing`; нет `type` — `TEXT` |
 | 130 | `NOTIF_MARK` | `NOTIF_MARK` | `{chatId, userId, mark, setAsUnread}` → `MaxState.readMarks`; входит в «кто прочитал» |
-| 131 | `NOTIF_CONTACT` | `NOTIF_CONTACT` |  |
+| 131 | `NOTIF_CONTACT` | `NOTIF_CONTACT` | форма неизвестна (opcodes.md, «Блокеры») |
 | 132 | `NOTIF_PRESENCE` | `NOTIF_PRESENCE` |  |
 | 134 | `NOTIF_CONFIG` | `NOTIF_CONFIG` |  |
 | 135 | `NOTIF_CHAT` | `NOTIF_CHAT` |  |
@@ -514,8 +514,8 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 147 | `NOTIF_LOCATION` | `NOTIF_LOCATION` |  |
 | 148 | `NOTIF_LOCATION_REQUEST` | `NOTIF_LOCATION_REQUEST` |  |
 | 150 | `NOTIF_ASSETS_UPDATE` | `NOTIF_ASSETS_UPDATE` |  |
-| 152 | `NOTIF_DRAFT` | `NOTIF_DRAFT` |  |
-| 153 | `NOTIF_DRAFT_DISCARD` | `NOTIF_DRAFT_DISCARD` |  |
+| 152 | `NOTIF_DRAFT` | `NOTIF_DRAFT` | тело неизвестно, не реализовано (opcodes.md, «Блокеры») |
+| 153 | `NOTIF_DRAFT_DISCARD` | `NOTIF_DRAFT_DISCARD` | тело неизвестно, не реализовано (opcodes.md, «Блокеры») |
 | 154 | `NOTIF_MSG_DELAYED` | `NOTIF_MSG_DELAYED` |  |
 | 155 | `NOTIF_MSG_REACTIONS_CHANGED` | `NOTIF_MSG_REACTIONS_CHANGED` |  |
 | 156 | `NOTIF_MSG_YOU_REACTED` | `NOTIF_MSG_YOU_REACTED` |  |
@@ -538,8 +538,8 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 160 | `WEB_APP_INIT_DATA` | `WEB_APP_INIT_DATA` |  |
 | 161 | `COMPLAIN` | `COMPLAIN` |  |
 | 162 | `COMPLAIN_REASONS_GET` | `COMPLAIN_REASONS_GET` |  |
-| 176 | `DRAFT_SAVE` | `DRAFT_SAVE` |  |
-| 177 | `DRAFT_DISCARD` | `DRAFT_DISCARD` |  |
+| 176 | `DRAFT_SAVE` | `DRAFT_SAVE` | тело неизвестно, не реализовано (opcodes.md, «Блокеры») |
+| 177 | `DRAFT_DISCARD` | `DRAFT_DISCARD` | тело неизвестно, не реализовано (opcodes.md, «Блокеры») |
 | 196 | `CHAT_HIDE` | `CHAT_HIDE` |  |
 | 198 | `CHAT_SEARCH_COMMON_PARTICIPANTS` | `CHAT_SEARCH_COMMON_PARTICIPANTS` |  |
 | 199 | `PROFILE_DELETE` | `PROFILE_DELETE` |  |
