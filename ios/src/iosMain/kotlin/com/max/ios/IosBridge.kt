@@ -658,6 +658,41 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /**
+     * Who read a group message ([MaxClient.loadMessageReaders]): the users who reacted first, in
+     * the server's order with their emoji, then the members whose read mark reaches the message,
+     * latest mark first (equal marks by user id); never this account or the author. The list is
+     * empty for chats that do not show readers (see [isReadersAvailable]). Every call refreshes
+     * the chat's read marks from the server. Names come from the store, users missing there are
+     * fetched first; [IosMessageReader.name] is `null` when the user is still unknown. When the
+     * reactions cannot be loaded the list holds the readers only, without an error.
+     */
+    fun loadMessageReaders(chatId: String, messageId: String, onResult: (List<IosMessageReader>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val readers = c.loadMessageReaders(parseId(chatId), parseId(messageId))
+            val state = c.store.state.value
+            readers.map { reader ->
+                IosMessageReader(
+                    userId = reader.userId.toString(),
+                    name = state.users[reader.userId]?.displayName?.trim()?.takeIf { it.isNotEmpty() },
+                    reaction = reader.reaction,
+                    readMark = reader.readMark ?: 0L,
+                )
+            }
+        }
+    }
+
+    /**
+     * Whether [chatId] shows who read its messages ([MaxClient.isMessageReadersAvailable]): a
+     * group (`CHAT`) without a running group call and with at most `max-readmarks` members (server
+     * config, 100 by default). Never dialogs, Saved Messages, channels or comments. Answers from
+     * the stored chat without a request; `false` for a malformed id or a chat not loaded yet.
+     */
+    fun isReadersAvailable(chatId: String): Boolean {
+        val id = chatId.toLongOrNull() ?: return false
+        return attempt(false) { client().isMessageReadersAvailable(id) }
+    }
+
     fun markRead(chatId: String, messageId: String, onResult: (String?, String?) -> Unit) {
         runUnit(onResult) { it.api.messages.markRead(parseId(chatId), parseId(messageId)) }
     }
@@ -2226,6 +2261,14 @@ class IosReadMark(val unread: Int, val mark: Long)
 
 /** One entry of [MaxIosClient.loadReactionUsers]; [name] and [avatarUrl] are empty for an unknown user. */
 class IosReactionUser(val userId: String, val name: String, val avatarUrl: String, val reaction: String)
+
+/**
+ * One entry of [MaxIosClient.loadMessageReaders]. [name] is `null` while the user is unknown;
+ * [reaction] is the user's emoji, `null` when the user did not react. [readMark] is the user's
+ * read mark in ms: the time of the last message the user has read, not the moment of reading;
+ * `0` for a user listed only for a reaction (the known mark is older than the message).
+ */
+class IosMessageReader(val userId: String, val name: String?, val reaction: String?, val readMark: Long)
 
 /**
  * `type` strings of [MaxIosClient.sendTyping] and of `typing` [IosEvent]s

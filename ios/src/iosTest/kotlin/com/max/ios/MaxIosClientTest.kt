@@ -134,6 +134,41 @@ class MaxIosClientTest {
     }
 
     @Test
+    fun readersReportKindsAndAvailabilityOffline() {
+        val c = offlineClient()
+        val badChat = callback<Pair<Int, String?>> { d -> c.loadMessageReaders("x", "1") { list, k, _ -> d.complete(list.size to k) } }
+        assertEquals(0 to "UNKNOWN", badChat)
+        val badMessage = callback<Pair<Int, String?>> { d -> c.loadMessageReaders("1", "y") { list, k, _ -> d.complete(list.size to k) } }
+        assertEquals(0 to "UNKNOWN", badMessage)
+        val offline = callback<Pair<Int, String?>> { d -> c.loadMessageReaders("1", "2") { list, k, _ -> d.complete(list.size to k) } }
+        assertEquals(0 to "NETWORK", offline)
+        // no stored chat, or no id at all: not available, no exception
+        assertFalse(c.isReadersAvailable("1"))
+        assertFalse(c.isReadersAvailable("x"))
+        assertFalse(c.isReadersAvailable(""))
+        callback<Unit> { d -> c.close { d.complete(Unit) } }
+
+        // a failing client creation is an error kind too
+        val broken = MaxIosClient(scope()) { throw IllegalStateException("keychain read failed") }
+        assertEquals(0 to "UNKNOWN", callback<Pair<Int, String?>> { d -> broken.loadMessageReaders("1", "2") { list, k, _ -> d.complete(list.size to k) } })
+        assertFalse(broken.isReadersAvailable("1"))
+        callback<Unit> { d -> broken.close { d.complete(Unit) } }
+    }
+
+    @Test
+    fun messageReaderKeepsItsFields() {
+        val reader = IosMessageReader("5", null, "👍", 0)
+        assertEquals("5", reader.userId)
+        assertNull(reader.name)
+        assertEquals("👍", reader.reaction)
+        assertEquals(0L, reader.readMark)
+        val named = IosMessageReader("6", "Ann", null, 1_700_000_000_000)
+        assertEquals("Ann", named.name)
+        assertNull(named.reaction)
+        assertEquals(1_700_000_000_000L, named.readMark)
+    }
+
+    @Test
     fun typingEventCarriesTheType() {
         val withType = typingEvent(MaxEvent.Typing(10, 20, 129, null, "STICKER"))
         assertEquals("typing", withType.kind)
