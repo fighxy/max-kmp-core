@@ -10,7 +10,7 @@
 | [KometTeam/kolibri](https://github.com/KometTeam/kolibri) (`kolibri-net`) | `a6cdce9` (`a6cdce9e0e75d33aa0c398988d3b45e25c8908ab`) | MIT OR Apache-2.0 |
 | [MaxApiTeam/PyMax](https://github.com/MaxApiTeam/PyMax) | ветка `origin/dev/2.5.0`, HEAD `190e391152150a0971cae13a573218dc41f1b80b`; версия пакета `2.4.1` (`pyproject.toml`) | MIT |
 
-Дата сборки документа: **2026-09-28**. Надёжность соединения (§C.3–C.4, §C.6, §D.5, K7/K8/K14, «Roadmap») и размеры картинок (§G.3) обновлены **2026-10-09** по поведению релизного Android-клиента Max (статическое чтение декомпилированного кода; к серверам не подключались, ключи и сертификаты не извлекались).
+Дата сборки документа: **2026-09-28**. Надёжность соединения (§C.3–C.4, §C.6, §D.5, K7/K8/K14, «Roadmap»), размеры картинок (§G.3) и закрепы (§G.4) обновлены **2026-10-09** по поведению релизного Android-клиента Max (статическое чтение декомпилированного кода; к серверам не подключались, ключи и сертификаты не извлекались).
 
 Префикс цитат: `kolibri:` — путь относительно корня репозитория kolibri; `PyMax:` — относительно корня PyMax. Если факт в коде не найден — «не найдено».
 
@@ -429,7 +429,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 52 | `CHAT_DELETE` | `CHAT_DELETE` |  |
 | 53 | `CHATS_LIST` | `CHATS_LIST` |  |
 | 54 | `CHAT_CLEAR` | `CHAT_CLEAR` |  |
-| 55 | `CHAT_UPDATE` | `CHAT_UPDATE` |  |
+| 55 | `CHAT_UPDATE` | `CHAT_UPDATE` | один закреп: `{chatId, notifyPin, pinMessageId}`; `pinMessageId: 0` снимает |
 | 56 | `CHAT_CHECK_LINK` | `CHAT_CHECK_LINK` |  |
 | 57 | `CHAT_JOIN` | `CHAT_JOIN` |  |
 | 58 | `CHAT_LEAVE` | `CHAT_LEAVE` |  |
@@ -438,6 +438,10 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 61 | `CHAT_PERSONAL_CONFIG` | `CHAT_PERSONAL_CONFIG` |  |
 | 62 | `—` | `CHAT_LIVESTREAM_INFO` | только PyMax |
 | 63 | `CHAT_CREATE` | `CHAT_CREATE` |  |
+| 240 | `GET_PINNED_MESSAGE_STATES` | — | `{chatIds}` → `{pinnedMessagesStates}`; билдер запроса в приложении не найден, тело — как у веб-клиента (§G.4) |
+| 241 | `PINNED_MESSAGES_GET` | — | `{chatId, from?, backward?}` → `{pinnedMessages}` (обычные сообщения); билдер запроса в приложении не найден |
+| 242 | `PINNED_MESSAGE_UPDATE` | — | `{chatId, action, messageIds?, forMe?, notify?}` → `{pinnedMessagesState}`; поля опускаются так же, как в приложении (§G.4) |
+| 243 | `NOTIF_CHAT_MESSAGE_PINNED` | — | пуш `{chatId, pinnedMessagesState}` → `MaxEvent.PinsChanged` |
 
 ### Messages
 
@@ -554,7 +558,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 132 | `NOTIF_PRESENCE` | `NOTIF_PRESENCE` | `{userId, presence: {seen?, status?}}` → `MaxEvent.Presence`; без `seen` прежнее время сохраняется; в мосте — событие `presence` |
 | 134 | `NOTIF_CONFIG` | `NOTIF_CONFIG` | изменение конфига аккаунта (заглушение с другого устройства): `{config}` или разделы на верхнем уровне → `MaxEvent.ConfigUpdated`, слияние в `MaxClient.accountConfig`, `hash` → `configHash`; схема тела в референсах не описана (см. «Заглушение чатов») |
 | 135 | `NOTIF_CHAT` | `NOTIF_CHAT` |  |
-| 136 | `NOTIF_ATTACH` | `NOTIF_ATTACH` |  |
+| 136 | `NOTIF_ATTACH` | `NOTIF_ATTACH` | `{fileId \| videoId \| audioId}` → `AttachmentReady`; без id и с непустым `error` → `AttachmentFailed` |
 | 137 | `NOTIF_CALL_START` | `NOTIF_CALL_START` |  |
 | 139 | `NOTIF_CONTACT_SORT` | `NOTIF_CONTACT_SORT` |  |
 | 140 | `NOTIF_MSG_DELETE_RANGE` | `NOTIF_MSG_DELETE_RANGE` |  |
@@ -567,8 +571,8 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 153 | `NOTIF_DRAFT_DISCARD` | `NOTIF_DRAFT_DISCARD` | веб-клиент игнорирует, тело не подтверждено; ядро читает терпимо как `{chatId \| userId, time}` → `MaxEvent.DraftDiscarded` (стирает, если наш не новее, и ставит метку стирания `MaxState.draftDiscards`); в мосте — событие `draft` с временем метки; сырое тело — в `MaxClient.onDiagnostic` / `IosDiagnostics` |
 | 154 | `NOTIF_MSG_DELAYED` | `NOTIF_MSG_DELAYED` |  |
 | 155 | `NOTIF_MSG_REACTIONS_CHANGED` | `NOTIF_MSG_REACTIONS_CHANGED` |  |
-| 156 | `NOTIF_MSG_YOU_REACTED` | `NOTIF_MSG_YOU_REACTED` |  |
-| 159 | `NOTIF_PROFILE` | `NOTIF_PROFILE` |  |
+| 156 | `NOTIF_MSG_YOU_REACTED` | `NOTIF_MSG_YOU_REACTED` | `{chatId, messageId, reactionInfo, postId?}` → `MaxEvent.YouReacted` |
+| 159 | `NOTIF_PROFILE` | `NOTIF_PROFILE` | `{profile: {contact, profileOptions}}` → `MaxEvent.ProfileUpdated`; карта `restrictions` остаётся в сыром теле |
 | 277 | `NOTIF_FOLDERS` | `NOTIF_FOLDERS` |  |
 | 292 | `NOTIF_BANNERS` | `NOTIF_BANNERS` |  |
 
@@ -577,7 +581,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
 | 202 | `AUDIO_TRANSCRIPTION` | `TRANSCRIBE_MEDIA` | разные имена: kolibri `AUDIO_TRANSCRIPTION` / PyMax `TRANSCRIBE_MEDIA` |
-| 293 | `TRANSCRIPTION_RESULT` | `NOTIF_TRANSCRIPTION` | разные имена: kolibri `TRANSCRIPTION_RESULT` / PyMax `NOTIF_TRANSCRIPTION` |
+| 293 | `TRANSCRIPTION_RESULT` | `NOTIF_TRANSCRIPTION` | разные имена: kolibri `TRANSCRIPTION_RESULT` / PyMax `NOTIF_TRANSCRIPTION`; `{messageId, chatId?, transcription?, transcriptionStatus}` (или внутри `message`) → `MaxEvent.TranscriptionReady` |
 
 ### Misc
 
@@ -851,6 +855,30 @@ User-Agent: `OKMessages/{appVersion} ({osVersion}; {deviceName}; {screen})` (`co
 
 **Opcode 203** `PHOTO_URL_REFRESH`. Запрос `{media: [{chatId, messageId, photoIds}]}` — по одному элементу на сообщение, `photoIds` — id фото этого сообщения. Ответ `{media: [вложения]}`; приложение разбирает их тем же парсером, что фото в сообщении, и оставляет только фото (`photoId`, `baseUrl`, `mp4Url`, `photoToken`, `width`, `height`, `previewUrl`, `gif`). Список режется по `photo-url-refresh-max-media-per-request` (по умолчанию 100) — это число сообщений в одном запросе, не число id. `postId` приложение в запрос не кладёт (веб-клиент иногда кладёт). Ядро: `MediaApi.refreshPhotoUrls` / `MaxClient.refreshPhotoUrls`; флаг и размер пачки — `AccountConfig.photoUrlRefresh` и `photoUrlRefreshMaxMedia`.
 
+### G.4 Закреплённые сообщения (240–243)
+
+Сверено с релизным Android-клиентом (статическое чтение; к серверам не подключались). Один закреп по-прежнему идёт через `CHAT_UPDATE` 55: `{chatId, notifyPin, pinMessageId}`, `pinMessageId: 0` снимает. Список закрепов — отдельные опкоды.
+
+Состояние `pinnedMessagesState` (ответ 240 и 242, вложенный объект пуша 243): `chatId`, `lastPinnedUpdateTime`, `prevPinnedUpdateTime`, `totalPinnedMessagesCount`, `changedPinnedMessageId`, `changedPinnedMessageType`, `lastAction`, `lastPinnedMessageId`. Время без ключа — `0`. Id `0` и отсутствующий id — «нет сообщения». Нет счётчика — не `0` (ноль значит «закрепов нет»). `lastAction`: `0` закрепить, `1` снять, `2` снять все; другой байт — нет действия. `changedPinnedMessageType`: бит 1 «для всех», бит 2 «для меня». Веб-клиент пишет `changedMessageId` вместо `changedPinnedMessageId`; ядро читает короткое имя только если длинного нет.
+
+- **240** `GET_PINNED_MESSAGE_STATES`. Ответ `{pinnedMessagesStates: [состояние]}`. Тело запроса в приложении не найдено. Веб-клиент шлёт `{chatIds}`; ядро шлёт то же. Пустой список id не уходит на сервер.
+- **241** `PINNED_MESSAGES_GET`. Ответ `{pinnedMessages: [сообщения]}` — те же объекты, что в истории. Тело запроса в приложении не найдено. Веб-клиент шлёт `{chatId, from, backward}`; ядро опускает `from` и `backward`, если их не передали.
+- **242** `PINNED_MESSAGE_UPDATE`. Запрос собран как в приложении: всегда `chatId` и `action` (`0`/`1`/`2`); `messageIds` только если список не пуст; `forMe: true` только когда закреп «для меня» (ложь не шлётся); `notify: false` только когда не надо уведомлять (истина не шлётся, сервер считает её умолчанием). Ответ `{pinnedMessagesState}`. Ошибки `pinned.invalid.operation` и `pinned.invalid.request` ядро отдаёт как ошибки протокола. Приложение считает первую уже выполненным действием и не показывает её.
+- **243** `NOTIF_CHAT_MESSAGE_PINNED`. Пуш `{chatId, pinnedMessagesState}` → `MaxEvent.PinsChanged`. Свой `chatId` пуша, если он не `0`, важнее id внутри состояния. В хранилище чатов состояние не пишется.
+
+Ядро: `MessagesApi.pinnedStates` / `pinnedMessages` / `updatePinnedMessages` и те же методы `MaxClient`. Мост: `pinnedStates`, `pinnedMessages`, `updatePinned` (`action`: `pin` / `unpin` / `unpinAll`); id — строки. Событие моста `pinned`.
+
+**Пуши, которые раньше приходили и терялись, а теперь имеют тип** (хранилище по-прежнему их не меняет):
+
+| код | событие | тело |
+|-----|---------|------|
+| 156 | `YouReacted` | `{chatId, messageId, reactionInfo, postId?}`; в мосте `youReacted` |
+| 159 | `ProfileUpdated` | `{profile}` с `contact` и `profileOptions`; в мосте `profile` |
+| 293 | `TranscriptionReady` | как разбор расшифровки, нужен `messageId`; в мосте по-прежнему `transcription` |
+| 136 | `AttachmentFailed` | только `error` без id вложения; id по-прежнему `AttachmentReady`. В мосте `attachError` |
+
+**Не делались в этом шаге:** 154 отложенные (следующий шаг), опросы, звонки 163/165/167, сторис, 150 ассеты, 147/148 геолокация, 143 ответ callback, 140 удаление диапазона, 20 выход из аккаунта, 86 видимость закрепа чата (`{chatId, show}` — это не список закрепов сообщений), 292 баннеры. У 135 по-прежнему нет полей «последняя реакция».
+
 ---
 
 ## H. Звонки
@@ -1102,7 +1130,7 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
 
 1. **Надёжность соединения** — сделано: ответ на серверный `PING`, `RECONNECT` (3), ошибки входа `login.token` / `login.blocked` / `login.flood`, `PING` раз в 29 s с первым сразу, backoff 3 s → 96 s (§C.3–C.6, §D.5).
 2. **`PHOTO_URL_REFRESH` (203) и лестница размеров** — сделано: `fn=sqr_N` / `fn=w_N`, выбор первого размера не меньше запрошенных пикселей, обновление протухших ссылок пачками (§G.3).
-3. Закреплённые сообщения (240–243) и push-и, которые ядро сейчас пропускает.
+3. **Закреплённые сообщения (240–243) и часть пропускаемых пушей** — сделано: состояние закрепа, 240/241/242, пуш 243, плюс типы для 156, 159, 293 и ошибки 136 (§G.4). 154, звонки, сторис и остальной каталог не трогались.
 4. Отложенные сообщения и опросы.
 5. По желанию: отклонение звонка (167) и журнал звонков (163/165).
 
