@@ -5,14 +5,21 @@ import com.max.core.api.AccountConfig
 import com.max.core.api.Chat
 import com.max.core.api.ChatFolders
 import com.max.core.api.ChatHistory
+import com.max.core.api.ChatMembersResult
+import com.max.core.api.ChatRoles
 import com.max.core.api.ChatsApi
 import com.max.core.api.Folder
 import com.max.core.api.FolderUpdate
+import com.max.core.api.ForwardBatch
+import com.max.core.api.HistoryItemType
 import com.max.core.api.MaxApi
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.MessageReader
 import com.max.core.api.MessageReaders
+import com.max.core.api.PhoneBookImport
+import com.max.core.api.PhoneContact
+import com.max.core.api.TextElement
 import com.max.core.api.Transcription
 import com.max.core.api.PrivacySettings
 import com.max.core.api.Profile
@@ -676,6 +683,45 @@ class MaxClient @Throws(Exception::class) constructor(
     }
 
     /**
+     * One page of the members of group/channel [chatId] (`CHAT_MEMBERS` 59, `{type: "MEMBER",
+     * chatId, marker, count}`; start with [marker] `0` and pass [ChatMembersResult.nextMarker]
+     * until it is `null`). Each member carries its role: owner and admins come from the chat
+     * (`owner`, `admins`, `adminParticipants`, [ChatRoles]); for the first page of a chat missing
+     * from [store] the chat is asked first (`CHAT_INFO`, best effort: without it every member is
+     * a plain member). The member profiles and their presence go into [store].
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun loadChatMembers(chatId: Long, marker: Long = 0, count: Int = 50): ChatMembersResult {
+        require(marker >= 0 && count > 0) { "bad page: marker=$marker count=$count" }
+        if (marker == 0L && chatId !in store.state.value.chats) {
+            try {
+                val t = ticket()
+                val chat = api.chats.getChat(chatId)
+                commit(t) { store.putChats(listOf(chat)) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Roles are optional: the page is still shown.
+            }
+        }
+        val t = ticket()
+        val page = api.chats.getChatMembers(chatId, marker, count)
+        val result = ChatMembersResult.of(page, marker, ChatRoles.of(store.state.value.chats[chatId]))
+        commit(t) {
+            store.putUsers(result.members.mapNotNull { it.user })
+            for (m in result.members) {
+                val id = m.userId ?: continue
+                val p = m.member.presenceInfo ?: continue
+                // A live NOTIF_PRESENCE may be newer than the page.
+                val known = store.state.value.presence[id]?.seen
+                if (known != null && (p.seen == null || p.seen!! <= known)) continue
+                store.apply(MaxEvent.Presence(id, p.seen, p.status, Opcode.CHAT_MEMBERS.value, m.member.presence))
+            }
+        }
+        return result
+    }
+
+    /**
      * Closes every other session (`SESSIONS_CLOSE` 97). The server issues a new token for this
      * session; it replaces the stored one and is used for the next reconnects (PyMax
      * `close_all_sessions`). Returns `false` if the reply carried no token.
@@ -793,6 +839,62 @@ class MaxClient @Throws(Exception::class) constructor(
         return contacts
     }
 
+    /**
+     * Renames contact [userId] for this account (`CONTACT_UPDATE` 34, `{contactId, action:
+     * "UPDATE", firstName, lastName}`, KometTeam/Komet `updateContact`). The renamed contact
+     * goes into [store]; its name is the `CUSTOM` entry, which wins over every other name
+     * ([MaxState.displayName]).
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun renameContact(userId: Long, firstName: String, lastName: String = ""): MaxUser {
+        val t = ticket()
+        val user = api.users.renameContact(userId, firstName, lastName)
+        commit(t) { store.putContacts(listOf(user)) }
+        return user
+    }
+
+    /**
+     * Removes contact [userId] (`CONTACT_UPDATE` 34, `{contactId, action: "REMOVE"}`). [store]
+     * drops it from the contact list and forgets its `CUSTOM` name; the user stays known.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun removeContact(userId: Long) {
+        val t = ticket()
+        api.users.removeContact(userId)
+        commit(t) { store.removeContact(userId) }
+    }
+
+    /**
+     * Imports phone-book entries (`SYNC` 21, `{contactList: {<phone>: {firstName}}}`) and maps each
+     * phone to the Max user it belongs to ([PhoneBookImport.byPhone]). [store] gets the users, the
+     * entries as address book, and each matched user's phone-book name as its local name, so
+     * [MaxState.displayName] shows the name from the phone unless the user is a renamed contact.
+     * Large books should be sent in parts (the server limit is unknown).
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun importPhoneBook(entries: List<PhoneContact>): PhoneBookImport {
+        val t = ticket()
+        val result = api.users.importPhoneBook(entries)
+        commit(t) { store.putPhoneBookImport(entries, result) }
+        return result
+    }
+
+    /**
+     * Replaces the device address book kept in [store] (no request): entries are matched to users
+     * by phone for [MaxState.displayName]. It survives a switch to another account and is dropped
+     * by [logout].
+     */
+    fun setAddressBook(entries: List<PhoneContact>) = store.setAddressBook(entries)
+
+    /** Sets (or with `null` / blank clears) the local address-book name of [userId] (no request). */
+    fun setLocalName(userId: Long, name: String?) = store.setLocalName(userId, name)
+
+    /**
+     * The name to show for [userId]: the own contact name (`CUSTOM`), else the address-book name,
+     * else the profile name; `null` when nothing is known.
+     */
+    fun displayName(userId: Long): String? = store.state.value.displayName(userId)
+
     /** Active sessions (`SESSIONS_INFO` 96). */
     @Throws(CancellationException::class, Exception::class)
     suspend fun loadSessions(): List<com.max.core.api.SessionInfo> = api.users.getSessions()
@@ -859,6 +961,55 @@ class MaxClient @Throws(Exception::class) constructor(
         val message = api.messages.sendMessage(chatId, text, replyTo, elements = elements)
         commit(t) { store.putSentMessage(chatId, message) }
         return message
+    }
+
+    /**
+     * Sends [text] with formatting [elements] ([TextElement]: bold, italic, underline,
+     * strikethrough, monospace, heading, quote, link, mention, animoji). Offsets are UTF-16
+     * indexes into [text]; an element outside [text] is dropped. Like [sendText] otherwise.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun sendFormattedText(chatId: Long, text: String, elements: List<TextElement>, replyTo: Long? = null): MaxMessage =
+        sendText(chatId, text, replyTo, TextElement.payloadFor(text, elements))
+
+    /**
+     * Replaces the text and formatting of own message [messageId] (`MSG_EDIT` 67, `{chatId,
+     * messageId, text, elements, attachments}`). An empty [elements] clears the formatting. The
+     * edited copy goes into [store] keeping its reactions (the reply has none).
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun editText(chatId: Long, messageId: Long, text: String, elements: List<TextElement> = emptyList()): MaxMessage {
+        val t = ticket()
+        val edited = api.messages.editMessage(chatId, messageId, text, TextElement.payloadFor(text, elements))
+        commit(t) { store.putEditedMessage(chatId, edited) }
+        return store.state.value.messagesOf(chatId).firstOrNull { it.id == edited.id } ?: edited
+    }
+
+    /**
+     * Deletes the selected messages of [chatId] in one `MSG_DELETE` 66 (`{chatId, messageIds,
+     * forMe}`, plus `itemType` when set). [forMe] `true` removes them only for this account. After
+     * the server accepted, [store] drops them as for a delete push (own deletes are not pushed back).
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun deleteMessages(chatId: Long, messageIds: List<Long>, forMe: Boolean = false, itemType: HistoryItemType? = null) {
+        val ids = messageIds.distinct()
+        val t = ticket()
+        val raw = api.messages.deleteMessages(chatId, ids, forMe, itemType)
+        commit(t) { store.apply(MaxEvent.MessagesDeleted(chatId, ids, null, null, false, Opcode.MSG_DELETE.value, raw)) }
+    }
+
+    /**
+     * Forwards the selected messages of [fromChatId] to [toChatId], one `MSG_SEND` with a
+     * `FORWARD` link per message in the given order (pass them oldest first; the protocol has no
+     * batch form). The first failure stops the rest ([ForwardBatch.failedIndex]); the messages
+     * sent so far go into [store] either way.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun forwardMessages(toChatId: Long, fromChatId: Long, messageIds: List<Long>, notify: Boolean = true): ForwardBatch {
+        val t = ticket()
+        val batch = api.messages.forwardMessages(toChatId, fromChatId, messageIds, notify)
+        commit(t) { batch.sent.forEach { store.putSentMessage(toChatId, it) } }
+        return batch
     }
 
     /**
