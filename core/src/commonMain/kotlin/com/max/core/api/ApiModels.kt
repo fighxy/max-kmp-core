@@ -177,13 +177,19 @@ data class Chat(
             )
         }
 
-        /** `participants` as user id → read mark; non-numeric keys or values are skipped. */
+        /**
+         * `participants` as user id → read mark; non-numeric keys or values are skipped. A user
+         * listed twice (the id once as a number and once as a string) keeps the larger mark: a
+         * read mark only moves forward, so the later one is the true one whatever the key order.
+         */
         fun readMarks(value: Any?): Map<Long, Long> {
             val map = value as? Map<*, *> ?: return emptyMap()
             val out = LinkedHashMap<Long, Long>()
             for ((k, v) in map) {
                 val user = k.asLong() ?: continue
-                out[user] = v.asLong() ?: continue
+                val mark = v.asLong() ?: continue
+                val known = out[user]
+                if (known == null || mark > known) out[user] = mark
             }
             return out
         }

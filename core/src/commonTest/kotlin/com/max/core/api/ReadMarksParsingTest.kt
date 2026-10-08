@@ -39,6 +39,16 @@ class ReadMarksParsingTest {
     }
 
     @Test
+    fun aUserListedTwiceKeepsTheLargerMark() {
+        // the same id as a number and as a string, in both orders
+        assertEquals(mapOf(5L to 2_000L), chat(participants = linkedMapOf(5L to 2_000L, "5" to 1_000L)).participants)
+        assertEquals(mapOf(5L to 2_000L), chat(participants = linkedMapOf("5" to 1_000L, 5 to 2_000L)).participants)
+        assertEquals(mapOf(5L to 3_000L, 6L to 1L), Chat.readMarks(linkedMapOf("6" to 1L, 5L to "3000", "5" to 2_999L)))
+        // an invalid duplicate does not drop the valid mark
+        assertEquals(mapOf(5L to 1_000L), Chat.readMarks(linkedMapOf(5L to 1_000L, "5" to "soon")))
+    }
+
+    @Test
     fun chatMembersCarryTheirReadMark() = runTest {
         val sink = ScriptSink(
             mapOf(
