@@ -2,6 +2,7 @@ package com.max.shared
 
 import com.max.core.MaxError
 import com.max.core.api.AccountConfig
+import com.max.core.api.AccountConfigUpdate
 import com.max.core.api.Chat
 import com.max.core.api.ChatFolders
 import com.max.core.api.ChatHistory
@@ -36,6 +37,7 @@ import com.max.core.auth.ApkFingerprint
 import com.max.core.auth.AuthApi
 import com.max.core.auth.CodeRequest
 import com.max.core.auth.CodeRequestType
+import com.max.core.auth.DEFAULT_CONFIG_HASH
 import com.max.core.auth.InvalidTokenException
 import com.max.core.auth.LoginResult
 import com.max.core.auth.QrApproval
@@ -217,6 +219,11 @@ class MaxClient @Throws(Exception::class) constructor(
     private var lastLogin: TokenLogin? = null
     /** `true` while [store] holds a `LOGIN` snapshot of this process; guarded by [lifecycle]. */
     private var snapshotLoaded = false
+    /**
+     * `true` once [accountConfig] holds a config the server sent (`LOGIN` / `LOGIN2`); only then a
+     * `CONFIG` / `NOTIF_CONFIG` hash may become the next `LOGIN` `configHash`. Guarded by [lifecycle].
+     */
+    private var serverConfigLoaded = false
     private var gapJob: Job? = null
 
     init {
@@ -282,14 +289,19 @@ class MaxClient @Throws(Exception::class) constructor(
 
     /**
      * The account configuration ([AccountConfig]: `config.user` settings, `config.server`
-     * parameters) of the last `LOGIN` that carried one, updated by [updateUserSettings]; `null`
-     * before the first login and after logout. The first `LOGIN` of each process sends empty sync
-     * markers (default `configHash`), so the server always sends the whole config then; a
-     * reconnect whose reply leaves it out keeps the known one.
+     * parameters, `config.chats` mutes) of the last `LOGIN` that carried one, updated by
+     * [updateUserSettings], [setChatMuted] and the `NOTIF_CONFIG` 134 push
+     * ([MaxEvent.ConfigUpdated]); `null` before the first login and after logout. The first `LOGIN`
+     * of each process sends empty sync markers (default `configHash`), so the server always sends
+     * the whole config then; a reconnect whose reply leaves it out keeps the known one, and a
+     * partial one is merged (a missing `chats` / `user` / `server` keeps its value, `chats` is
+     * merged per chat id).
      */
     val accountConfig: StateFlow<AccountConfig?> = _accountConfig.asStateFlow()
 
     init {
+        // registered before any caller's handler, so those already see the merged config
+        router.on<MaxEvent.ConfigUpdated> { applyConfigPush(it) }
         router.start(this.scope)
         this.scope.launch {
             session.state.collect { s ->
@@ -456,6 +468,7 @@ class MaxClient @Throws(Exception::class) constructor(
             lifecycle.withLock {
                 store.clear()
                 snapshotLoaded = false
+                serverConfigLoaded = false
                 _accountConfig.value = null
             }
             session.disconnect()
@@ -478,9 +491,11 @@ class MaxClient @Throws(Exception::class) constructor(
             val epoch = sessionEpoch
             val relogin = loginCount.value > 0
             loginCount.value += 1
+            val sameAccount = r.userId == null || loggedIn.value == null || r.userId == loggedIn.value
+            // config first: an observer of the store never sees the new chats with the old (or no) mutes
+            applyLoginConfig(login, r.raw, login.login2Result.value?.raw, sameAccount)
             store.applyLogin(r)
             snapshotLoaded = true
-            AccountConfig.fromLoginReply(r.raw)?.let { _accountConfig.value = it }
             login.login2Result.value?.let { r2 -> r2.contacts.mapNotNull(com.max.core.api.MaxUser::from).let(store::putContacts) }
             // r already carries the LOGIN2 profile; a reconnect without a profile keeps this login's id
             val uid = r.userId ?: loggedIn.value.takeIf { lastLogin === login }
@@ -491,6 +506,56 @@ class MaxClient @Throws(Exception::class) constructor(
             if (relogin && config.fillGapsOnReconnect) epoch else null
         }
         if (fillEpoch != null) scheduleGapFill(fillEpoch)
+    }
+
+    /**
+     * The `config` of a `LOGIN` reply (and of the `LOGIN2` that followed it) into [accountConfig].
+     * Caller holds [lifecycle].
+     *
+     * - Another account: nothing of the previous config is kept.
+     * - `LOGIN` sent with the default `configHash`: a full snapshot ([AccountConfig.replacedBy];
+     *   a carried `chats` makes [AccountConfig.chatsKnown] `true`).
+     * - Otherwise (a reconnect with the last hash): only what changed ([AccountConfig.mergedWith]).
+     *
+     * In every case a section the reply leaves out (`chats`, `user`, `server`) keeps its value, so
+     * a reconnect never drops the known chat mutes. `LOGIN2`'s config is merged on top.
+     */
+    private fun applyLoginConfig(login: TokenLogin, reply: Map<*, *>, login2: Map<*, *>?, sameAccount: Boolean) {
+        val update = AccountConfigUpdate.fromLoginReply(reply)
+        val update2 = login2?.let { AccountConfigUpdate.fromLoginReply(it) }
+        val prev = _accountConfig.value?.takeIf { sameAccount }
+        val full = login.sentSync?.configHash == DEFAULT_CONFIG_HASH
+        var next = when {
+            update == null -> prev
+            full -> (prev ?: AccountConfig()).replacedBy(update)
+            else -> (prev ?: AccountConfig()).mergedWith(update)
+        }
+        if (update2 != null) next = (next ?: AccountConfig()).mergedWith(update2)
+        if (!sameAccount) serverConfigLoaded = false
+        if (update != null || update2 != null) serverConfigLoaded = true
+        if (!sameAccount || next != null) _accountConfig.value = next
+    }
+
+    /**
+     * A `NOTIF_CONFIG` 134 push into [accountConfig] ([AccountConfig.mergedWith]); its hash goes to
+     * the sync markers of the next `LOGIN`, as after `CONFIG` 22. Ignored while no account is
+     * logged in. Before any server config is known the push still lands on an empty config that
+     * knows only the chats it names ([AccountConfig.chatsKnown] `false`), and its hash is not kept:
+     * the next `LOGIN` must still ask for the whole config.
+     */
+    private suspend fun applyConfigPush(event: MaxEvent.ConfigUpdated) {
+        lifecycle.withLock {
+            val login = tokenLogin.value ?: return@withLock
+            if (lastLogin !== login) return@withLock
+            _accountConfig.value = (_accountConfig.value ?: AccountConfig()).mergedWith(event.update)
+            if (serverConfigLoaded) event.update.hash?.let { hash -> storeConfigHash(login, hash) }
+        }
+    }
+
+    /** [hash] as the `configHash` of [login]'s next `LOGIN` and in the saved markers. Caller holds [lifecycle]. */
+    private fun storeConfigHash(login: TokenLogin?, hash: Any) {
+        login?.updateSync { it.copy(configHash = hash) }
+        saveCredentials(sync = login?.sync ?: (credentials.load() ?: stored).sync.copy(configHash = hash))
     }
 
     /** Publishes [fillGapsAt] only while [epoch] is still the current session. */
@@ -766,11 +831,7 @@ class MaxClient @Throws(Exception::class) constructor(
     suspend fun updatePrivacy(settings: PrivacySettings): String? {
         val t = ticket()
         val hash = api.account.updatePrivacy(settings) ?: return null
-        commit(t) {
-            val login = t.login
-            login?.updateSync { it.copy(configHash = hash) }
-            saveCredentials(sync = login?.sync ?: (credentials.load() ?: stored).sync.copy(configHash = hash))
-        }
+        commit(t) { storeConfigHash(t.login, hash) }
         return hash
     }
 
@@ -793,14 +854,12 @@ class MaxClient @Throws(Exception::class) constructor(
         val update = api.account.updateUserSettings(values)
         return commit(t) {
             // without `user` in the reply the server still accepted these values
-            val user = update.user ?: ((_accountConfig.value?.user ?: emptyMap()) + values)
-            val next = (_accountConfig.value ?: AccountConfig()).withUser(user, update.hash)
+            val prev = _accountConfig.value
+            val user = update.user ?: ((prev?.user ?: emptyMap()) + values)
+            // without a server config the chats stay unknown (chatsKnown false) and the hash is not kept
+            val next = (prev ?: AccountConfig()).withUser(user, update.hash)
             _accountConfig.value = next
-            update.hash?.let { hash ->
-                val login = t.login
-                login?.updateSync { it.copy(configHash = hash) }
-                saveCredentials(sync = login?.sync ?: (credentials.load() ?: stored).sync.copy(configHash = hash))
-            }
+            if (serverConfigLoaded) update.hash?.let { hash -> storeConfigHash(t.login, hash) }
             next
         }
     }
@@ -811,14 +870,45 @@ class MaxClient @Throws(Exception::class) constructor(
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun setChatMuted(chatId: Long, muted: Boolean) {
+        setChatMuteUntil(chatId, if (muted) -1L else 0L)
+    }
+
+    /**
+     * Sets [chatId]'s `dontDisturbUntil` (`CONFIG` 22): `0` sound on, `-1` muted for good, else
+     * muted until that time (Unix ms). [accountConfig] gets the new value, and the reply's hash
+     * becomes the `configHash` of the next `LOGIN`, as for the other `CONFIG` changes. Without a
+     * server config yet, the new config knows only this chat ([AccountConfig.chatsKnown] `false`,
+     * every other chat stays unknown) and the hash is not kept.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setChatMuteUntil(chatId: Long, until: Long) {
+        require(until >= -1L) { "bad dontDisturbUntil: $until" }
         val t = ticket()
-        val until = if (muted) -1L else 0L
         val hash = api.account.setChatMute(chatId, until)
         commit(t) {
-            val base = _accountConfig.value ?: AccountConfig()
+            val prev = _accountConfig.value
+            // without a server config only this chat becomes known (chatsKnown stays false)
+            val base = prev ?: AccountConfig()
             _accountConfig.value = base.withChatMute(chatId, until).let { if (hash != null) it.copy(hash = hash) else it }
+            // with no server config held, the next LOGIN must still ask for all of it
+            if (hash != null && serverConfigLoaded) storeConfigHash(t.login, hash)
         }
     }
+
+    /**
+     * Whether [chatId] is muted now ([AccountConfig.chatMuteState] on [accountConfig], device
+     * clock): `true` muted (for good or until a time still ahead), `false` sound on (`0`, a timed
+     * mute that ran out, or no entry in a full `chats` section), `null` unknown (no config before
+     * the first login or after logout, or a config that does not know this chat). Do not store
+     * `null` as `false`: keep what was shown before.
+     */
+    fun isChatMuted(chatId: Long): Boolean? = _accountConfig.value?.chatMuteState(chatId)
+
+    /**
+     * [chatId]'s raw `dontDisturbUntil` ([AccountConfig.chatMuteUntil]: `0` sound on, `-1` muted for
+     * good, else the end of the mute in ms); `null` while unknown.
+     */
+    fun chatMuteUntil(chatId: Long): Long? = _accountConfig.value?.chatMuteUntil(chatId)
 
     /** The own user from [store], or `CONTACT_INFO` for it when missing; `null` before login. */
     @Throws(CancellationException::class, Exception::class)
