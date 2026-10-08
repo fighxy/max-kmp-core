@@ -120,3 +120,34 @@ class TextElementsTest {
         assertEquals("bold", text.substring(3, 7))
     }
 }
+
+class TextElementsJsonTest {
+    @Test
+    fun jsonRoundTripAndWebRules() {
+        val text = "👋 hi there"
+        val elements = listOf(TextElement.strong(0, 2), TextElement.link(3, 2, "https://max.ru"), TextElement.mention(6, 5, 42))
+        val json = TextElementsJson.write(elements)
+        kotlin.test.assertEquals(
+            """[{"type":"STRONG","from":0,"length":2},{"type":"LINK","from":3,"length":2,"attributes":{"url":"https://max.ru"}},{"type":"USER_MENTION","from":6,"length":5,"entityId":42}]""",
+            json,
+        )
+        kotlin.test.assertEquals(elements, TextElementsJson.parse(json, text.length))
+        // CODE reads as monospaced, open length runs to the end, empty ones go, entityId as a string
+        val read = TextElementsJson.parse(
+            """[{"type":"CODE","from":3},{"type":"STRONG","from":1,"length":0},{"type":"USER_MENTION","length":2,"entityId":"7"},{"type":"SPOILER","from":0,"length":1}]""",
+            text.length,
+        )
+        kotlin.test.assertEquals(
+            listOf(
+                TextElement(TextElementType.MONOSPACED, 3, text.length - 3),
+                TextElement(TextElementType.USER_MENTION, 0, 2, entityId = 7),
+                TextElement("SPOILER", 0, 1),
+            ),
+            read,
+        )
+        kotlin.test.assertEquals(emptyList(), TextElementsJson.parse("  "))
+        kotlin.test.assertEquals(emptyList(), TextElementsJson.parse("[]"))
+        kotlin.test.assertFailsWith<IllegalArgumentException> { TextElementsJson.parse("{\"type\":\"STRONG\"}") }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { TextElementsJson.parse("[{") }
+    }
+}
