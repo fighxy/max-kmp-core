@@ -10,7 +10,7 @@
 | [KometTeam/kolibri](https://github.com/KometTeam/kolibri) (`kolibri-net`) | `a6cdce9` (`a6cdce9e0e75d33aa0c398988d3b45e25c8908ab`) | MIT OR Apache-2.0 |
 | [MaxApiTeam/PyMax](https://github.com/MaxApiTeam/PyMax) | ветка `origin/dev/2.5.0`, HEAD `190e391152150a0971cae13a573218dc41f1b80b`; версия пакета `2.4.1` (`pyproject.toml`) | MIT |
 
-Дата сборки документа: **2026-09-28**. Надёжность соединения (§C.3–C.4, §C.6, §D.5, K7/K8/K14, «Roadmap»), размеры картинок (§G.3) и закрепы (§G.4) обновлены **2026-10-09** по поведению релизного Android-клиента Max (статическое чтение декомпилированного кода; к серверам не подключались, ключи и сертификаты не извлекались).
+Дата сборки документа: **2026-09-28**. Надёжность соединения (§C.3–C.4, §C.6, §D.5, K7/K8/K14, «Roadmap»), размеры картинок (§G.3) закрепы (§G.4) и отложенные сообщения с опросами (§G.5) обновлены **2026-10-09** по поведению релизного Android-клиента Max (статическое чтение декомпилированного кода; к серверам не подключались, ключи и сертификаты не извлекались).
 
 Префикс цитат: `kolibri:` — путь относительно корня репозитория kolibri; `PyMax:` — относительно корня PyMax. Если факт в коде не найден — «не найдено».
 
@@ -450,7 +450,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 64 | `MSG_SEND` | `MSG_SEND` | `elements` — форматирование; пересылка — ссылка `FORWARD`, по кадру на сообщение |
 | 65 | `MSG_TYPING` | `MSG_TYPING` | `{chatId, type, postId?}`, без ожидания ответа; в режиме призрака не уходит; `type`: `TEXT`, `AUDIO`, `VIDEO_MSG`, `PHOTO`, `VIDEO`, `FILE`, `STICKER` (opcodes.md, «Печатает: 65 и 129») |
 | 66 | `MSG_DELETE` | `MSG_DELETE` | `{chatId, postId?, messageIds, forMe, itemType?}` → `{messageIds, failedMessageIds?}`: весь выбор одним запросом |
-| 67 | `MSG_EDIT` | `MSG_EDIT` | `{chatId, messageId, text, elements, attachments}`; ответ без реакций |
+| 67 | `MSG_EDIT` | `MSG_EDIT` | `{chatId, messageId, text, elements, attachments}`; у отложенного ещё `delayedAttributes` `{timeToFire, notifySender}`, вложения тогда не шлются (§G.5) |
 | 68 | `CHAT_SEARCH` | `CHAT_SEARCH` |  |
 | 70 | `MSG_SHARE_PREVIEW` | `MSG_SHARE_PREVIEW` |  |
 | 71 | `MSG_GET` | `MSG_GET` |  |
@@ -569,7 +569,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 150 | `NOTIF_ASSETS_UPDATE` | `NOTIF_ASSETS_UPDATE` |  |
 | 152 | `NOTIF_DRAFT` | `NOTIF_DRAFT` | веб-клиент игнорирует, тело не подтверждено; ядро читает терпимо как `{chatId \| userId, draft: {...}}` → `MaxEvent.DraftSaved` (заменяет только более поздний и только позже метки стирания; пустой — стирание; битое — `MaxEvent.Unknown`); в мосте — событие `draft`; сырое тело (с редактированием текста) — в `MaxClient.onDiagnostic` / `IosDiagnostics` |
 | 153 | `NOTIF_DRAFT_DISCARD` | `NOTIF_DRAFT_DISCARD` | веб-клиент игнорирует, тело не подтверждено; ядро читает терпимо как `{chatId \| userId, time}` → `MaxEvent.DraftDiscarded` (стирает, если наш не новее, и ставит метку стирания `MaxState.draftDiscards`); в мосте — событие `draft` с временем метки; сырое тело — в `MaxClient.onDiagnostic` / `IosDiagnostics` |
-| 154 | `NOTIF_MSG_DELAYED` | `NOTIF_MSG_DELAYED` |  |
+| 154 | `NOTIF_MSG_DELAYED` | `NOTIF_MSG_DELAYED` | `{chatId, userId, updateTypeId, message?, messageIds, lastDelayedUpdateTime}` → `MaxEvent.DelayedUpdated`; хранилище не меняет (§G.5) |
 | 155 | `NOTIF_MSG_REACTIONS_CHANGED` | `NOTIF_MSG_REACTIONS_CHANGED` |  |
 | 156 | `NOTIF_MSG_YOU_REACTED` | `NOTIF_MSG_YOU_REACTED` | `{chatId, messageId, reactionInfo, postId?}` → `MaxEvent.YouReacted` |
 | 159 | `NOTIF_PROFILE` | `NOTIF_PROFILE` | `{profile: {contact, profileOptions}}` → `MaxEvent.ProfileUpdated`; карта `restrictions` остаётся в сыром теле |
@@ -615,9 +615,9 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
-| 304 | `SEND_VOTE` | `SEND_VOTE` |  |
+| 304 | `SEND_VOTE` | `SEND_VOTE` | `{chatId, messageId, pollId, answersIds}` → `{state}` |
 | 305 | `VOTERS_LIST_BY_ANSWER` | `VOTERS_LIST_BY_ANSWER` |  |
-| 306 | `GET_POLL_UPDATES` | `GET_POLL_UPDATES` |  |
+| 306 | `GET_POLL_UPDATES` | `GET_POLL_UPDATES` | `{chatId, polls:[{messageId, pollId}]}` → `{polls}`; отдельного пуша опроса нет (§G.5) |
 
 ### Folders
 
@@ -877,7 +877,17 @@ User-Agent: `OKMessages/{appVersion} ({osVersion}; {deviceName}; {screen})` (`co
 | 293 | `TranscriptionReady` | как разбор расшифровки, нужен `messageId`; в мосте по-прежнему `transcription` |
 | 136 | `AttachmentFailed` | только `error` без id вложения; id по-прежнему `AttachmentReady`. В мосте `attachError` |
 
-**Не делались в этом шаге:** 154 отложенные (следующий шаг), опросы, звонки 163/165/167, сторис, 150 ассеты, 147/148 геолокация, 143 ответ callback, 140 удаление диапазона, 20 выход из аккаунта, 86 видимость закрепа чата (`{chatId, show}` — это не список закрепов сообщений), 292 баннеры. У 135 по-прежнему нет полей «последняя реакция».
+**Не делались в этом шаге:** звонки 163/165/167, сторис, 150 ассеты, 147/148 геолокация, 143 ответ callback, 140 удаление диапазона, 20 выход из аккаунта, 86 видимость закрепа чата (`{chatId, show}` — это не список закрепов сообщений), 292 баннеры, 305 список голосовавших. У 135 по-прежнему нет полей «последняя реакция». Отложенные и опросы — §G.5.
+
+### G.5 Отложенные сообщения и опросы
+
+Сверено с релизным Android-клиентом (статическое чтение; к серверам не подключались).
+
+**Отложенные.** Создание — `MSG_SEND` 64, `message.delayedAttributes` `{timeToFire, notifySender}` (уже было). Список — `CHAT_HISTORY` 49 с `itemType: "DELAYED"` (имя перечисления, не байт). Правка — `MSG_EDIT` 67: `chatId`, `messageId`, `text`, `delayedAttributes` `{timeToFire, notifySender}`; `elements` только если список не пуст; `attachments` не шлются, чтобы не стереть вложения. Отмена — `MSG_DELETE` 66 с `itemType: "DELAYED"` и `forMe: false`. Время отправки сообщения — `delayedAttributes.timeToFire` (`MaxMessage.fireAt`); нет ключа или `-1` — нет времени. Список и правка в хранилище не пишутся.
+
+Пуш **154** `NOTIF_MSG_DELAYED`: `{chatId, userId, updateTypeId, message?, messageIds, lastDelayedUpdateTime}`. `updateTypeId`: `0` создано, `1` изменено, `2` удалено, `3` отправлено (`FIRE_SUCCESS`); другой байт — нет типа (у приложения это `UNKNOWN`). Сообщение со статусом `DELAYED_FIRE_ERROR` — обычный статус сообщения при правке, не отдельный тип пуша. Событие `MaxEvent.DelayedUpdated`, в мосте `scheduled` (`created` / `edited` / `deleted` / `fired`). Хранилище его не применяет.
+
+**Опросы.** Вложение `POLL` уже читается из сообщения (`pollId`, `title`, `answers`, `settings`, `version`, `state`). Голос — `SEND_VOTE` 304 `{chatId, messageId, pollId, answersIds}` → `{state}` (`total`, `result[{answerId, voteCount, votes, rate, options}]`, `voterPreviewIds`). Обновление счётчиков — `GET_POLL_UPDATES` 306 `{chatId, polls:[{messageId, pollId}]}` → `{polls}` без `_type` и без `messageId` в элементе (ключи `pollId`, `title`, `answers`, `settings`, `version`, `state`). Пустого списка приложение не шлёт. **Отдельного пуша опроса в каталоге опкодов нет** — приложение перезапрашивает 306. Ответ в хранилище не пишется. Список голосовавших (305) не делался.
 
 ---
 
@@ -1131,7 +1141,7 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
 1. **Надёжность соединения** — сделано: ответ на серверный `PING`, `RECONNECT` (3), ошибки входа `login.token` / `login.blocked` / `login.flood`, `PING` раз в 29 s с первым сразу, backoff 3 s → 96 s (§C.3–C.6, §D.5).
 2. **`PHOTO_URL_REFRESH` (203) и лестница размеров** — сделано: `fn=sqr_N` / `fn=w_N`, выбор первого размера не меньше запрошенных пикселей, обновление протухших ссылок пачками (§G.3).
 3. **Закреплённые сообщения (240–243) и часть пропускаемых пушей** — сделано: состояние закрепа, 240/241/242, пуш 243, плюс типы для 156, 159, 293 и ошибки 136 (§G.4). 154, звонки, сторис и остальной каталог не трогались.
-4. Отложенные сообщения и опросы.
+4. **Отложенные сообщения и опросы** — сделано: список/создание/правка/отмена, пуш 154, чтение опроса 306 и голос 304 (§G.5). Пуша счётчиков нет. 305 не делался.
 5. По желанию: отклонение звонка (167) и журнал звонков (163/165).
 
 ---
