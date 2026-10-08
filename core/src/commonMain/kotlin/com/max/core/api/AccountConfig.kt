@@ -1,5 +1,7 @@
 package com.max.core.api
 
+import com.max.core.epochMillis
+
 /**
  * The account configuration of a `LOGIN` 19 reply (`config`), as KometTeam/Komet reads it (only
  * the facts are taken, no code):
@@ -13,6 +15,13 @@ package com.max.core.api
  * The server sends `config` only when the `LOGIN` `configHash` is unknown to it (e.g. the default
  * all-zero hash), so a client keeps the last one. `CONFIG` 22 replies carry the new `user` and
  * `hash` ([withUser]).
+ *
+ * A `config` is not always whole. The hash has several parts, and a reply to a known but stale
+ * hash may leave sections out: Komet saves `user`, `server` and `chatFolders` each only when the
+ * reply has it, and keeps a chat's mute when `config.chats` has no entry for the chat. Here such
+ * a reply is an [AccountConfigUpdate]: [replacedBy] for the full snapshot (`LOGIN` with the
+ * default hash), [mergedWith] for everything else (a `LOGIN` after a reconnect, `LOGIN2`, the
+ * `NOTIF_CONFIG` 134 push). In both, a section the reply does not carry keeps its known value.
  */
 data class AccountConfig(
     val user: Map<String, Any?> = emptyMap(),
@@ -20,6 +29,13 @@ data class AccountConfig(
     val hash: String? = null,
     /** `config.chats`: per-chat settings by chat id, e.g. `{"-123": {"dontDisturbUntil": -1}}`. */
     val chats: Map<String, Any?> = emptyMap(),
+    /**
+     * `true` when [chats] is the whole section of a full snapshot (a `LOGIN` sent with the default
+     * `configHash` whose config carried `chats`), so a chat without an entry has the sound on.
+     * `false` for a config that only holds some chats (built locally before any server config, or
+     * from a reply without `chats`): a chat without an entry is unknown then ([chatMuteState]).
+     */
+    val chatsKnown: Boolean = false,
 ) {
     /**
      * `dontDisturbUntil` of [chatId]: `0` sound on, `-1` muted for good, else the end of the
@@ -33,6 +49,56 @@ data class AccountConfig(
         val until = dontDisturbUntil(chatId) ?: return null
         return until < 0 || until > nowMs
     }
+
+    /** Whether [chatId] is muted now (device clock, [isMuted]); `null` when the config has no entry. */
+    fun isMuted(chatId: Long): Boolean? = isMuted(chatId, epochMillis())
+
+    /**
+     * The mute of [chatId] at [nowMs] as an app should show it:
+     * - the chat has an entry: `true` muted (`-1`, or an end time still ahead), `false` sound on
+     *   (`0`, or a timed mute that ran out);
+     * - no entry and [chatsKnown]: `false` (a full `chats` section leaves out chats with the sound on);
+     * - no entry otherwise: `null`, unknown. Keep the value shown before, never read it as sound on.
+     */
+    fun chatMuteState(chatId: Long, nowMs: Long): Boolean? = isMuted(chatId, nowMs) ?: if (chatsKnown) false else null
+
+    /** [chatMuteState] at the device clock. */
+    fun chatMuteState(chatId: Long): Boolean? = chatMuteState(chatId, epochMillis())
+
+    /** [dontDisturbUntil], or `0` for a chat without an entry when [chatsKnown]; `null` when unknown. */
+    fun chatMuteUntil(chatId: Long): Long? = dontDisturbUntil(chatId) ?: if (chatsKnown) 0L else null
+
+    /**
+     * The full snapshot [update] (a `LOGIN` sent with the default `configHash`): each section it
+     * carries replaces the known one, a section it leaves out (`null`) keeps its value. The
+     * [hash] becomes the update's when it has one. A carried `chats` makes [chatsKnown] `true`.
+     */
+    fun replacedBy(update: AccountConfigUpdate): AccountConfig = AccountConfig(
+        user = update.user ?: user,
+        server = update.server ?: server,
+        hash = update.hash ?: hash,
+        chats = update.chats?.let(::dropNulls) ?: chats,
+        chatsKnown = update.chats != null || chatsKnown,
+    )
+
+    /**
+     * A partial [update] (a `LOGIN` after a reconnect, `LOGIN2`, `NOTIF_CONFIG` 134) on top of this
+     * config:
+     * - a missing section keeps its value;
+     * - `user` and `server` are merged key by key (the update's keys win);
+     * - `chats` is merged per chat id: a chat the update does not name keeps its entry, a named
+     *   entry is merged field by field (so `{"dontDisturbUntil": 0}` turns the sound back on and
+     *   keeps e.g. `favIndex`), and an entry `null` removes the chat's settings;
+     * - the [hash] becomes the update's when it has one;
+     * - [chatsKnown] stays as it was: a partial `chats` says nothing about the chats it leaves out.
+     */
+    fun mergedWith(update: AccountConfigUpdate): AccountConfig = AccountConfig(
+        user = update.user?.let { user + it } ?: user,
+        server = update.server?.let { server + it } ?: server,
+        hash = update.hash ?: hash,
+        chats = update.chats?.let { mergeChats(chats, it) } ?: chats,
+        chatsKnown = chatsKnown,
+    )
 
     /** This config with [chatId]'s `dontDisturbUntil` set to [until]. */
     fun withChatMute(chatId: Long, until: Long): AccountConfig {
@@ -98,18 +164,49 @@ data class AccountConfig(
         copy(user = newUser ?: user, hash = newHash ?: hash)
 
     companion object {
+        /**
+         * The chats named in [prev] or [next] whose mute differs at [nowMs]: a different
+         * [chatMuteUntil] or [chatMuteState] (so a chat without an entry is sound on or unknown by
+         * [chatsKnown]). Sorted by chat id; ids that are not numbers are skipped. Chats neither
+         * config names are not listed, even when [chatsKnown] differs: check that separately.
+         */
+        fun chatMuteChanges(prev: AccountConfig, next: AccountConfig, nowMs: Long): List<ChatMuteChange> =
+            (prev.chats.keys + next.chats.keys).mapNotNull { it.toLongOrNull() }.distinct().sorted().mapNotNull { id ->
+                val after = next.chatMuteUntil(id)
+                val mutedAfter = next.chatMuteState(id, nowMs)
+                if (prev.chatMuteUntil(id) == after && prev.chatMuteState(id, nowMs) == mutedAfter) null
+                else ChatMuteChange(id, after, mutedAfter)
+            }
+
         /** [maxReadmarks] when the server config does not name one. */
         const val DEFAULT_MAX_READMARKS: Int = 100
 
-        /** `config` of a `LOGIN` reply ([loginReply] is the whole reply map); `null` when it has none. */
-        fun fromLoginReply(loginReply: Map<*, *>): AccountConfig? {
-            val config = loginReply["config"] as? Map<*, *> ?: return null
-            return AccountConfig(
-                user = stringKeys(config["user"]),
-                server = stringKeys(config["server"]),
-                hash = config["hash"]?.let { it as? String ?: it.asLong()?.toString() },
-                chats = stringKeys(config["chats"]),
-            )
+        /**
+         * `config` of a `LOGIN` reply ([loginReply] is the whole reply map) as a config of its own
+         * (missing sections empty, [chatsKnown] when it carries `chats`); `null` when it has none. To apply it to a known config use
+         * [AccountConfigUpdate.fromLoginReply] with [replacedBy] or [mergedWith]: this alone would
+         * drop every section the reply leaves out.
+         */
+        fun fromLoginReply(loginReply: Map<*, *>): AccountConfig? =
+            AccountConfigUpdate.fromLoginReply(loginReply)?.let { AccountConfig().replacedBy(it) }
+
+        private fun dropNulls(chats: Map<String, Any?>): Map<String, Any?> = chats.filterValues { it != null }
+
+        private fun mergeChats(known: Map<String, Any?>, update: Map<String, Any?>): Map<String, Any?> {
+            val out = LinkedHashMap(known)
+            for ((id, entry) in update) {
+                when (entry) {
+                    null -> out.remove(id)
+                    is Map<*, *> -> {
+                        val merged = LinkedHashMap<String, Any?>()
+                        (out[id] as? Map<*, *>)?.forEach { (k, v) -> if (k != null) merged[k.toString()] = v }
+                        entry.forEach { (k, v) -> if (k != null) merged[k.toString()] = v }
+                        out[id] = merged
+                    }
+                    else -> out[id] = entry
+                }
+            }
+            return out
         }
 
         /**
@@ -130,6 +227,66 @@ data class AccountConfig(
             map.forEach { (k, v) -> if (k != null) out[k.toString()] = v }
             return out
         }
+    }
+}
+
+/**
+ * A chat whose mute changed ([AccountConfig.chatMuteChanges]): its new [dontDisturbUntil]
+ * ([AccountConfig.chatMuteUntil]: `0` sound on, `-1` muted for good, else the end of the mute in
+ * ms) and whether it is [muted] at the time of the comparison ([AccountConfig.chatMuteState]).
+ * Both are `null` when the new config does not know the chat.
+ */
+data class ChatMuteChange(val chatId: Long, val dontDisturbUntil: Long?, val muted: Boolean?)
+
+/**
+ * A `config` as the server sent it, before it is applied to a known [AccountConfig]: a `null`
+ * section is one the payload does not carry (keep the known one), an empty map one it carries
+ * empty. Comes from the `config` of a `LOGIN` 19 or `LOGIN2` 8 reply ([fromLoginReply]) and from
+ * the `NOTIF_CONFIG` 134 push ([fromPush]).
+ *
+ * @property chats `config.chats` by chat id (keys as decimal strings); an entry may be `null`.
+ * @property hash `config.hash` as text (an integer hash in decimal).
+ */
+data class AccountConfigUpdate(
+    val user: Map<String, Any?>? = null,
+    val server: Map<String, Any?>? = null,
+    val chats: Map<String, Any?>? = null,
+    val hash: String? = null,
+) {
+    /** The chats [chats] names (ids that are not numbers are skipped). */
+    val chatIds: List<Long> get() = chats.orEmpty().keys.mapNotNull { it.toLongOrNull() }
+
+    /** `true` when the update carries nothing to apply. */
+    val isEmpty: Boolean get() = user == null && server == null && chats == null && hash == null
+
+    companion object {
+        /** The sections of a `config` map; `null` when [config] is not a map. */
+        fun from(config: Any?): AccountConfigUpdate? {
+            val map = config as? Map<*, *> ?: return null
+            return AccountConfigUpdate(
+                user = section(map["user"]),
+                server = section(map["server"]),
+                chats = section(map["chats"]),
+                hash = map["hash"]?.let { it as? String ?: it.asLong()?.toString() },
+            )
+        }
+
+        /** `config` of a `LOGIN` / `LOGIN2` reply; `null` when the reply has none. */
+        fun fromLoginReply(reply: Map<*, *>): AccountConfigUpdate? = from(reply["config"])
+
+        /**
+         * A `NOTIF_CONFIG` 134 push. None of the references reads its payload (KometTeam/Komet,
+         * PyMax and kolibri only name the opcode), so both shapes a config travels in are taken:
+         * `{config: {...}}` as in `LOGIN`, or the sections at the top (`{chats, user, server,
+         * hash}`). `null` when the payload has none of them.
+         */
+        fun fromPush(payload: Map<*, *>): AccountConfigUpdate? {
+            val update = (payload["config"] as? Map<*, *>)?.let(::from) ?: from(payload)
+            return update?.takeUnless { it.isEmpty }
+        }
+
+        private fun section(value: Any?): Map<String, Any?>? =
+            (value as? Map<*, *>)?.let { AccountConfig.stringKeys(it) }
     }
 }
 

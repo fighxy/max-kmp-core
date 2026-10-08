@@ -49,6 +49,14 @@ class TokenLogin(
     var sync: SyncState = sync
         private set
 
+    /**
+     * The markers the last `LOGIN` was sent with (`null` before the first). With the default
+     * `configHash` ([DEFAULT_CONFIG_HASH]) its `config` is the full snapshot, otherwise only what
+     * changed since that hash.
+     */
+    var sentSync: SyncState? = null
+        private set
+
     /** Replaces [token], e.g. with the one `SESSIONS_CLOSE` (97) returns; used from the next `LOGIN`. */
     fun replaceToken(newToken: String) {
         token = newToken
@@ -81,6 +89,7 @@ class TokenLogin(
         // results of the previous login must not be mistaken for this one
         _login2.value = null
         login2Error = null
+        sentSync = sync
         val r = api.login(token, sync, interactive, chatsCount, handshake)
         r.token?.let { token = it }
         sync = sync.updatedBy(r)

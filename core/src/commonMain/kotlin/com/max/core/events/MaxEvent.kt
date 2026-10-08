@@ -158,6 +158,27 @@ sealed interface MaxEvent {
     data class StoriesUpdated(val preview: com.max.core.api.StoryPreview, override val opcode: Int, override val raw: Any?) : MaxEvent
 
     /**
+     * The account config changed on the server (`NOTIF_CONFIG` 134), e.g. a chat muted or unmuted
+     * on another device: `config.chats[<chatId>].dontDisturbUntil` (`0` sound on, `-1` muted for
+     * good, else the end of the mute in ms). [update] holds only what the push carries; `MaxClient`
+     * merges it into its account config ([com.max.core.api.AccountConfig.mergedWith]) and keeps
+     * [com.max.core.api.AccountConfigUpdate.hash] as the next `LOGIN` `configHash`. The payload
+     * schema is not in the references (they only name the opcode): `{config: {...}}` and the
+     * sections at the top level are both read ([com.max.core.api.AccountConfigUpdate.fromPush]).
+     */
+    data class ConfigUpdated(
+        val update: com.max.core.api.AccountConfigUpdate,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent {
+        /** The chats whose settings (mute) the push names. */
+        val chatIds: List<Long> get() = update.chatIds
+
+        /** The new config hash, `null` when the push has none. */
+        val hash: String? get() = update.hash
+    }
+
+    /**
      * Any other push: opcodes without a typed event yet, payloads that do not fit the model, and
      * packets with `cmd != 0` (PyMax only maps `cmd == REQUEST (0)` frames). PyMax's "raw" events.
      */

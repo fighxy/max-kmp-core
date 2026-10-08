@@ -194,7 +194,8 @@ data class MaxState(
  *   its counter is still in the push.
  * - [MaxEvent.FoldersChanged] — merged into [MaxState.chatFolders] ([ChatFolders.merge]); this is
  *   how pins made on another device arrive.
- * - everything else (attachment signals, calls, unknown pushes) — no change.
+ * - everything else (attachment signals, calls, config pushes, unknown pushes) — no change; the
+ *   account config (chat mutes) lives in `MaxClient.accountConfig`, not here.
  */
 object StateReducer {
 
@@ -214,7 +215,7 @@ object StateReducer {
         is MaxEvent.FoldersChanged -> state.copy(
             chatFolders = (state.chatFolders ?: ChatFolders(emptyList())).merge(event.folders, event.foldersOrder, event.folderSync),
         )
-        is MaxEvent.AttachmentReady, is MaxEvent.CallStart, is MaxEvent.StoriesUpdated, is MaxEvent.Unknown -> state
+        is MaxEvent.AttachmentReady, is MaxEvent.CallStart, is MaxEvent.StoriesUpdated, is MaxEvent.ConfigUpdated, is MaxEvent.Unknown -> state
     }
 
     /**

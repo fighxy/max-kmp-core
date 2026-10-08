@@ -147,7 +147,9 @@ class MaxEventsTest {
         // an upload signal is typed now; NOTIF_ATTACH without a known id and an opcode without a typed event stay raw
         assertEquals(MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.FILE, 99, 136, mapOf("fileId" to 99)), event("attach"))
         assertIs<MaxEvent.Unknown>(EventParser.parse(136, 0, mapOf("photoId" to 1)))
-        assertEquals(134, assertIs<MaxEvent.Unknown>(event("config")).opcode)
+        // NOTIF_CONFIG is typed now (a hash-only config); a payload without config sections stays raw
+        assertEquals("x", assertIs<MaxEvent.ConfigUpdated>(event("config")).hash)
+        assertIs<MaxEvent.Unknown>(EventParser.parse(134, 0, mapOf("foo" to 1)))
         // empty payload, missing required field, non-push cmd, unparseable message, not a map
         assertIs<MaxEvent.Unknown>(EventParser.parse(128, 0, emptyMap<String, Any?>()))
         assertIs<MaxEvent.Unknown>(EventParser.parse(128, 0, null))
@@ -203,7 +205,7 @@ class MaxEventsTest {
 
         assertEquals(listOf(128, 129, 134, 132), seen.map { it.opcode })
         assertEquals(1L, assertIs<MaxEvent.NewMessage>(seen[0]).message.id)
-        assertIs<MaxEvent.Unknown>(seen[2])
+        assertEquals("h", assertIs<MaxEvent.ConfigUpdated>(seen[2]).hash)
         assertEquals(listOf(17620943L), typing.map { it.userId })
         m.disconnect()
     }

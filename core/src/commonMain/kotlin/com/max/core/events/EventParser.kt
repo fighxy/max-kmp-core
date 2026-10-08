@@ -24,6 +24,7 @@ import com.max.core.transport.TransportPacket
  * | `NOTIF_MSG_REACTIONS_CHANGED` 155 | [MaxEvent.ReactionsChanged] |
  * | `NOTIF_ATTACH` 136 | [MaxEvent.AttachmentReady] (`fileId` / `videoId` / `audioId`) |
  * | `NOTIF_CALL_START` 137 | [MaxEvent.CallStart] (`callerId` + `conversationId`; `vcp` decoded when present) |
+ * | `NOTIF_CONFIG` 134 | [MaxEvent.ConfigUpdated] (`{config}` or `chats` / `user` / `server` / `hash` at the top; at least one of them) |
  * | `NOTIF_FOLDERS` 277 | [MaxEvent.FoldersChanged] (`folders` / `folder`, `foldersOrder`, `folderSync`; at least one of them) |
  *
  * Everything else — including an empty
@@ -115,6 +116,7 @@ object EventParser {
             }
         }
         Opcode.NOTIF_FOLDERS.value -> folders(opcode, map, raw)
+        Opcode.NOTIF_CONFIG.value -> com.max.core.api.AccountConfigUpdate.fromPush(map)?.let { MaxEvent.ConfigUpdated(it, opcode, raw) }
         Opcode.NOTIF_STORIES_UPDATE.value ->
             com.max.core.api.StoryPreview.from(map["storiesPreview"])?.let { MaxEvent.StoriesUpdated(it, opcode, raw) }
         else -> null
