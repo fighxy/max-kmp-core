@@ -76,6 +76,8 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | общие чаты | `198` | `ChatsApi.commonChats`: `{userIds:[id]}` → `commonChats` |
 | push | `128`, `129`, `130`, `132`, `135`, `136`, `137`, `142`, `155`, `277` и др. | `EventParser` → `MaxEvents` → `EventRouter` → `MaxStore` |
 | «печатает» | `65` (исходящий, без ожидания ответа), `129` (push, с `type`) | `MessagesApi.sendTyping`, `MaxClient.sendTyping`, `TypingType`; `MaxEvent.Typing.type` / `effectiveType`, `MaxState.typingUsersWithType` / `typingType`; мост iOS `sendTyping`, `IosTypingType`, `text` у события `typing`. См. «Печатает: 65 и 129» |
+| кто прочитал | `48` (`participants`), `59` (`readMark`), `71` (время и автор сообщения, если его нет в сторе), `130` (push), `181`; ключ конфига `max-readmarks` | `MessageReaders`, `ReadersApi` (`MaxApi.readers`), `Chat.participants`, `ChatMember.readMark`, `AccountConfig.maxReadmarks`, `MaxState.chatReadMarks`; `MaxClient.loadMessageReaders` / `isMessageReadersAvailable`; мост iOS `loadMessageReaders`, `isReadersAvailable`, `IosMessageReader`. См. «Кто прочитал сообщение» |
+| время правки сообщения | поле `updateTime` сообщения везде, где приходит сообщение (`19`, `49`, `67`, `71`, `128` и др.) | `MaxMessage.updateTime` (`null`, если поля нет или `0`); push правки без поля сохраняет известное время; мост iOS `IosMessage.updateTime`, `IosEvent.updateTime` (`0` — не правилось) |
 
 ## Печатает: 65 и 129
 
@@ -98,6 +100,22 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
   Нет `type`, пустая строка или незнакомое значение означают `TEXT`. При отправке строка уходит как есть.
 - Сигнала «перестал печатать» в протоколе нет. `MaxState.typingUsers` по-прежнему отдаёт `Set<Long>` с TTL `MaxState.DEFAULT_TYPING_TTL_MS` = 8 000 мс (эвристика клиента, с запасом над интервалом повтора 6 с). Эффективный `type` последнего пуша на пользователя в чате лежит рядом, в `MaxState.typingTypes`; читать через `typingUsersWithType(chatId, now, ttlMs)` (`Map<userId, type>`) и `typingType(chatId, userId, now, ttlMs)` (`null`, если пользователь уже не печатает) с тем же TTL. Новое сообщение отправителя и удаление чата убирают и метку времени, и `type`.
 - Троттлинга в ядре нет: каждый вызов `sendTyping` (ядро, `MaxClient`, мост iOS) шлёт кадр. Клиенты повторяют `65`, пока пользователь занят, не чаще раза в 6 с на чат; собеседник гасит индикатор сам.
+
+## Кто прочитал сообщение
+
+Поведение сверено с официальным веб-клиентом MAX; схемы `48`, `59` и `181` — по Komet (`feature/FullStack`) и PyMax. Код ни откуда не брали.
+
+- Отдельного запроса нет. Читатели — участники, чья отметка прочтения не меньше времени сообщения (равная считается прочтением), плюс все, кто поставил реакцию. Я и автор сообщения в список не входят.
+- Отметка прочтения — время (мс) последнего прочитанного сообщения, а не момент чтения. Источники:
+  - `48` `CHAT_INFO`: `participants` чата — `{userId: readMark}` (ключи бывают числами и строками). В ядре `Chat.participants`.
+  - `59` `CHAT_MEMBERS` `{type: "MEMBER", chatId, marker, count: 50}`: у каждого участника `readMark` (`ChatMember.readMark`). Запрашивается, только если в `participants` меньше пользователей, чем `participantsCount`; страницы по `marker`, пока не увидим всех, не придёт пустая страница или `marker` 0 / повтор.
+  - `130` `NOTIF_MARK` (push): `MaxState.readMarks`.
+  Для каждого пользователя берётся более поздняя отметка (`MessageReaders.mergeMarks`, для стора — `MaxState.chatReadMarks`).
+- Реакции: `181` `MSG_GET_DETAILED_REACTIONS` `{chatId, messageId, count: 100}` (у комментариев ещё `postId`), без пагинации, ответ `reactions: [{userId, reaction}]`. Если запрос упал, показываем только читателей, без ошибки.
+- Где доступно (`MessageReaders.isAvailable`): только группы `type` `CHAT` без флага `videoConversation` (идёт групповой звонок) и с числом участников (`participantsCount`, без него — размер `participants`) не больше `max-readmarks` из `config.server` (`AccountConfig.maxReadmarks`, по умолчанию 100). Не бывает в диалогах, «Избранном», каналах и комментариях. Подходит любое отправленное сообщение, не только своё, без ограничения по давности.
+- Порядок (`MessageReaders.build`): сначала поставившие реакцию — в порядке ответа `181`, у каждого эмодзи; потом прочитавшие без реакции — по отметке по убыванию, при равенстве по `userId` по возрастанию. Каждый пользователь один раз: прочитавший с реакцией — только в группе реакций (с отметкой, если она дошла до сообщения; иначе отметки нет, в мосте iOS `readMark = 0`).
+- Загрузка (`ReadersApi.loadMessageReaders`, `MaxClient.loadMessageReaders`): каждое открытие экрана заново спрашивает `48`, чтобы отметки были свежими; свежий чат кладётся в стор. Недоступный чат — пустой список, больше запросов нет. Время и автор сообщения: из стора (загруженные сообщения или `lastMessage` чата), иначе `71` `MSG_GET`; не нашлось — ошибка. Затем `59` (при необходимости, ошибки игнорируются) и `181`. Имена неизвестных пользователей догружаются `CONTACT_INFO` (32) без ошибки при сбое.
+- `74` `MSG_GET_STAT` к этому не относится (просмотры постов каналов) и не используется.
 
 ## Блокеры: нужен снятый трафик
 

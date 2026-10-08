@@ -374,7 +374,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
-| 48 | `CHAT_INFO` | `CHAT_INFO` |  |
+| 48 | `CHAT_INFO` | `CHAT_INFO` | `participants` — `{userId: readMark}`, отметки прочтения (opcodes.md, «Кто прочитал сообщение») |
 | 49 | `CHAT_HISTORY` | `CHAT_HISTORY` |  |
 | 50 | `CHAT_MARK` | `CHAT_MARK` |  |
 | 51 | `CHAT_MEDIA` | `CHAT_MEDIA` |  |
@@ -385,7 +385,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 56 | `CHAT_CHECK_LINK` | `CHAT_CHECK_LINK` |  |
 | 57 | `CHAT_JOIN` | `CHAT_JOIN` |  |
 | 58 | `CHAT_LEAVE` | `CHAT_LEAVE` |  |
-| 59 | `CHAT_MEMBERS` | `CHAT_MEMBERS` |  |
+| 59 | `CHAT_MEMBERS` | `CHAT_MEMBERS` | у участника `readMark` (opcodes.md, «Кто прочитал сообщение») |
 | 60 | `PUBLIC_SEARCH` | `PUBLIC_SEARCH` |  |
 | 61 | `CHAT_PERSONAL_CONFIG` | `CHAT_PERSONAL_CONFIG` |  |
 | 62 | `—` | `CHAT_LIVESTREAM_INFO` | только PyMax |
@@ -417,7 +417,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 178 | `MSG_REACTION` | `MSG_REACTION` |  |
 | 179 | `MSG_CANCEL_REACTION` | `MSG_CANCEL_REACTION` |  |
 | 180 | `MSG_GET_REACTIONS` | `MSG_GET_REACTIONS` |  |
-| 181 | `MSG_GET_DETAILED_REACTIONS` | `MSG_GET_DETAILED_REACTIONS` |  |
+| 181 | `MSG_GET_DETAILED_REACTIONS` | `MSG_GET_DETAILED_REACTIONS` | `{chatId, messageId, count: 100, postId?}`, без пагинации; входит в «кто прочитал» |
 | 257 | `CHAT_REACTIONS_SETTINGS_SET` | `CHAT_REACTIONS_SETTINGS_SET` |  |
 | 258 | `REACTIONS_SETTINGS_GET_BY_CHAT_ID` | `REACTIONS_SETTINGS_GET_BY_CHAT_ID` |  |
 
@@ -500,7 +500,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 |------|---------|-------|------|
 | 128 | `NOTIF_MESSAGE` | `NOTIF_MESSAGE` |  |
 | 129 | `NOTIF_TYPING` | `NOTIF_TYPING` | `{chatId, userId, type?}` → `MaxEvent.Typing`; нет `type` — `TEXT` |
-| 130 | `NOTIF_MARK` | `NOTIF_MARK` |  |
+| 130 | `NOTIF_MARK` | `NOTIF_MARK` | `{chatId, userId, mark, setAsUnread}` → `MaxState.readMarks`; входит в «кто прочитал» |
 | 131 | `NOTIF_CONTACT` | `NOTIF_CONTACT` |  |
 | 132 | `NOTIF_PRESENCE` | `NOTIF_PRESENCE` |  |
 | 134 | `NOTIF_CONFIG` | `NOTIF_CONFIG` |  |
@@ -702,7 +702,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 
 ### F.2 Ключевые domain models
 
-- **Message**: `id`, `chatId?`, `sender?`, `text=""`, `time`, `type`, `cid?`, `attaches[]`, `stats?`, `status?`, `reactionInfo?`, `options?`, `prevMessageId?`, `ttl?`, `unread?`, `mark?`, `elements[]`, `delayedAttributes?`, `link?` (`PyMax:src/pymax/types/domain/message.py:160-244`).
+- **Message**: `id`, `chatId?`, `sender?`, `text=""`, `time`, `type`, `cid?`, `attaches[]`, `stats?`, `status?`, `reactionInfo?`, `options?`, `prevMessageId?`, `ttl?`, `unread?`, `mark?`, `elements[]`, `delayedAttributes?`, `link?` (`PyMax:src/pymax/types/domain/message.py:160-244`); у правленого сообщения ещё `updateTime` (мс, время последней правки; `MaxMessage.updateTime`).
 - **Chat**: `id`, `type`, `status`, `owner`, `participants`, `title?`, icon URLs, `lastMessage?`, timestamps, `newMessages`, `link?`, `access?`, `restrictions?`, `pinnedMessage?`, `participantsCount`, `description?`, `options?`, admins, … (`chat.py:17-99`).
 - **User**: `id`, `accountStatus?`, `registrationTime?`, `country?`, avatar URLs, `names[]`, `options[]`, `photoId?`, `phone?`, `status?`, `description?`, `gender?`, `link?`, … (`user.py:22-77`).
 - Attachments: Photo/Video/File/Audio/Sticker/Share/Contact/Call/Control/InlineKeyboard/Poll/Unknown — discriminator `_type` / `type` (`types/domain/attachments/`).
