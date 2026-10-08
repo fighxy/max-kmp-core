@@ -64,6 +64,8 @@ import com.max.core.events.EventRouter
 import com.max.core.events.MaxEvent
 import com.max.core.events.MaxEvents
 import com.max.core.media.MediaApi
+import com.max.core.media.PhotoUrlMedia
+import com.max.core.media.RefreshedPhoto
 import com.max.core.media.MediaHttp
 import com.max.core.media.MediaHttpConfig
 import com.max.core.media.OutgoingAttachment
@@ -1024,6 +1026,18 @@ class MaxClient @Throws(Exception::class) constructor(
         commit(t) { store.putPresence(presence) }
         return presence
     }
+
+    /**
+     * Refreshes expired photo URLs (`PHOTO_URL_REFRESH` 203, [MediaApi.refreshPhotoUrls]).
+     * Does not run on its own: call it for URLs [com.max.core.media.ImageSizes.isExpired] reports,
+     * and only when [AccountConfig.photoUrlRefresh] is on. [maxPerRequest] defaults to that
+     * config's `photo-url-refresh-max-media-per-request` (100 when there is no config yet).
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun refreshPhotoUrls(
+        media: List<PhotoUrlMedia>,
+        maxPerRequest: Int = accountConfig.value?.photoUrlRefreshMaxMedia ?: AccountConfig.DEFAULT_PHOTO_URL_REFRESH_MAX_MEDIA,
+    ): List<RefreshedPhoto> = this.media.refreshPhotoUrls(media, maxPerRequest)
 
     /**
      * Whether the app is in the foreground ([setInteractive]); starts as

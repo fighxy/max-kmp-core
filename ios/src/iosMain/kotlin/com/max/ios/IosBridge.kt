@@ -29,7 +29,10 @@ import com.max.core.api.StoryOwner
 import com.max.core.api.StoryPreview
 import com.max.core.api.TypingType
 import com.max.core.api.hasWebApp
+import com.max.core.media.ImageShape
+import com.max.core.media.ImageSizes
 import com.max.core.media.OutgoingMedia
+import com.max.core.media.PhotoUrlMedia
 import com.max.core.media.UploadProgress
 import com.max.core.media.fileUploadSource
 import com.max.core.media.messageContentJson
@@ -2301,6 +2304,34 @@ class MaxIosClient internal constructor(
      * marks right when it comes to the foreground, which is exactly when iOS has dropped the
      * socket. Bounded by [sessionWaitMs]: then the call runs and fails as before.
      */
+    /**
+     * Refreshes expired photo URLs (`PHOTO_URL_REFRESH` 203). Not called while drawing: call it
+     * when [IosImageSize.expired] and the server flag `photo-url-refresh` is on
+     * (`accountConfig`). Ids that do not parse are skipped. Chunking uses the server max.
+     */
+    fun refreshPhotoUrls(media: List<IosPhotoRefresh>, onResult: (List<IosRefreshedPhoto>?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val items = media.mapNotNull { item ->
+                val chat = item.chatId.trim().toLongOrNull() ?: return@mapNotNull null
+                val message = item.messageId.trim().toLongOrNull() ?: return@mapNotNull null
+                val photos = item.photoIds.mapNotNull { it.trim().toLongOrNull() }
+                PhotoUrlMedia(chat, message, photos)
+            }
+            c.refreshPhotoUrls(items).map { photo ->
+                IosRefreshedPhoto(
+                    photoId = photo.photoId.toString(),
+                    baseUrl = photo.baseUrl ?: "",
+                    mp4Url = photo.mp4Url ?: "",
+                    photoToken = photo.photoToken ?: "",
+                    width = photo.width ?: 0,
+                    height = photo.height ?: 0,
+                    previewUrl = photo.previewUrl ?: "",
+                    gif = photo.gif,
+                )
+            }
+        }
+    }
+
     private suspend fun awaitSession(c: MaxClient) {
         fun reconnecting(state: ClientState): Boolean =
             (state is ClientState.Reconnecting || state == ClientState.Connecting) &&
@@ -3187,6 +3218,66 @@ class IosPresence(val userId: String, val status: Int, val seenMs: Long)
  * - [tokenCleared]: `false` only for `flood`: the stored token stays and a later `start` tries it
  *   again, while an SMS login replaces it.
  */
+/**
+ * Image URL sizes ([ImageSizes]). No session needed. [shape] is `square` (avatars, `sqr_N`) or
+ * `width` (photos, `w_N`). [neededPixels] is already multiplied by screen density. The original
+ * URL, with no `fn`, is for a full-screen viewer only.
+ */
+object IosImageSize {
+    const val SQUARE_TINY: String = ImageSizes.SQUARE_TINY
+    const val SQUARE_SMALL: String = ImageSizes.SQUARE_SMALL
+    const val SQUARE_MEDIUM: String = ImageSizes.SQUARE_MEDIUM
+    const val SQUARE_LARGE: String = ImageSizes.SQUARE_LARGE
+    const val SQUARE_MAX: String = ImageSizes.SQUARE_MAX
+    const val WIDTH_TINY: String = ImageSizes.WIDTH_TINY
+    const val WIDTH_SMALL: String = ImageSizes.WIDTH_SMALL
+    const val WIDTH_MEDIUM: String = ImageSizes.WIDTH_MEDIUM
+    const val WIDTH_LARGE: String = ImageSizes.WIDTH_LARGE
+    const val WIDTH_MAX: String = ImageSizes.WIDTH_MAX
+
+    fun squareLadder(): List<IosImageFn> = ImageSizes.SQUARE.map { IosImageFn(it.fn, it.pixels) }
+    fun widthLadder(): List<IosImageFn> = ImageSizes.WIDTH.map { IosImageFn(it.fn, it.pixels) }
+
+    /** The `fn` query value, or throws when [shape] is not `square` or `width`. */
+    fun pick(shape: String, neededPixels: Int): String = ImageSizes.pick(imageShape(shape), neededPixels)
+
+    /** [url] with `&fn=` for [neededPixels]. */
+    fun sizedUrl(url: String, shape: String, neededPixels: Int): String =
+        ImageSizes.sizedUrl(url, imageShape(shape), neededPixels)
+
+    /** [url] with `&fn=[fn]`, as the app appends it. */
+    fun url(url: String, fn: String): String = ImageSizes.url(url, fn)
+
+    /** `expires` query in epoch millis, `0` when missing or not a number. */
+    fun expiresAtMillis(url: String): Long = ImageSizes.expiresAtMillis(url) ?: 0L
+
+    /** True when `expires` is present and `nowMillis` is at or past it. */
+    fun expired(url: String, nowMillis: Long): Boolean = ImageSizes.isExpired(url, nowMillis)
+}
+
+class IosImageFn(val fn: String, val pixels: Int)
+
+/** One message whose photos should be refreshed (opcode 203). Ids are decimal strings. */
+class IosPhotoRefresh(val chatId: String, val messageId: String, val photoIds: List<String>)
+
+/** One photo from a 203 reply. Empty strings stand for a missing field; [width]/[height] `0` too. */
+class IosRefreshedPhoto(
+    val photoId: String,
+    val baseUrl: String,
+    val mp4Url: String,
+    val photoToken: String,
+    val width: Int,
+    val height: Int,
+    val previewUrl: String,
+    val gif: Boolean,
+)
+
+private fun imageShape(shape: String): ImageShape = when (shape) {
+    "square" -> ImageShape.SQUARE
+    "width" -> ImageShape.WIDTH
+    else -> throw IllegalArgumentException("image shape must be square or width, not \"$shape\"")
+}
+
 class IosLoginRejection(
     val reason: String,
     val errorKey: String?,

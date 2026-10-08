@@ -128,6 +128,35 @@ data class AccountConfig(
         else -> null
     }
 
+    /** A boolean setting of [server], read the same way as [userFlag]. */
+    fun serverFlag(key: String): Boolean? = when (val v = server[key]) {
+        is Boolean -> v
+        is Number -> v.toLong() != 0L
+        is String -> when (v.trim().uppercase()) {
+            "TRUE", "ON", "1" -> true
+            "FALSE", "OFF", "0" -> false
+            else -> null
+        }
+        else -> null
+    }
+
+    /**
+     * `config.server["photo-url-refresh"]`: the app refreshes expired photo URLs (opcode 203)
+     * only when this is on. `false` when the key is absent or not a flag.
+     */
+    val photoUrlRefresh: Boolean
+        get() = serverFlag("photo-url-refresh") ?: false
+
+    /**
+     * `config.server["photo-url-refresh-max-media-per-request"]`: how many messages one opcode 203
+     * request may carry. [DEFAULT_PHOTO_URL_REFRESH_MAX_MEDIA] (100) when the key is absent, not
+     * a number or not positive.
+     */
+    val photoUrlRefreshMaxMedia: Int
+        get() = server["photo-url-refresh-max-media-per-request"].asLong()
+            ?.takeIf { it in 1..Int.MAX_VALUE }?.toInt()
+            ?: DEFAULT_PHOTO_URL_REFRESH_MAX_MEDIA
+
     /**
      * `config.server["max-readmarks"]`: the largest group (by members) that shows who read a
      * message ([MessageReaders.isAvailable]). [DEFAULT_MAX_READMARKS] when the key is absent, not a
@@ -197,6 +226,9 @@ data class AccountConfig(
 
         /** [maxReadmarks] when the server config does not name one. */
         const val DEFAULT_MAX_READMARKS: Int = 100
+
+        /** [photoUrlRefreshMaxMedia] when the server config does not name one (the app's default). */
+        const val DEFAULT_PHOTO_URL_REFRESH_MAX_MEDIA: Int = 100
 
         /** `presence-ttl` of the MAX web client's server config defaults, in seconds. */
         const val DEFAULT_PRESENCE_TTL_S: Long = 300

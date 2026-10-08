@@ -32,6 +32,9 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
+/** Default `photo-url-refresh-max-media-per-request` (the app's PMS default). */
+const val DEFAULT_PHOTO_URL_REFRESH_BATCH: Int = 100
+
 /**
  * Media uploads, download links and messages with attachments.
  *
@@ -455,6 +458,38 @@ class MediaApi(
     /** `FILE_DOWNLOAD` 88 `{chatId, messageId, fileId}` (PyMax `get_file_by_id`). */
     suspend fun getFileLink(chatId: Long, messageId: Long, fileId: Long): FileLink =
         FileLink.from(replyMap(sink.request(Opcode.FILE_DOWNLOAD, fileLinkPayload(chatId, messageId, fileId)), Opcode.FILE_DOWNLOAD))
+
+    /**
+     * `PHOTO_URL_REFRESH` 203 `{media: [{chatId, messageId, photoIds}]}` → `{media: [photo]}`.
+     *
+     * Not called from image loading: the client calls this when [ImageSizes.isExpired] and the
+     * server flag `photo-url-refresh` ([com.max.core.api.AccountConfig.photoUrlRefresh]) is on.
+     * The list is split into requests of [maxPerRequest] entries (the app's
+     * `photo-url-refresh-max-media-per-request`, default [DEFAULT_PHOTO_URL_REFRESH_BATCH]). One
+     * entry is one message, however many [PhotoUrlMedia.photoIds] it carries. An empty list
+     * sends nothing.
+     */
+    suspend fun refreshPhotoUrls(
+        media: List<PhotoUrlMedia>,
+        maxPerRequest: Int = DEFAULT_PHOTO_URL_REFRESH_BATCH,
+    ): List<RefreshedPhoto> {
+        if (media.isEmpty()) return emptyList()
+        val batch = maxPerRequest.coerceAtLeast(1)
+        val out = ArrayList<RefreshedPhoto>()
+        for (part in media.chunked(batch)) {
+            val payload = mapOf(
+                "media" to part.map { item ->
+                    mapOf(
+                        "chatId" to item.chatId,
+                        "messageId" to item.messageId,
+                        "photoIds" to item.photoIds,
+                    )
+                },
+            )
+            out += RefreshedPhoto.listFrom(replyMap(sink.request(Opcode.PHOTO_URL_REFRESH, payload), Opcode.PHOTO_URL_REFRESH))
+        }
+        return out
+    }
 
     // ---- sending ------------------------------------------------------------------------------
 

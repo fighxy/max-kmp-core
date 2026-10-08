@@ -146,6 +146,7 @@ enum class Opcode(val value: Int) {
     FILE_UPLOAD(87),
     FILE_DOWNLOAD(88),
     LINK_INFO(89),
+    PHOTO_URL_REFRESH(203), // {media:[{chatId, messageId, photoIds}]} -> {media:[photo attaches]}
     AUDIO_PLAY(301),
 
     // ── Sessions / phone binding ────────────────────────────────────
