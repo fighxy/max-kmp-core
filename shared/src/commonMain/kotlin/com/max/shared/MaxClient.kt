@@ -11,7 +11,12 @@ import com.max.core.api.ChatMemberEntry
 import com.max.core.api.ChatRoles
 import com.max.core.api.ContactByPhone
 import com.max.core.api.DeleteResult
+import com.max.core.api.ChatMemberRole
+import com.max.core.api.ChatRights
+import com.max.core.api.DeletePlan
+import com.max.core.api.DeleteScope
 import com.max.core.api.Drafts
+import com.max.core.api.MessageDeletion
 import com.max.core.api.MaxDraft
 import com.max.core.api.MemberListType
 import com.max.core.api.ChatsApi
@@ -1394,9 +1399,7 @@ class MaxClient @Throws(Exception::class) constructor(
     ): ForwardBatch {
         require(messageIds.isNotEmpty()) { "messageIds must not be empty" }
         val times = store.state.value.messagesOf(fromChatId).associate { it.id to it.time }
-        val ordered = messageIds.distinct().withIndex()
-            .sortedWith(compareBy({ times[it.value] == null }, { times[it.value] ?: 0L }, { if (times[it.value] == null) 0L else it.value }, { it.index }))
-            .map { it.value }
+        val ordered = com.max.core.api.ForwardOrder.of(messageIds, times)
         val note = comment?.trim().orEmpty()
         if (note.isNotEmpty()) sendTextImpl(toChatId, note, null, emptyList(), discardDraft = false)
         val t = ticket()
@@ -1588,6 +1591,41 @@ class MaxClient @Throws(Exception::class) constructor(
     }
 
     // ---- Readers ---------------------------------------------------------------------------------
+
+    /**
+     * `edit-timeout` of the server config in seconds ([AccountConfig.editTimeoutSeconds]): how long
+     * an own message may be edited and deleted for everyone; `0` while the config is unknown or
+     * has none (as the MAX web client).
+     */
+    val editTimeoutSeconds: Long get() = _accountConfig.value?.editTimeoutSeconds ?: 0L
+
+    /**
+     * The own rights in [chatId] ([ChatRights.of] from the stored chat: `owner`, `admins`,
+     * `adminParticipants`); [ChatRights.NONE] for a dialog, Saved Messages or an unknown chat.
+     */
+    fun chatRights(chatId: Long): ChatRights {
+        val state = store.state.value
+        return ChatRights.of(state.chats[chatId], state.me)
+    }
+
+    /** The own role in [chatId] ([chatRights]). */
+    fun myRole(chatId: Long): ChatMemberRole = chatRights(chatId).role
+
+    /** The own admin permission bits in [chatId] as the server sent them, `null` when not an admin or unknown ([chatRights]). */
+    fun myPermissions(chatId: Long): Int? = chatRights(chatId).permissions
+
+    /**
+     * The delete dialog for [messageIds] of [chatId] ([MessageDeletion.plan]: Saved Messages only
+     * for this account; own messages younger than [editTimeoutSeconds] for everyone; others' in
+     * groups and channels for everyone only with the right to delete any message; nothing in a
+     * channel without it). An id the store does not hold counts as an unsent message.
+     */
+    fun deletePlan(chatId: Long, messageIds: List<Long>): DeletePlan =
+        MessageDeletion.plan(store.state.value, chatId, messageIds, editTimeoutSeconds)
+
+    /** Whether [messageId] of [chatId] may be deleted for everyone ([deletePlan], [DeleteScope.ALL]). */
+    fun canDeleteForEveryone(chatId: Long, messageId: Long): Boolean =
+        deletePlan(chatId, listOf(messageId)).scopes[messageId] == DeleteScope.ALL
 
     /** `max-readmarks` of the server config ([AccountConfig.maxReadmarks]); 100 while the config is unknown. */
     private fun maxReadmarks(): Int = _accountConfig.value?.maxReadmarks ?: AccountConfig.DEFAULT_MAX_READMARKS

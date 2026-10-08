@@ -158,7 +158,8 @@ class IosPresenceDraftsTest {
             Opcode.LOGIN,
             mapOf(
                 "profile" to mapOf("contact" to mapOf("id" to 5, "names" to listOf(mapOf("firstName" to "Me")))),
-                "chats" to listOf(mapOf("id" to -70, "type" to "CHAT", "status" to "ACTIVE")),
+                "chats" to listOf(mapOf("id" to -70, "type" to "CHAT", "status" to "ACTIVE", "owner" to 5L)),
+                "config" to mapOf("hash" to "cfg-1", "server" to mapOf("edit-timeout" to 60L)),
                 "contacts" to listOf(
                     mapOf("id" to 7, "phone" to 79131234567L, "link" to "https://max.ru/anna7", "names" to listOf(mapOf("type" to "ONEME", "name" to "Анна"), mapOf("type" to "CUSTOM", "firstName" to "Аня"))),
                 ),
@@ -201,6 +202,20 @@ class IosPresenceDraftsTest {
         assertNull(c.reconcileDraft("-70", "мой", "", "", 4_000L))
         assertEquals("мой", c.reconcileDraft("-70", "мой", "", "", 5_001L)?.text)
         IosDiagnostics.installDiagnosticLogger { }
+
+        // own rights, edit-timeout and the delete dialog
+        val rights = c.chatRights("-70")
+        assertTrue(rights.isOwner)
+        assertFalse(rights.isAdmin)
+        assertTrue(rights.canDeleteAnyMessage)
+        assertEquals(-1L, rights.permissions)
+        assertFalse(c.chatRights("-71").canDeleteAnyMessage)
+        assertEquals(60L, c.editTimeoutSeconds())
+        val plan = c.deletePlan("-70", listOf("local-1", "123"))
+        assertEquals(listOf("self", "self"), plan.scopes) // not in the store: unsent
+        assertTrue(plan.canDelete)
+        assertFalse(plan.showsForEveryone)
+        assertFalse(c.canDeleteForEveryone("-70", "123"))
 
         // the contact's mention name comes from its link
         val contacts = CompletableDeferred<List<IosContact>>()

@@ -816,6 +816,53 @@ class MaxIosClient internal constructor(
     }
 
     /**
+     * The own rights in [chatId] from the stored chat card (`owner`, `admins`,
+     * `adminParticipants`): see [IosChatRights]. A dialog, Saved Messages or a chat the core does
+     * not hold: no rights.
+     */
+    fun chatRights(chatId: String): IosChatRights = attempt(IosChatRights(false, false, -1, false)) {
+        val r = client().chatRights(parseId(chatId))
+        IosChatRights(r.isOwner, r.isAdmin, r.permissions?.toLong() ?: -1L, r.canDeleteAnyMessage)
+    }
+
+    /**
+     * `edit-timeout` of the server config in seconds: how long an own message may be edited and
+     * deleted for everyone. `0` while the config is unknown or has none (as the MAX web client).
+     */
+    fun editTimeoutSeconds(): Long = attempt(0L) { client().editTimeoutSeconds }
+
+    /**
+     * Whether [messageId] of [chatId] may be deleted for everyone (shared rule, fixture
+     * `selection/delete.json`; see [deletePlan]).
+     */
+    fun canDeleteForEveryone(chatId: String, messageId: String): Boolean = attempt(false) {
+        client().canDeleteForEveryone(parseId(chatId), parseId(messageId))
+    }
+
+    /**
+     * The delete dialog for a selection ([IosDeletePlan]): Saved Messages only for this account;
+     * own messages younger than [editTimeoutSeconds] for everyone; others' in groups and
+     * channels for everyone only with the right to delete any message ([chatRights]); nothing
+     * in a channel without it. An id the core does not hold (an unsent message, a local id that
+     * is not a number) counts as unsent: only for this account, nothing in a channel without
+     * rights.
+     */
+    fun deletePlan(chatId: String, messageIds: List<String>): IosDeletePlan = attempt(IosDeletePlan(messageIds.map { "none" }, false, false, false, false)) {
+        val c = client()
+        val chat = parseId(chatId)
+        // non-numeric local ids get placeholder ids that the store cannot hold
+        val ids = messageIds.mapIndexed { i, id -> id.trim().toLongOrNull() ?: (Long.MIN_VALUE + i) }
+        val plan = c.deletePlan(chat, ids)
+        IosDeletePlan(
+            scopes = ids.map { plan.scopes[it]?.name?.lowercase() ?: "none" },
+            canDelete = plan.canDelete,
+            showsForEveryone = plan.showsForEveryone,
+            forEveryoneByDefault = plan.forEveryoneByDefault,
+            forcesForEveryone = plan.forcesForEveryone,
+        )
+    }
+
+    /**
      * The members of [members] matching [query], in their order (shared rule, fixture
      * `members/search.json`): a case-insensitive substring of [IosGroupMember.name] or
      * [IosGroupMember.mentionName], `ё` = `е`, the query trimmed, an empty query matches all;
@@ -2768,6 +2815,31 @@ class IosDeleteResult(val deleted: List<String>, val failed: List<String>)
  * ms (pass it to [MaxIosClient.discardDraft]).
  */
 class IosDraft(val chatId: String, val text: String, val elementsJson: String, val replyTo: String, val updateTime: Long)
+
+/**
+ * The own rights in a chat ([MaxIosClient.chatRights]). [permissions] are the own admin bits as
+ * the server sent them (`-1` when not an admin or unknown; the owner has every right without
+ * bits). Bits of the MAX web client: 1 edit/delete messages (groups), 2 add/remove members, 4 add
+ * admins, 8 change chat info, 16 pin, 32 read all, 64 calls, 128 edit link, 256 post, 512 edit
+ * messages, 1024 delete messages (channels), 2048 statistics. [canDeleteAnyMessage]: the owner,
+ * or an admin with bit 1 (group) / bit 1 or 1024 (channel).
+ */
+class IosChatRights(val isOwner: Boolean, val isAdmin: Boolean, val permissions: Long, val canDeleteAnyMessage: Boolean)
+
+/**
+ * The delete dialog for a selection ([MaxIosClient.deletePlan]): [scopes] per asked id in order,
+ * `all` (for everyone), `self` (only for this account) or `none`; [canDelete] — no `none` in a
+ * non-empty selection; [showsForEveryone] — show the "delete for everyone" switch (every scope
+ * `all`, not a channel); [forEveryoneByDefault] — its start position; [forcesForEveryone] — a
+ * channel where everything is `all`: delete for everyone without a switch.
+ */
+class IosDeletePlan(
+    val scopes: List<String>,
+    val canDelete: Boolean,
+    val showsForEveryone: Boolean,
+    val forEveryoneByDefault: Boolean,
+    val forcesForEveryone: Boolean,
+)
 
 /** A chat shared with a user ([MaxIosClient.commonChats]); [type] is `CHAT` or `CHANNEL`. */
 class IosCommonChat(val id: String, val type: String, val title: String, val iconUrl: String, val participants: Int)

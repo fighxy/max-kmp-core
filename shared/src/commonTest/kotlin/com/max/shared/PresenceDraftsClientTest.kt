@@ -309,6 +309,36 @@ class PresenceDraftsClientTest {
     }
 
     @Test
+    fun rightsEditTimeoutAndDeleteForEveryone() = runTest {
+        val t = loggedIn(
+            mapOf(
+                "config" to mapOf("hash" to "cfg-2", "server" to mapOf("edit-timeout" to 3_600L)),
+                "chats" to listOf(
+                    mapOf("id" to dialog, "type" to "DIALOG", "status" to "ACTIVE", "participants" to mapOf("$me" to 0, "$peer" to 0)),
+                    mapOf("id" to -70, "type" to "CHAT", "status" to "ACTIVE", "owner" to 9L, "adminParticipants" to mapOf("$me" to mapOf("permissions" to 1L, "alias" to "мод"))),
+                    mapOf("id" to -80, "type" to "CHANNEL", "status" to "ACTIVE", "owner" to 9L),
+                ),
+            ),
+        )
+        assertEquals(3_600L, t.c.editTimeoutSeconds)
+        assertEquals(com.max.core.api.ChatMemberRole.ADMIN, t.c.myRole(-70))
+        assertEquals(1, t.c.myPermissions(-70))
+        assertTrue(t.c.chatRights(-70).canDeleteAnyMessage)
+        assertEquals(com.max.core.api.ChatMemberRole.MEMBER, t.c.myRole(-80))
+        assertNull(t.c.myPermissions(dialog))
+        // a peer's fresh message in the dialog: only for me; in the group as an admin: for everyone
+        t.conn.feed(push(Opcode.NOTIF_MESSAGE.value, mapOf("chatId" to dialog, "message" to mapOf("id" to 50L, "sender" to peer, "time" to 1_700L, "type" to "USER", "text" to "x"))))
+        t.conn.feed(push(Opcode.NOTIF_MESSAGE.value, mapOf("chatId" to -70, "message" to mapOf("id" to 51L, "sender" to peer, "time" to 1_700L, "type" to "USER", "text" to "x"))))
+        t.conn.feed(push(Opcode.NOTIF_MESSAGE.value, mapOf("chatId" to -80, "message" to mapOf("id" to 52L, "sender" to 9L, "time" to 1_700L, "type" to "USER", "text" to "x"))))
+        runCurrent()
+        assertFalse(t.c.canDeleteForEveryone(dialog, 50))
+        assertTrue(t.c.canDeleteForEveryone(-70, 51))
+        val plan = t.c.deletePlan(-80, listOf(52))
+        assertEquals(com.max.core.api.DeleteScope.NONE, plan.scopes[52])
+        assertFalse(plan.canDelete)
+    }
+
+    @Test
     fun preferAddressBookNamesSwitchesTheRule() = runTest {
         val t = loggedIn(
             mapOf("contacts" to listOf(mapOf("id" to peer, "phone" to 79131234567L, "names" to listOf(mapOf("type" to "ONEME", "name" to "Анна"), mapOf("type" to "CUSTOM", "firstName" to "Аня"))))),

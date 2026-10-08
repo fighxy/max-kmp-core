@@ -41,6 +41,20 @@ data class ChatRoles(val owner: Long?, val admins: Map<Long, ChatAdmin>) {
     fun can(userId: Long, permission: ChatPermission): Boolean =
         roleOf(userId) == ChatMemberRole.OWNER || admins[userId]?.can(permission) == true
 
+    /**
+     * Whether [userId] may delete anyone's messages, as the MAX web client decides it
+     * (`viewerCanDeleteAnyMessage`): the owner always; in a group an admin with
+     * [ChatPermission.EDIT_DELETE] (bit 1); in a channel ([channel]) an admin with
+     * [ChatPermission.DELETE_MESSAGE] (bit 1024) or [ChatPermission.EDIT_DELETE]. An admin whose
+     * bits are unknown (only in `admins`) may not.
+     */
+    fun canDeleteAnyMessage(userId: Long, channel: Boolean): Boolean {
+        if (owner != null && userId == owner) return true
+        val bits = admins[userId]?.permissions ?: return false
+        val mask = if (channel) ChatPermission.EDIT_DELETE.bit or ChatPermission.DELETE_MESSAGE.bit else ChatPermission.EDIT_DELETE.bit
+        return bits and mask != 0
+    }
+
     companion object {
         val NONE = ChatRoles(null, emptyMap())
 
@@ -62,6 +76,28 @@ data class ChatRoles(val owner: Long?, val admins: Map<Long, ChatAdmin>) {
                 )
             }
             return ChatRoles(raw["owner"].asLong(), admins)
+        }
+    }
+}
+
+/**
+ * The own rights in one chat ([of]): [role] from the chat's `owner` / `admins` /
+ * `adminParticipants`, [permissions] the own admin bits as the server sent them (`null` when not
+ * an admin or the bits are unknown; the owner has every right without bits), and
+ * [canDeleteAnyMessage] by [ChatRoles.canDeleteAnyMessage]. A dialog, Saved Messages or a chat
+ * the store does not know: [ChatMemberRole.MEMBER] without rights.
+ */
+data class ChatRights(val role: ChatMemberRole, val permissions: Int?, val canDeleteAnyMessage: Boolean) {
+    val isOwner: Boolean get() = role == ChatMemberRole.OWNER
+    val isAdmin: Boolean get() = role == ChatMemberRole.ADMIN
+
+    companion object {
+        val NONE = ChatRights(ChatMemberRole.MEMBER, null, false)
+
+        fun of(chat: Chat?, me: Long?): ChatRights {
+            if (chat == null || me == null || chat.type == "DIALOG") return NONE
+            val roles = ChatRoles.of(chat)
+            return ChatRights(roles.roleOf(me), roles.admins[me]?.permissions, roles.canDeleteAnyMessage(me, chat.type == "CHANNEL"))
         }
     }
 }
@@ -91,7 +127,24 @@ data class ChatMemberEntry(val member: ChatMember, val user: MaxUser?, val role:
  * `null` at the end: the reply had no marker (or `0`), repeated the requested one, or no members.
  */
 data class ChatMembersResult(val members: List<ChatMemberEntry>, val nextMarker: Long?) {
+    /**
+     * [loaded] members followed by the new ones of this page (a repeated user id keeps its first
+     * entry), and the marker of the next request: [nextMarker], but `null` when the page brought
+     * no new member (shared Orbitle rule, `members/paging.json`).
+     */
+    fun appendTo(loaded: List<ChatMemberEntry>): ChatMembersResult {
+        val seen = loaded.mapNotNullTo(HashSet()) { it.userId }
+        val fresh = members.filter { m -> m.userId.let { it == null || seen.add(it) } }
+        return ChatMembersResult(loaded + fresh, nextMarker.takeIf { fresh.isNotEmpty() })
+    }
+
     companion object {
+        /**
+         * [members] in list order: the owner, then admins, then everyone else, each group in the
+         * server's order (shared Orbitle rule, `members/roles.json`).
+         */
+        fun byRole(members: List<ChatMemberEntry>): List<ChatMemberEntry> = members.sortedBy { it.role.ordinal }
+
         fun of(page: ChatMembersPage, requestedMarker: Long, roles: ChatRoles): ChatMembersResult = ChatMembersResult(
             members = page.members.map { ChatMemberEntry.of(it, roles) },
             nextMarker = page.marker?.takeIf { it != 0L && it != requestedMarker && page.members.isNotEmpty() },

@@ -144,6 +144,15 @@ data class AccountConfig(
     val presenceTtlSeconds: Long
         get() = server["presence-ttl"].asLong()?.takeIf { it > 0 } ?: DEFAULT_PRESENCE_TTL_S
 
+    /**
+     * `config.server["edit-timeout"]` in seconds: how long an own message may be edited and
+     * deleted for everyone. `0` when the key is absent, not a number or negative, as the MAX web
+     * client's server config defaults have it (then an own message cannot be deleted for
+     * everyone).
+     */
+    val editTimeoutSeconds: Long
+        get() = server["edit-timeout"].asLong()?.takeIf { it >= 0 } ?: 0L
+
     /** `config.server["invite-link"]` as a full URL ([normalizeLink]), `null` when absent. */
     val inviteLink: String?
         get() = normalizeLink(server["invite-link"]?.toString())
