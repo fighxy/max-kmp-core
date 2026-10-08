@@ -860,6 +860,19 @@ class MaxClient @Throws(Exception::class) constructor(
     }
 
     /**
+     * Tells [chatId] that this account is typing (`MSG_TYPING` 65, `{chatId, type, postId?}`;
+     * [com.max.core.api.MessagesApi.sendTyping]). Fire-and-forget: no reply is awaited and send
+     * errors are swallowed; the result says whether the frame was written. [type] is a
+     * [com.max.core.api.TypingType] constant (`TEXT`, `AUDIO`, `VIDEO_MSG`, `PHOTO`, `VIDEO`,
+     * `FILE`, `STICKER`); any other string is sent as given. [postId] marks typing a comment under
+     * that channel post. No throttling: every call sends a frame, so call it at most once per 6 s
+     * per chat while the user is busy. The store does not change.
+     */
+    @Throws(CancellationException::class)
+    suspend fun sendTyping(chatId: Long, type: String, postId: Long? = null): Boolean =
+        api.messages.sendTyping(chatId, type, postId)
+
+    /**
      * Marks [chatId] unread from [mark] (message time, ms) and stores the read boundary one
      * millisecond earlier, so that message stays unread. Returns the server's unread count.
      */
