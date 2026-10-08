@@ -145,6 +145,20 @@ class IosGhostModeTest {
         conn.answer(Opcode.CONTACT_PRESENCE, mapOf("presence" to emptyMap<String, Any?>()))
         assertEquals(null to null, withTimeout(5.seconds) { none.await() })
 
+        // privacy through the generic setter: checked, sent, cached
+        val privacy = CompletableDeferred<IosAccountSettings?>()
+        c.setPrivacy("search_by_phone", "contacts") { settings, _, _ -> privacy.complete(settings) }
+        val sentPrivacy = conn.answer(Opcode.CONFIG, mapOf("hash" to "cfg-2"))!!
+        assertEquals(mapOf("settings" to mapOf("user" to mapOf("SEARCH_BY_PHONE" to "CONTACTS"))), sentPrivacy)
+        assertEquals("CONTACTS", assertNotNull(withTimeout(5.seconds) { privacy.await() }).searchByPhone)
+        assertEquals("CONTACTS", c.accountSettings().searchByPhone)
+        val readOnly = CompletableDeferred<String?>()
+        c.setPrivacyFlag("SHOW_READ_MARK", false) { _, kind, _ -> readOnly.complete(kind) }
+        assertNotNull(withTimeout(5.seconds) { readOnly.await() })
+        assertTrue(c.isPrivacyReadOnly("SHOW_READ_MARK"))
+        assertFalse(c.isPrivacyReadOnly("HIDDEN"))
+        conn.assertSilent()
+
         watch.cancel()
         val closed = CompletableDeferred<Unit>()
         c.close { closed.complete(Unit) }

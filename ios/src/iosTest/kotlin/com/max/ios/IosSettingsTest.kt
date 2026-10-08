@@ -16,7 +16,16 @@ class IosSettingsTest {
     fun settingsDefaultsBeforeTheConfig() {
         val s = settingsSnapshot(null)
         assertFalse(s.known)
-        assertEquals("ALL", s.phonePrivacy)
+        // the MAX web client's defaults
+        assertEquals("CONTACTS", s.phonePrivacy)
+        assertEquals("ALL", s.incomingCalls)
+        assertEquals("ALL", s.chatInvites)
+        assertEquals("ALL", s.searchByPhone)
+        assertFalse(s.safeContentOnly)
+        assertEquals("OFF", s.familyProtection)
+        assertFalse(s.privacyLocked)
+        assertTrue(s.showReadMark)
+        assertFalse(s.showReadMarkKnown)
         assertFalse(s.onlineHidden)
         assertEquals("6M", s.inactiveTtl)
         assertEquals(2340831L, s.sferumBotId)
@@ -29,7 +38,7 @@ class IosSettingsTest {
         val config = AccountConfig(
             user = mapOf(
                 "PHONE_NUMBER_PRIVACY" to "_NONE_", "HIDDEN" to true, "SAFE_MODE" to true, "INACTIVE_TTL" to "3m",
-                "FAMILY_PROTECTION" to "ON", "INCOMING_CALL" to "ALL",
+                "FAMILY_PROTECTION" to "MANAGEABLE", "INCOMING_CALL" to "ALL", "SHOW_READ_MARK" to false,
             ),
             server = mapOf("invite-link" to "me"),
         )
@@ -39,9 +48,22 @@ class IosSettingsTest {
         assertTrue(s.onlineHidden)
         assertTrue(s.safeMode)
         assertEquals("3M", s.inactiveTtl)
-        assertEquals("ON", s.familyProtection)
-        assertEquals("ALL", s.incomingCalls)
+        assertEquals("MANAGEABLE", s.familyProtection)
+        assertEquals("MANAGEABLE", s.familyProtectionRaw)
+        // safe mode forces and locks search, calls, invites and content
+        assertTrue(s.privacyLocked)
+        assertEquals("CONTACTS", s.incomingCalls)
         assertEquals("CONTACTS", s.chatInvites)
+        assertEquals("CONTACTS", s.searchByPhone)
+        assertTrue(s.safeContentOnly)
+        assertFalse(s.showReadMark)
+        assertTrue(s.showReadMarkKnown)
+        // a value the web client does not know is kept raw
+        val odd = settingsSnapshot(AccountConfig(user = mapOf("FAMILY_PROTECTION" to "ON", "INCOMING_CALL" to "CONTACTS")))
+        assertEquals("UNKNOWN" to "ON", odd.familyProtection to odd.familyProtectionRaw)
+        assertFalse(odd.privacyLocked)
+        assertEquals("CONTACTS", odd.incomingCalls)
+        assertEquals("ADMIN", settingsSnapshot(AccountConfig(user = mapOf("FAMILY_PROTECTION" to "ADMIN"))).familyProtection)
         assertEquals("https://max.ru/me", s.inviteLink)
     }
 

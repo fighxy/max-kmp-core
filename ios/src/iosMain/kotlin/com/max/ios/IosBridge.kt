@@ -11,6 +11,7 @@ import com.max.core.api.ChatMemberEntry
 import com.max.core.api.ContactNames
 import com.max.core.api.PhoneContact
 import com.max.core.api.PresenceInfo
+import com.max.core.api.PrivacyConfig
 import com.max.core.api.PresenceStatus
 import com.max.core.api.Presences
 import com.max.core.api.MaxDraft
@@ -1138,36 +1139,49 @@ class MaxIosClient internal constructor(
         c.watchAccountConfig { config -> guarded { onEach(settingsSnapshot(config)) } }
     }
 
-    /** "Who sees my phone number": `ALL`, `CONTACTS` or `NOBODY` (`PHONE_NUMBER_PRIVACY`). */
+    /**
+     * Sets one privacy setting ([MaxClient.setPrivacy], `CONFIG` 22): [key] `SEARCH_BY_PHONE`,
+     * `INCOMING_CALL`, `CHATS_INVITE` (`ALL` / `CONTACTS`), `PHONE_NUMBER_PRIVACY` (`ALL` /
+     * `CONTACTS` / `NOBODY`), `HIDDEN`, `CONTENT_LEVEL_ACCESS`, `SAFE_MODE` (`true` / `false`).
+     * While [IosAccountSettings.privacyLocked] the first three and `CONTENT_LEVEL_ACCESS` fail with
+     * an error kind (turn safe mode off first); `SHOW_READ_MARK` and `FAMILY_PROTECTION` are read
+     * only. [onResult] gets the new settings.
+     */
+    fun setPrivacy(key: String, value: String, onResult: (IosAccountSettings?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c -> settingsSnapshot(c.setPrivacy(key, value)) }
+    }
+
+    /** [setPrivacy] for the boolean keys (`HIDDEN`, `CONTENT_LEVEL_ACCESS`, `SAFE_MODE`). */
+    fun setPrivacyFlag(key: String, enabled: Boolean, onResult: (IosAccountSettings?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c -> settingsSnapshot(c.setPrivacy(key, enabled)) }
+    }
+
+    /**
+     * Whether privacy [key] cannot be changed now: `SHOW_READ_MARK` and `FAMILY_PROTECTION`
+     * always; search, calls, invites and content while safe mode is on or the account is under
+     * family protection; safe mode itself under family protection.
+     */
+    fun isPrivacyReadOnly(key: String): Boolean = attempt(false) {
+        PrivacyConfig.from(client().accountConfig.value).isReadOnly(key.trim().uppercase())
+    }
+
+    /** "Who sees my phone number": `ALL`, `CONTACTS` or `NOBODY` (`PHONE_NUMBER_PRIVACY`, [setPrivacy]). */
     fun setPhonePrivacy(value: String, onResult: (IosAccountSettings?, String?, String?) -> Unit) {
-        val wire = value.uppercase()
-        updateSettings(onResult) {
-            require(wire in setOf("ALL", "CONTACTS", "NOBODY")) { "bad phone privacy: $value" }
-            mapOf<String, Any?>("PHONE_NUMBER_PRIVACY" to wire)
-        }
+        setPrivacy(PrivacyConfig.PHONE_NUMBER_PRIVACY, value, onResult)
     }
 
     /** Hides the online status from everybody (`HIDDEN: true`) or shows it to contacts (`false`). */
     fun setOnlineHidden(hidden: Boolean, onResult: (IosAccountSettings?, String?, String?) -> Unit) {
-        updateSettings(onResult) { mapOf<String, Any?>("HIDDEN" to hidden) }
+        setPrivacyFlag(PrivacyConfig.HIDDEN, hidden, onResult)
     }
 
     /**
      * Safe mode as Komet sets it: on sends `SAFE_MODE`, `SAFE_MODE_NO_PIN`, `CONTENT_LEVEL_ACCESS`
      * `true` and `SEARCH_BY_PHONE`, `INCOMING_CALL`, `CHATS_INVITE` `CONTACTS`; off sends only
-     * `SAFE_MODE` and `SAFE_MODE_NO_PIN` `false`.
+     * `SAFE_MODE` and `SAFE_MODE_NO_PIN` `false` ([setPrivacyFlag] `SAFE_MODE`).
      */
     fun setSafeMode(enabled: Boolean, onResult: (IosAccountSettings?, String?, String?) -> Unit) {
-        updateSettings(onResult) {
-            if (enabled) {
-                linkedMapOf<String, Any?>(
-                    "INCOMING_CALL" to "CONTACTS", "SEARCH_BY_PHONE" to "CONTACTS", "SAFE_MODE_NO_PIN" to true,
-                    "CONTENT_LEVEL_ACCESS" to true, "CHATS_INVITE" to "CONTACTS", "SAFE_MODE" to true,
-                )
-            } else {
-                linkedMapOf<String, Any?>("SAFE_MODE_NO_PIN" to false, "SAFE_MODE" to false)
-            }
-        }
+        setPrivacyFlag(PrivacyConfig.SAFE_MODE, enabled, onResult)
     }
 
     /** Deletes the account after this much inactivity: `1M`, `3M` or `6M` (`INACTIVE_TTL`). */

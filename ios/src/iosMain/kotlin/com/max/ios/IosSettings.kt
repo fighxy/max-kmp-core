@@ -5,6 +5,7 @@ import com.max.core.api.ChatFolders
 import com.max.core.api.EntryApp
 import com.max.core.api.Folder
 import com.max.core.api.MaxUser
+import com.max.core.api.PrivacyConfig
 import com.max.core.api.SessionInfo
 import com.max.core.api.TwoFactorDetails
 import com.max.core.api.WebAppInitData
@@ -33,10 +34,20 @@ class IosMyProfile(
 /**
  * User settings of `config.user` and settings-screen values of `config.server`. [known] is `false`
  * until the first `LOGIN` config arrived (the other values are then defaults).
- * - [phonePrivacy]: `ALL`, `CONTACTS` or `NOBODY` (`_NONE_` is reported as `NOBODY`);
- * - [onlineHidden]: `HIDDEN`, the online status is shown to nobody;
+ * Privacy ([PrivacyConfig], defaults of the MAX web client for a key the server did not send):
+ * - [phonePrivacy]: `PHONE_NUMBER_PRIVACY`, `ALL`, `CONTACTS` or `NOBODY` (`_NONE_` is read as
+ *   `NOBODY`), default `CONTACTS`;
+ * - [onlineHidden]: `HIDDEN`, the online status is shown to nobody (`false`: to contacts);
+ * - [searchByPhone], [incomingCalls], [chatInvites]: `SEARCH_BY_PHONE`, `INCOMING_CALL`,
+ *   `CHATS_INVITE`, `ALL` or `CONTACTS`, default `ALL`; [safeContentOnly]: `CONTENT_LEVEL_ACCESS`;
+ * - [safeMode]: `SAFE_MODE`. While it is on those four report the forced values (contacts, safe
+ *   content) and [privacyLocked] is `true`: they cannot be changed until safe mode is off;
+ * - [familyProtection]: `FAMILY_PROTECTION`, `OFF`, `ADMIN` (this account protects someone),
+ *   `MANAGEABLE` (this account is protected: [privacyLocked], safe mode cannot be changed
+ *   either) or `UNKNOWN` with the server's value in [familyProtectionRaw] (empty when absent);
+ * - [showReadMark]: `SHOW_READ_MARK`, read only and unverified (no official client has a switch
+ *   for it); `true` when absent, [showReadMarkKnown] tells whether the server sent it;
  * - [inactiveTtl]: `1M`, `3M` or `6M`;
- * - [familyProtection]: `ON` or `OFF`;
  * - [inviteLink]: full URL or empty; [sferumBotId], [digitalIdBotId]: mini app bots.
  * - [quickReaction]: emoji for a double tap (`DOUBLE_TAP_REACTION_VALUE`), 👍 when unset.
  * - [quickReactionDisabled]: `DOUBLE_TAP_REACTION_DISABLED`.
@@ -57,6 +68,10 @@ class IosAccountSettings(
     val digitalIdBotId: Long,
     val quickReaction: String,
     val quickReactionDisabled: Boolean,
+    val familyProtectionRaw: String,
+    val privacyLocked: Boolean,
+    val showReadMark: Boolean,
+    val showReadMarkKnown: Boolean,
 )
 
 /** One active session. [lastSeenMs] is Unix milliseconds (0 when unknown). */
@@ -109,22 +124,27 @@ internal fun myProfileSnapshot(user: MaxUser, config: AccountConfig?): IosMyProf
 
 internal fun settingsSnapshot(config: AccountConfig?): IosAccountSettings {
     val c = config ?: AccountConfig()
+    val p = PrivacyConfig.from(c)
     return IosAccountSettings(
         known = config != null,
-        phonePrivacy = access(c.userString("PHONE_NUMBER_PRIVACY"), "ALL"),
-        onlineHidden = c.userFlag("HIDDEN") ?: false,
-        safeMode = c.userFlag("SAFE_MODE") ?: false,
-        searchByPhone = access(c.userString("SEARCH_BY_PHONE"), "ALL"),
-        incomingCalls = access(c.userString("INCOMING_CALL"), "CONTACTS"),
-        chatInvites = access(c.userString("CHATS_INVITE"), "CONTACTS"),
-        safeContentOnly = c.userFlag("CONTENT_LEVEL_ACCESS") ?: false,
-        familyProtection = if (c.userFlag("FAMILY_PROTECTION") == true) "ON" else "OFF",
+        phonePrivacy = p.phoneNumber.name,
+        onlineHidden = p.onlineHidden,
+        safeMode = p.safeMode,
+        searchByPhone = p.searchByPhone.name,
+        incomingCalls = p.incomingCalls.name,
+        chatInvites = p.chatInvites.name,
+        safeContentOnly = p.safeContentOnly,
+        familyProtection = p.familyProtection.name,
         inactiveTtl = c.userString("INACTIVE_TTL")?.uppercase()?.takeIf { it in INACTIVE_TTLS } ?: "6M",
         inviteLink = c.inviteLink.orEmpty(),
         sferumBotId = c.entryAppBotId(EntryApp.SFERUM),
         digitalIdBotId = c.entryAppBotId(EntryApp.DIGITAL_ID),
         quickReaction = quickReaction(c),
         quickReactionDisabled = c.userFlag("DOUBLE_TAP_REACTION_DISABLED") == true,
+        familyProtectionRaw = p.familyProtectionRaw.orEmpty(),
+        privacyLocked = p.locked,
+        showReadMark = p.showReadMark ?: true,
+        showReadMarkKnown = p.showReadMark != null,
     )
 }
 
@@ -137,14 +157,6 @@ private fun quickReaction(config: AccountConfig): String {
         else -> null
     }
     return text?.takeIf { it.isNotEmpty() && it.length <= 32 } ?: "👍"
-}
-
-/** Privacy access as `ALL` / `CONTACTS` / `NOBODY`; PyMax's `_NONE_` means nobody too. */
-private fun access(value: String?, fallback: String): String = when (value?.uppercase()) {
-    "ALL" -> "ALL"
-    "CONTACTS" -> "CONTACTS"
-    "NOBODY", "_NONE_", "NONE" -> "NOBODY"
-    else -> fallback
 }
 
 internal val INACTIVE_TTLS = setOf("1M", "3M", "6M")
