@@ -257,7 +257,7 @@ class MaxClientTest {
         val started = c.start()
         assertIs<ClientState.Reconnecting>(started)
         assertIs<com.max.core.transport.ConnectionClosedException>(started.lastError)
-        advanceTimeBy(2_001)
+        advanceTimeBy(3_301)
         runCurrent()
         val conn = scripted.lastConnection!!
         conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))

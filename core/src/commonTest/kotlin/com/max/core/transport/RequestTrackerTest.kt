@@ -9,6 +9,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 class RequestTrackerTest {
@@ -69,9 +70,27 @@ class RequestTrackerTest {
         assertIs<ConnectionClosedException>(b.getCompletionExceptionOrNull())
     }
 
+    /** A [Random] whose `nextDouble()` is always [value] (0 → -10 %, 0.5 → exact, 1 → +10 %). */
+    private class FixedRandom(private val value: Double) : kotlin.random.Random() {
+        override fun nextBits(bitCount: Int): Int = 0
+        override fun nextDouble(): Double = value
+    }
+
     @Test
-    fun backoffIs2_4_8_15_15() {
-        assertEquals(listOf(2, 4, 8, 15, 15, 15).map { it.seconds }, (0..5).map(::reconnectDelay))
-        assertEquals(15.seconds, reconnectDelay(1000))
+    fun backoffIs3sDoublingTo96sWithTenPercentJitter() {
+        val exact = FixedRandom(0.5)
+        assertEquals(listOf(3, 6, 12, 24, 48, 96, 96).map { it.seconds }, (0..6).map { reconnectDelay(it, exact) })
+        assertEquals(96.seconds, reconnectDelay(1000, exact))
+        assertEquals(3.seconds, reconnectDelay(-1, exact))
+        // ±10 %, like the app's random(-0.1, 0.1)
+        assertEquals(2_700.milliseconds, reconnectDelay(0, FixedRandom(0.0)))
+        assertEquals(86_400.milliseconds, reconnectDelay(9, FixedRandom(0.0)))
+        assertEquals(105_600.milliseconds, reconnectDelay(9, FixedRandom(1.0)))
+        val seeded = kotlin.random.Random(42)
+        repeat(200) {
+            val d = reconnectDelay(it % 8, seeded)
+            val base = minOf(3_000L shl minOf(it % 8, 5), 96_000L)
+            assertTrue(d.inWholeMilliseconds in (base * 9 / 10)..(base * 11 / 10), "$d for attempt ${it % 8}")
+        }
     }
 }

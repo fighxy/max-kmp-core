@@ -78,7 +78,8 @@ interface TlsTransport {
  * @property pingInterval keepalive period, 29 s like the Android app (`c4e`); the first PING goes
  *   out right after connect (after the `onConnected` handshake / `LOGIN`), the next ones every
  *   interval. [Duration.INFINITE] disables the ping loop.
- * @property autoReconnect reconnect after a drop with the 2/4/8/15 s backoff ([reconnectDelay]).
+ * @property autoReconnect reconnect after a drop with the 3 s…96 s backoff and ±10% jitter
+ *   ([reconnectDelay], the Android app's `ConnectionBackoff`).
  * @property redirectDomains hosts a server `RECONNECT` (opcode 3) may send the transport to: these
  *   domains and their subdomains ([ServerRedirect]). Empty: redirects to another host are ignored.
  */

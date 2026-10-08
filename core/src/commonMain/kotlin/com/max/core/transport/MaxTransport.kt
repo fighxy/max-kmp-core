@@ -40,6 +40,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlin.random.Random
 import kotlin.time.Duration
 
 /**
@@ -66,8 +67,10 @@ import kotlin.time.Duration
  *   and reconnects at once, to the given host when it is on [TransportConfig.redirectDomains]
  *   ([ServerRedirect]); an unsafe one is ignored. The outcome is in [lastRedirect];
  * - on a drop every pending request fails with [ConnectionClosedException]; with
- *   [TransportConfig.autoReconnect] the transport reconnects after [reconnectDelay] (2, 4, 8,
- *   15, 15 s ...), resetting the attempt counter after each successful connection.
+ *   [TransportConfig.autoReconnect] the transport reconnects after [reconnectDelay] (3 s,
+ *   doubling up to 96 s, ±10% jitter, like the Android app's `ConnectionBackoff`), resetting the
+ *   attempt counter after each successful connection. A server `RECONNECT` (opcode 3) reconnects
+ *   at once.
  *
  * - like kolibri's supervisor, a failed first [connect] is thrown to the caller and, with
  *   [TransportConfig.autoReconnect], retried in the background on the same schedule (an app
@@ -81,6 +84,7 @@ import kotlin.time.Duration
  *   it throws, the connection is dropped (and, on reconnect, retried).
  * @param scope where the reader, ping and reconnect coroutines run. Tests pass a `TestScope`'s
  *   `backgroundScope` to get virtual time.
+ * @param random jitter source of [reconnectDelay]; tests pass a seeded one.
  */
 class MaxTransport(
     config: TransportConfig,
@@ -88,6 +92,7 @@ class MaxTransport(
     private val codec: MessagePackCodec = DefaultMessagePackCodec,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val onConnected: (suspend (MaxTransport) -> Unit)? = null,
+    private val random: Random = Random.Default,
 ) : TlsTransport {
 
     /**
@@ -388,7 +393,7 @@ class MaxTransport(
                     // the server asked for it (RECONNECT): no backoff
                     reconnectAtOnce = false
                 } else {
-                    delay(reconnectDelay(attempt))
+                    delay(reconnectDelay(attempt, random))
                 }
                 attempt++
                 try {

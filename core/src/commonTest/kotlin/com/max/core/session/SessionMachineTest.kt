@@ -319,7 +319,7 @@ class SessionMachineTest {
         assertEquals(SessionState.Reconnecting(1), m.state.value)
         // connect() while reconnecting waits for the next Online
         val waiting = async { m.connect() }
-        advanceTimeBy(2_001)
+        advanceTimeBy(3_301)
         runCurrent()
         assertEquals(2, factory.openCount)
         assertEquals(SessionState.Handshaking, m.state.value)
@@ -352,7 +352,7 @@ class SessionMachineTest {
         connecting.await()
 
         factory.lastConnection!!.close()
-        advanceTimeBy(2_001)
+        advanceTimeBy(3_301)
         runCurrent()
         val second = factory.lastConnection!!
         val (header, _) = decodePayloadPacket(second.takeWritten()!!)
@@ -363,7 +363,7 @@ class SessionMachineTest {
         assertEquals(2, state.attempt)
         assertIs<ServerErrorException>(state.lastError)
 
-        // next attempt after 4 s; disconnect while reconnecting stops everything
+        // next attempt after about 6 s; disconnect while reconnecting stops everything
         m.disconnect()
         assertEquals(SessionState.Closed, m.state.value)
         advanceTimeBy(60_000)
@@ -388,11 +388,11 @@ class SessionMachineTest {
         assertIs<ConnectionClosedException>(state.lastError)
         // a later connect() waits for the background retries instead of starting over
         val waiting = async { m.connect() }
-        advanceTimeBy(2_001) // second failure
+        advanceTimeBy(3_301) // second failure
         runCurrent()
         assertEquals(0, scripted.openCount)
         assertIs<SessionState.Reconnecting>(m.state.value)
-        advanceTimeBy(4_001)
+        advanceTimeBy(6_601)
         runCurrent()
         assertEquals(1, scripted.openCount)
         scripted.lastConnection!!.answerHandshake()

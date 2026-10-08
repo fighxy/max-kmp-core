@@ -107,7 +107,7 @@ class ServerRedirectTest {
         // a later drop reconnects to the redirected host (with the usual backoff)
         second.close()
         runCurrent()
-        advanceTimeBy(2_001)
+        advanceTimeBy(3_301)
         runCurrent()
         assertEquals(3, factory.openCount)
         assertEquals("api2.oneme.ru", factory.lastHost)

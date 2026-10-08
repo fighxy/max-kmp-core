@@ -40,7 +40,14 @@ class MaxTransportTest {
         factory: ConnectionFactory,
         config: TransportConfig = quiet,
         onConnected: (suspend (MaxTransport) -> Unit)? = null,
-    ) = MaxTransport(config, factory, scope = backgroundScope, onConnected = onConnected)
+        random: kotlin.random.Random = kotlin.random.Random.Default,
+    ) = MaxTransport(config, factory, scope = backgroundScope, onConnected = onConnected, random = random)
+
+    /** `nextDouble()` always 0.5: [reconnectDelay] without jitter. */
+    private object NoJitter : kotlin.random.Random() {
+        override fun nextBits(bitCount: Int): Int = 0
+        override fun nextDouble(): Double = 0.5
+    }
 
     private fun decode(frame: ByteArray): Pair<PacketHeader, Any?> = decodePayloadPacket(frame)
 
@@ -161,7 +168,7 @@ class MaxTransportTest {
         assertFailsWith<RequestTimeoutException> { t.request(Opcode.SYNC, null) }
         runCurrent()
         assertEquals(ConnectionState.Disconnected, t.state.value)
-        advanceTimeBy(2_001)
+        advanceTimeBy(3_301) // 3 s ±10 %
         runCurrent()
         assertEquals(2, factory.openCount)
         assertTrue(factory.lastConnection !== first)
@@ -352,7 +359,7 @@ class MaxTransportTest {
             }
             FakeRawConnection().also { current = it }
         }
-        val t = transport(factory, quiet.copy(autoReconnect = true))
+        val t = transport(factory, quiet.copy(autoReconnect = true), random = NoJitter)
         t.connect()
         val first = current!!
 
@@ -364,20 +371,20 @@ class MaxTransportTest {
         runCurrent()
         assertEquals(ConnectionState.Disconnected, t.state.value)
 
-        // attempts after 2, 4, 8 s fail; the one after 15 s more succeeds
-        advanceTimeBy(29_001)
+        // attempts after 3, 6, 12 s fail; the one after 24 s more succeeds (the app's 3 s doubling)
+        advanceTimeBy(45_001)
         runCurrent()
-        assertEquals(listOf(0L, 2_000L, 6_000L, 14_000L, 29_000L), openTimes)
+        assertEquals(listOf(0L, 3_000L, 9_000L, 21_000L, 45_000L), openTimes)
         assertEquals(ConnectionState.Connected, t.state.value)
 
-        // after a success the backoff restarts at 2 s
+        // after a success the backoff restarts at 3 s
         val second = current!!
         val dropAt = currentTime
         second.close()
         runCurrent()
-        advanceTimeBy(2_001)
+        advanceTimeBy(3_001)
         runCurrent()
-        assertEquals(dropAt + 2_000, openTimes.last())
+        assertEquals(dropAt + 3_000, openTimes.last())
         assertEquals(ConnectionState.Connected, t.state.value)
 
         // new connection → seq restarts at 1

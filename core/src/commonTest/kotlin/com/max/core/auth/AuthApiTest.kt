@@ -352,8 +352,8 @@ class AuthApiTest {
         connecting.await()
         assertEquals("refreshed", login.token)
 
-        factory.lastConnection!!.close() // drop -> reconnect after 2 s
-        advanceTimeBy(2_001)
+        factory.lastConnection!!.close() // drop -> reconnect after about 3 s
+        advanceTimeBy(3_301)
         runCurrent()
         val second = factory.lastConnection!!
         second.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to 2))
@@ -384,8 +384,8 @@ class AuthApiTest {
             factory.lastConnection!!.answer(Opcode.LOGIN, mapOf("token" to "t1", "time" to 1000))
             connecting.await()
 
-            factory.lastConnection!!.close() // drop -> reconnect after 2 s
-            advanceTimeBy(2_001)
+            factory.lastConnection!!.close() // drop -> reconnect after about 3 s
+            advanceTimeBy(3_301)
             runCurrent()
             val second = factory.lastConnection!!
             second.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to 2))
@@ -423,7 +423,7 @@ class AuthApiTest {
         // reconnect: still asks from 5, and the interactive flag follows the setter
         login.interactive = true
         factory.lastConnection!!.close()
-        advanceTimeBy(2_001)
+        advanceTimeBy(3_301)
         runCurrent()
         factory.lastConnection!!.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to 2))
         runCurrent()

@@ -59,7 +59,7 @@ sealed interface SessionState {
 
     /**
      * The connection dropped (or the first connect failed) and the transport is reconnecting
-     * with backoff (2/4/8/15 s). [attempt] counts drops and failed attempts since the last
+     * with backoff (3 s, doubling up to 96 s, ±10% jitter). [attempt] counts drops and failed attempts since the last
      * Online; [lastError] is the last connect or handshake failure, if any.
      */
     data class Reconnecting(val attempt: Int, val lastError: Throwable? = null) : SessionState
