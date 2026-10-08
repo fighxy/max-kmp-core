@@ -49,6 +49,9 @@ data class MaxMessage(
     val raw: Map<*, *>,
     val updateTime: Long? = null,
 ) {
+    /** [elements] as typed formatting ([TextElement.parseAll]; invalid entries are skipped). */
+    val textElements: List<TextElement> get() = TextElement.parseAll(elements)
+
     companion object {
         /** Parses [value]; `null` if it is not a map or lacks `id` / `time` / `type`. */
         fun from(value: Any?, fallbackChatId: Long? = null): MaxMessage? {
