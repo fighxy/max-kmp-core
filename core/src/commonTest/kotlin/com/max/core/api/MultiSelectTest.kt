@@ -26,6 +26,27 @@ class MultiSelectTest {
     }
 
     @Test
+    fun deleteReportsDeletedAndFailedIds() = runTest {
+        val sink = ScriptSink(
+            mapOf("messageIds" to listOf(3L, "1"), "failedMessageIds" to listOf(2L)),
+            mapOf("failedMessageIds" to listOf("5")),
+            emptyMap<String, Any?>(),
+        )
+        val api = MessagesApi(sink)
+        val first = api.deleteMessages(100, listOf(3, 1, 2), forMe = false)
+        assertEquals(listOf(3L, 1L), first.deleted)
+        assertEquals(listOf(2L), first.failed)
+        // no messageIds in the reply: the requested ones minus the failed
+        val second = api.deleteMessages(100, listOf(4, 5), forMe = true, postId = 77)
+        assertEquals(listOf(4L), second.deleted)
+        assertEquals(listOf(5L), second.failed)
+        val payload = sink.sent[1].second as Map<*, *>
+        assertEquals(listOf("chatId", "postId", "messageIds", "forMe"), payload.keys.toList())
+        assertEquals(77L, payload["postId"])
+        assertEquals(listOf(6L), api.deleteMessages(100, listOf(6), forMe = true).deleted)
+    }
+
+    @Test
     fun deleteAddsTheItemTypeOnlyWhenAsked() = runTest {
         val sink = ScriptSink()
         val api = MessagesApi(sink)

@@ -193,7 +193,7 @@ class MaxApiTest {
         assertEquals("EDITED", edited.status)
         assertEquals(239067070L, edited.chatId)
 
-        assertEquals(emptyMap<Any?, Any?>(), a.messages.deleteMessages(100, listOf(1, 2), forMe = true))
+        assertEquals(DeleteResult(listOf(1, 2), emptyList(), emptyMap<Any?, Any?>()), a.messages.deleteMessages(100, listOf(1, 2), forMe = true))
         assertEquals(Opcode.MSG_DELETE, sink.sent[2].first)
         assertEquals(pymax["delete"], bytes(sink.sent[2].second))
         // missing `messages` -> empty (PyMax `or []`)

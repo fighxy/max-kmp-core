@@ -106,9 +106,12 @@ class MessagesApi(
 
     /**
      * Deletes messages (`MSG_DELETE`, 66; PyMax `delete_message`, `DeleteMessagePayload`):
-     * `{chatId, messageIds, forMe}`. One request takes the whole selection of a multi-select.
-     * PyMax ignores the reply; it is returned raw.
+     * `{chatId, postId?, messageIds, forMe}`. One request takes the whole selection of a
+     * multi-select, without chunking (as the MAX web client sends it). Reply `{messageIds,
+     * failedMessageIds?}` ([DeleteResult]): the web client restores the failed ones. Other
+     * sessions get `NOTIF_MSG_DELETE` 142.
      *
+     * @param postId the channel post whose comments are deleted; left out when `null`.
      * @param forMe `true` removes the messages only for this account, `false` for everyone.
      * @param itemType sent as `itemType` when set (KometTeam/Komet `MessagesModule.deleteMessages`
      *   always adds it, `REGULAR` by default; `DELAYED` deletes scheduled messages). Left out when
@@ -119,16 +122,26 @@ class MessagesApi(
         messageIds: List<Long>,
         forMe: Boolean = false,
         itemType: HistoryItemType? = null,
-    ): Map<*, *> {
+        postId: Long? = null,
+    ): DeleteResult {
         require(messageIds.isNotEmpty()) { "messageIds must not be empty" }
-        return rawMap(sink.request(Opcode.MSG_DELETE, deletePayload(chatId, messageIds, forMe, itemType)))
+        val map = rawMap(sink.request(Opcode.MSG_DELETE, deletePayload(chatId, messageIds, forMe, itemType, postId)))
+        return DeleteResult.of(messageIds, map)
     }
 
-    /** `MSG_DELETE` 66 body: `{chatId, messageIds, forMe}`, plus `itemType` when [itemType] is set. */
-    fun deletePayload(chatId: Long, messageIds: List<Long>, forMe: Boolean, itemType: HistoryItemType? = null): Map<String, Any?> =
-        linkedMapOf<String, Any?>("chatId" to chatId, "messageIds" to messageIds, "forMe" to forMe).apply {
-            if (itemType != null) put("itemType", itemType.name)
-        }
+    /** `MSG_DELETE` 66 body: `{chatId, postId?, messageIds, forMe}`, plus `itemType` when [itemType] is set. */
+    fun deletePayload(
+        chatId: Long,
+        messageIds: List<Long>,
+        forMe: Boolean,
+        itemType: HistoryItemType? = null,
+        postId: Long? = null,
+    ): Map<String, Any?> = linkedMapOf<String, Any?>("chatId" to chatId).apply {
+        if (postId != null) put("postId", postId)
+        put("messageIds", messageIds)
+        put("forMe", forMe)
+        if (itemType != null) put("itemType", itemType.name)
+    }
 
     /**
      * Forwards several messages of [sourceChatId] to [chatId] (multi-select). The protocol has no
@@ -517,6 +530,21 @@ private fun messageList(reply: TransportPacket, opcode: Opcode, chatId: Long): L
     val items = map["messages"] ?: return emptyList()
     val list = items as? List<*> ?: throw MalformedReplyException(opcode, "messages is not a list", map)
     return list.map { MaxMessage.from(it, chatId) ?: throw MalformedReplyException(opcode, "invalid message in messages", map) }
+}
+
+/**
+ * Reply of `MSG_DELETE` 66: [deleted] are the reply's `messageIds` (the requested ids when the
+ * reply has none), minus [failed] (`failedMessageIds`, the ones the server kept).
+ */
+data class DeleteResult(val deleted: List<Long>, val failed: List<Long>, val raw: Map<*, *>) {
+    companion object {
+        fun of(requested: List<Long>, reply: Map<*, *>): DeleteResult {
+            val failed = (reply["failedMessageIds"] as? List<*>).orEmpty().mapNotNull { it.asLong() }.distinct()
+            val listed = (reply["messageIds"] as? List<*>)?.mapNotNull { it.asLong() }
+            val deleted = (listed ?: requested).distinct().filterNot { it in failed }
+            return DeleteResult(deleted, failed, reply)
+        }
+    }
 }
 
 /**
