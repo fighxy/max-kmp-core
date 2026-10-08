@@ -319,7 +319,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 19 | `LOGIN` | `LOGIN` | ответ: `presence {userId: {seen, status}}` читается в стор; `presenceSync` двигается только после этого; `interactive` — текущий флаг клиента (`false` в режиме призрака, уже в первом `LOGIN`) |
 | 20 | `LOGOUT` | `LOGOUT` |  |
 | 21 | `SYNC` | `SYNC` | не используется: книга устройства на сервер не отправляется, форма не подтверждена (opcodes.md, «Контакты») |
-| 22 | `CONFIG` | `CONFIG` |  |
+| 22 | `CONFIG` | `CONFIG` | `{settings: {user: {KEY: value}}}` — настройки приватности и пр., ответ (`user`, `hash`) сливается в кэш конфига (opcodes.md, «Настройки приватности»); `{settings: {chats: …}}` — заглушение |
 | 23 | `AUTH_CONFIRM` | `AUTH_CONFIRM` |  |
 
 ### Auth 2FA

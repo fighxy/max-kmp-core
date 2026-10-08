@@ -340,9 +340,34 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | `PING` подтверждения QR — `interactive: true` | уважает ghost |
 | история отложенных — `CHAT_HISTORY` `interactive: true` | при ghost → `false` |
 | самопроверка: `35` по своему id раз в 30 с | `checkOwnPresence()` без опроса в ядре |
-| настройки приватности `HIDDEN` («кто видит, что я в сети») и `SHOW_READ_MARK` — отдельно, ghost их не трогает | так же: не меняем автоматически; `HIDDEN` уже есть (`AccountApi`, `hideOnlineStatus`) |
+| настройки приватности `HIDDEN` («кто видит, что я в сети») и `SHOW_READ_MARK` — отдельно, ghost их не трогает | так же: не меняем автоматически; `HIDDEN` — `MaxClient.setOnlineHidden` / мост `setPrivacyFlag("HIDDEN", …)`, `SHOW_READ_MARK` только читается (см. «Настройки приватности») |
 
 **Что собеседники всё равно видят.** Отправку, правку и удаление сообщений, реакции, черновики (на других своих устройствах), загрузки файлов, звонки — каждое такое действие само раскрывает активность; сервер может по ним считать пользователя активным (не проверено). Другие сессии того же аккаунта шлют свой `interactive`. Кадр, уже записанный в сокет до переключения, не отозвать. Подтверждение QR с `interactive: false` сервер может отклонить (не проверено). Просмотр видео (`VIDEO_PLAY`) не трогаем — считает ли сервер по нему просмотры, неизвестно. Скрыть «в сети» на уровне сервера надёжнее настройкой приватности `HIDDEN`; ядро её не меняет само.
+
+## Настройки приватности (`config.user`, `CONFIG` 22)
+
+Источники: веб-клиент MAX (экран «Безопасность», модель настроек пользователя — значения по умолчанию и допустимые значения), Komet (`security_screen`, `PrivacyConfig`), PyMax. Код не брали.
+
+- Изменение: `22` `CONFIG` `{settings: {user: {KEY: value}}}`; текущие значения — `config.user` в `LOGIN` 19, дальше `NOTIF_CONFIG` 134 и ответы `22`.
+- Кэш: `MaxClient.updateUserSettings` кладёт в `accountConfig` известный `user` + отправленные значения + `user` ответа поверх (веб делает upsert ответа), так что ответ с частью ключей или без них ничего не теряет. `updatePrivacy` (PyMax-стиль) теперь идёт тем же путём — раньше он сохранял только хеш, и кэш оставался старым. Пуш `134` сливается по ключам (`AccountConfig.mergedWith`).
+- `PrivacyAccess.NOBODY` уходил как `_NONE_` (из PyMax). Веб-модель принимает для `PHONE_NUMBER_PRIVACY` / `INCOMING_CALL` / `CHATS_INVITE` `NOBODY`, экран веба и Komet шлют `NOBODY`; `_NONE_` у веба — значение «без звука» для `PUSH_SOUND` / `CHATS_PUSH_SOUND`, не приватность. Теперь шлём `NOBODY`, читаем `NOBODY`, `_NONE_`, `NONE` (`PrivacyAccess.parse`).
+- `FAMILY_PROTECTION` — строка `OFF` / `ADMIN` / `MANAGEABLE` (так читает веб); ядро читало её как bool, и любое реальное значение превращалось в `OFF`. Теперь `FamilyProtection` + сырое значение (`familyProtectionRaw`) для незнакомого.
+- Чтение — `PrivacyConfig.from(config)` / `MaxClient.privacy`, значения по умолчанию веба:
+
+| Ключ | Значения | По умолчанию |
+|---|---|---|
+| `SEARCH_BY_PHONE` | `ALL` / `CONTACTS` | `ALL` |
+| `INCOMING_CALL` | `ALL` / `CONTACTS` | `ALL` (было `CONTACTS` в мосте) |
+| `CHATS_INVITE` | `ALL` / `CONTACTS` | `ALL` (было `CONTACTS` в мосте) |
+| `CONTENT_LEVEL_ACCESS` | bool, `true` — только безопасный контент | `false` |
+| `SAFE_MODE` | bool | `false` |
+| `HIDDEN` | bool: `true` — «в сети» не видит никто, `false` — контакты | `false` |
+| `PHONE_NUMBER_PRIVACY` | `ALL` / `CONTACTS` / `NOBODY` | `CONTACTS` (было `ALL` в мосте) |
+| `FAMILY_PROTECTION` | `OFF` / `ADMIN` / `MANAGEABLE` | `OFF`, только чтение |
+| `SHOW_READ_MARK` | bool | нет ключа — `null`; только чтение: в официальных клиентах переключателя нет, работает ли на сервере — не проверено |
+
+- Безопасный режим: при `SAFE_MODE` четыре ключа (`SEARCH_BY_PHONE`, `INCOMING_CALL`, `CHATS_INVITE`, `CONTENT_LEVEL_ACCESS`) отдаются принудительными (контакты, безопасный контент) и заблокированы (`PrivacyConfig.locked`, `isReadOnly`); их изменение — `IllegalStateException` без запроса (веб в этом режиме показывает предупреждение вместо списка; по справке смена на телефоне выключает режим — ядро этого не делает само: сначала `setSafeMode(false)`). То же при `FAMILY_PROTECTION = MANAGEABLE` (плюс сам `SAFE_MODE`), но значения тогда показываются как есть. Включение шлёт набор Komet (`SAFE_MODE`, `SAFE_MODE_NO_PIN`, `CONTENT_LEVEL_ACCESS` `true`, три `CONTACTS`), выключение — только `SAFE_MODE` и `SAFE_MODE_NO_PIN` `false`. ПИН-код не поддержан.
+- Запись: `MaxClient.setPrivacy(key, value)` (проверка — `PrivacyConfig.payload`) и `setSearchByPhone`, `setIncomingCalls`, `setChatInvites`, `setSafeContentOnly`, `setSafeMode`, `setOnlineHidden`, `setPhoneNumberPrivacy`. Мост: `setPrivacy(key, value: String, onResult)`, `setPrivacyFlag(key, enabled: Boolean, onResult)`, `isPrivacyReadOnly(key)`; `IosAccountSettings` — новые поля `familyProtectionRaw`, `privacyLocked`, `showReadMark`, `showReadMarkKnown`. Ghost mode и скрытые отметки о прочтении эти настройки не трогают.
 
 ## Блокеры: нужен снятый трафик
 
