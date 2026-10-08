@@ -136,6 +136,15 @@ class MaxIosClient internal constructor(
 
     fun phaseName(): String = attempt("failed") { phaseOf(client().state.value) }
 
+    /**
+     * Why the server refused the login, while the phase is `tokenRejected`; `null` in every other
+     * phase. Auto-reconnect has stopped by then: show the login screen with
+     * [IosLoginRejection.serverText] when there is one.
+     */
+    fun loginRejection(): IosLoginRejection? = attempt(null) {
+        (client().state.value as? ClientState.TokenRejected)?.let(::loginRejectionOf)
+    }
+
     fun currentUserId(): String = attempt("") { client().userId.value?.toString().orEmpty() }
 
     fun hasStoredToken(): Boolean = attempt(false) { client().hasStoredToken }
@@ -3165,6 +3174,37 @@ class IosEvent(
  * is `0` when unknown. An "online" older than the server's `presence-ttl` already reads as `0`.
  */
 class IosPresence(val userId: String, val status: Int, val seenMs: Long)
+
+/**
+ * A refused login ([MaxIosClient.loginRejection]).
+ *
+ * - [reason]: `token` (`login.token`, or the legacy `FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL`),
+ *   `blocked` (`login.blocked`) or `flood` (`login.flood`, too many logins);
+ * - [errorKey]: the server's `error` code as sent;
+ * - [serverText]: the text to show (`title`, else `localizedMessage`), `null` when the server sent
+ *   none (show your own text then); [title], [localizedMessage], [description] as sent;
+ * - [tokenCleared]: `false` only for `flood`: the stored token stays and a later `start` tries it
+ *   again, while an SMS login replaces it.
+ */
+class IosLoginRejection(
+    val reason: String,
+    val errorKey: String?,
+    val serverText: String?,
+    val title: String?,
+    val localizedMessage: String?,
+    val description: String?,
+    val tokenCleared: Boolean,
+)
+
+private fun loginRejectionOf(state: ClientState.TokenRejected): IosLoginRejection = IosLoginRejection(
+    reason = state.reason.name.lowercase(),
+    errorKey = state.errorKey,
+    serverText = state.serverText,
+    title = state.title,
+    localizedMessage = state.localizedMessage,
+    description = state.description,
+    tokenCleared = state.tokenCleared,
+)
 
 private fun phaseOf(state: ClientState): String = when (state) {
     ClientState.Idle -> "idle"

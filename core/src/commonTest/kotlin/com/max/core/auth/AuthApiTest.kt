@@ -242,11 +242,28 @@ class AuthApiTest {
         assertEquals(5L, SyncState(draftsSync = 5).updatedBy(r).draftsSync)
         assertEquals(SyncState(), SyncState().updatedBy(LoginResult.from(emptyMap<String, Any>())))
 
-        for ((error, message) in listOf("login.token" to "FAIL_LOGIN_TOKEN", "FAIL_LOGIN_TOKEN" to null, "x" to "FAIL_LOGOUT_ALL")) {
+        val rejections = listOf(
+            Triple("login.token", "FAIL_LOGIN_TOKEN", LoginRejection.TOKEN),
+            Triple("login.token", null, LoginRejection.TOKEN),
+            Triple("login.blocked", null, LoginRejection.BLOCKED),
+            Triple("login.flood", "too many logins", LoginRejection.FLOOD),
+            // legacy spellings (kolibri / PyMax) stay as fallbacks
+            Triple("FAIL_LOGIN_TOKEN", null, LoginRejection.TOKEN),
+            Triple("x", "FAIL_LOGOUT_ALL", LoginRejection.TOKEN),
+        )
+        for ((error, message, reason) in rejections) {
             val err = serverError(Opcode.LOGIN, error, message)
             val e = assertFailsWith<InvalidTokenException> { api(FakeSink(err)).login("old") }
             assertSame(err, e.serverError)
             assertSame(err, e.cause)
+            assertEquals(reason, e.reason, "$error / $message")
+            assertTrue(AuthApi.isInvalidToken(err))
+        }
+        // session.state / session.sequence / proto.state are not login rejections (the app skips or logs them)
+        for (error in listOf("session.state", "session.sequence", "proto.state", "login.other")) {
+            val err = serverError(Opcode.LOGIN, error, null)
+            assertSame(err, assertFailsWith<ServerErrorException> { api(FakeSink(err)).login("t") })
+            assertNull(LoginRejection.of(err))
         }
         // other errors pass through
         val other = serverError(Opcode.LOGIN, "service.unavailable", "later")
@@ -352,6 +369,38 @@ class AuthApiTest {
         runCurrent()
         assertEquals(2, factory.openCount)
         assertIs<SessionState.Failed>(m.state.value)
+    }
+
+    @Test
+    fun everyLoginRejectionStopsTheReconnectLoop() = runTest {
+        for (error in listOf("login.token", "login.blocked", "login.flood")) {
+            val factory = ScriptedConnectionFactory()
+            val login = TokenLogin("stored-token", device)
+            val m = SessionMachine(SessionConfig(quiet.copy(autoReconnect = true), device), factory, scope = backgroundScope, afterHandshake = login.hook)
+            val connecting = async { m.connect() }
+            runCurrent()
+            factory.lastConnection!!.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to 1))
+            runCurrent()
+            factory.lastConnection!!.answer(Opcode.LOGIN, mapOf("token" to "t1", "time" to 1000))
+            connecting.await()
+
+            factory.lastConnection!!.close() // drop -> reconnect after 2 s
+            advanceTimeBy(2_001)
+            runCurrent()
+            val second = factory.lastConnection!!
+            second.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to 2))
+            runCurrent()
+            second.fail(Opcode.LOGIN, mapOf("error" to error, "message" to "m", "localizedMessage" to "Войдите снова", "title" to "Сессия завершена"))
+            runCurrent()
+            val cause = assertIs<InvalidTokenException>((m.state.value as SessionState.Failed).cause, error)
+            assertEquals(error, cause.serverError.errorKey)
+            assertEquals("Сессия завершена", cause.serverError.displayText)
+            assertEquals("Войдите снова", cause.serverError.localizedText)
+            advanceTimeBy(300_000)
+            runCurrent()
+            assertEquals(2, factory.openCount, error)
+            assertIs<SessionState.Failed>(m.state.value)
+        }
     }
 
     @Test

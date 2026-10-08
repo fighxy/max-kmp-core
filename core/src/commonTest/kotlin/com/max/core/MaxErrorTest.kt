@@ -53,6 +53,43 @@ class MaxErrorTest {
     }
 
     @Test
+    fun serverTextsAndLoginCodes() {
+        val body = mapOf(
+            "error" to "login.blocked", "message" to "blocked", "localizedMessage" to " Профиль заблокирован ",
+            "title" to "Вход невозможен", "description" to "Обратитесь в поддержку",
+        )
+        val e = ServerErrorException.from(packet(CmdType.ERROR, body))
+        assertEquals("Профиль заблокирован", e.message)
+        assertEquals("Профиль заблокирован", e.localizedText)
+        assertEquals("Вход невозможен", e.title)
+        assertEquals("Обратитесь в поддержку", e.description)
+        assertEquals("Вход невозможен", e.displayText) // title first, like the Android app
+        assertFalse(e.isSessionExpired) // blocked is a login rejection, not an expired token
+        val invalid = InvalidTokenException(e)
+        assertEquals(com.max.core.auth.LoginRejection.BLOCKED, invalid.reason)
+        val error = invalid.toMaxError()
+        assertEquals(ErrorKind.SESSION_EXPIRED, error.kind)
+        assertEquals("login.blocked", error.errorKey)
+        assertEquals("Вход невозможен", error.title)
+        assertEquals("Профиль заблокирован", error.localizedMessage)
+        assertEquals("Обратитесь в поддержку", error.description)
+        assertEquals("Вход невозможен", error.serverText)
+
+        // any ERROR reply carries its texts into MaxError
+        val plain = ServerErrorException.from(packet(CmdType.ERROR, mapOf("error" to "too.many.requests", "localizedMessage" to "Подождите")))
+        assertEquals("Подождите", plain.displayText)
+        assertEquals("Подождите", plain.toMaxError().serverText)
+        assertEquals(null, plain.toMaxError().title)
+        // no texts at all: the app shows its own
+        assertEquals(null, ServerErrorException.from(packet(CmdType.ERROR, mapOf("error" to "internal"))).toMaxError().serverText)
+
+        // login.token alone (no FAIL_* message) is an expired session; so are the legacy codes
+        assertTrue(ServerErrorException.from(packet(CmdType.ERROR, mapOf("error" to "login.token"))).isSessionExpired)
+        assertEquals(ErrorKind.SESSION_EXPIRED, ServerErrorException.from(packet(CmdType.ERROR, mapOf("error" to "login.token"))).toMaxError().kind)
+        assertTrue(ServerErrorException.from(packet(CmdType.ERROR, mapOf("message" to "FAIL_LOGOUT_ALL"))).isSessionExpired)
+    }
+
+    @Test
     fun uploads() {
         val http413 = UploadException("too large", 413).toMaxError()
         assertEquals(ErrorKind.UPLOAD, http413.kind)

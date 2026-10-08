@@ -27,9 +27,11 @@ import com.max.core.transport.TransportPacket
  *   kolibri's session does not log in; its `call_bot.py` example sends a reduced map
  *   (`token, interactive, exp{chatsCountGroups = 0B 32}, chatCacheFingerprint, presenceSync,
  *   chatsSync`). PyMax, whose shape is followed here, sends `exp.chatsCountGroups = 0A 32`.
- *   An ERROR reply with `FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL` (PyMax
- *   `_is_invalid_login_token_error`; kolibri maps `FAIL_LOGIN_TOKEN` to `SessionExpired`) becomes
- *   [InvalidTokenException].
+ *   An ERROR reply whose `error` is `login.token`, `login.blocked` or `login.flood` (the Android
+ *   app forces a logout on exactly these, `d8a`), or that carries `FAIL_LOGIN_TOKEN` /
+ *   `FAIL_LOGOUT_ALL` (PyMax `_is_invalid_login_token_error`; kolibri maps `FAIL_LOGIN_TOKEN` to
+ *   `SessionExpired`; kept as a fallback) becomes [InvalidTokenException] with its
+ *   [LoginRejection].
  * - `AUTH_QR_APPROVE` (290): `{qrLink}` — PyMax `ApproveQrLoginPayload` /
  *   `AuthService.authorize_qr_login`; kolibri only defines the opcode constant. See
  *   [AuthApi.approveQrLogin].
@@ -84,12 +86,51 @@ fun SessionMachine.asRequestSink(): RequestSink {
 open class AuthException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
- * The stored login token was rejected (`FAIL_LOGIN_TOKEN`, `FAIL_LOGOUT_ALL`): the user must
- * authenticate again. A [FatalSessionError], so a session does not keep reconnecting with it.
+ * Why the server refused a login with the stored token. The Android app (`d8a`, `LOGIN` error
+ * handler) treats all three the same way: it saves the code, removes the account and shows the
+ * login screen. The web client does the same (and adds `user.not.found`, not taken over here).
+ */
+enum class LoginRejection {
+    /** `login.token` (or the legacy `FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL`): the token is invalid or revoked. */
+    TOKEN,
+
+    /** `login.blocked`: the account is blocked. */
+    BLOCKED,
+
+    /**
+     * `login.flood`: too many logins. Probably temporary; the official clients still drop the
+     * account. `MaxClient` keeps the stored token for this one (see `ClientState.TokenRejected`).
+     */
+    FLOOD;
+
+    companion object {
+        private val LEGACY_TOKEN = setOf("FAIL_LOGIN_TOKEN", "FAIL_LOGOUT_ALL")
+
+        /** The rejection [e] reports, `null` for any other error. Looks at `error`, and at `message` for the legacy codes. */
+        fun of(e: ServerErrorException): LoginRejection? = when {
+            e.errorKey == "login.token" -> TOKEN
+            e.errorKey == "login.blocked" -> BLOCKED
+            e.errorKey == "login.flood" -> FLOOD
+            e.errorKey in LEGACY_TOKEN || e.rawMessage in LEGACY_TOKEN -> TOKEN
+            else -> null
+        }
+    }
+}
+
+/**
+ * The server refused the stored login token ([reason]: `login.token`, `login.blocked`,
+ * `login.flood`, or the legacy `FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL`): the user must
+ * authenticate again (or, for [LoginRejection.FLOOD], wait). A [FatalSessionError], so a session
+ * stops reconnecting instead of hammering the server with the same token. The server's texts
+ * for the user are on [serverError] ([ServerErrorException.displayText], `title`,
+ * `localizedText`, `description`).
  */
 class InvalidTokenException(val serverError: ServerErrorException) :
-    AuthException("login token rejected: ${serverError.rawMessage ?: serverError.errorKey ?: serverError.message}", serverError),
-    FatalSessionError
+    AuthException("login token rejected: ${serverError.errorKey ?: serverError.rawMessage ?: serverError.message}", serverError),
+    FatalSessionError {
+    /** Which rejection this is; [LoginRejection.TOKEN] for an error that matches none (built by hand). */
+    val reason: LoginRejection = LoginRejection.of(serverError) ?: LoginRejection.TOKEN
+}
 
 /** `type` of `AUTH_REQUEST` (PyMax `AuthType`). */
 enum class CodeRequestType { START_AUTH, RESEND }
@@ -329,7 +370,8 @@ class AuthApi(
      * Logs in with a stored [token] (`LOGIN`, 19). Usually called from [TokenLogin.hook] right
      * after the handshake.
      *
-     * @throws InvalidTokenException for `FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL`.
+     * @throws InvalidTokenException for `login.token`, `login.blocked`, `login.flood` (and the
+     *   legacy `FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL`), see [LoginRejection].
      * @throws ServerErrorException for other errors.
      */
     suspend fun login(
@@ -440,7 +482,7 @@ class AuthApi(
      *
      * @throws AuthException if [qrLink] is blank.
      * @throws InvalidTokenException if the server reports the session's token as invalid
-     *   (`FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL`, as for [login]).
+     *   (`login.token` and the other [LoginRejection] codes, as for [login]).
      * @throws ServerErrorException for other ERROR replies (e.g. an expired QR).
      */
     suspend fun approveQrLogin(qrLink: String): QrApproval {
@@ -524,11 +566,12 @@ class AuthApi(
         /** PyMax `WebSyncPayload.chats_count`. */
         const val WEB_CHATS_COUNT: Int = 40
 
-        private val INVALID_TOKEN_ERRORS = setOf("FAIL_LOGIN_TOKEN", "FAIL_LOGOUT_ALL")
-
-        /** `true` if [e] means the login token is no longer valid (checks `error` and `message`). */
-        fun isInvalidToken(e: ServerErrorException): Boolean =
-            e.errorKey in INVALID_TOKEN_ERRORS || e.rawMessage in INVALID_TOKEN_ERRORS
+        /**
+         * `true` if [e] refuses the login token: one of the [LoginRejection] codes in `error`
+         * (`login.token`, `login.blocked`, `login.flood`), or `FAIL_LOGIN_TOKEN` /
+         * `FAIL_LOGOUT_ALL` in `error` or `message`.
+         */
+        fun isInvalidToken(e: ServerErrorException): Boolean = LoginRejection.of(e) != null
 
         /**
          * A [TokenLogin] for [token]; pass its [TokenLogin.hook] as `afterHandshake` of the

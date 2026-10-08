@@ -2,6 +2,8 @@
 
 package com.max.shared
 
+import com.max.core.ErrorKind
+import com.max.core.auth.LoginRejection
 import com.max.core.media.HttpResponse
 import com.max.core.media.MediaHttp
 import com.max.core.protocol.Opcode
@@ -19,7 +21,10 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration
 
 /** Server RECONNECT diagnostics, login rejections and keepalive as seen through [MaxClient]. */
@@ -91,5 +96,79 @@ class ConnectionReliabilityClientTest {
             lines,
         )
         assertEquals(ClientState.Ready(5), c.state.value)
+    }
+
+    /** A client restarted over [kv] whose stored-token `LOGIN` gets the ERROR [body]. */
+    private suspend fun TestScope.rejectedStart(kv: KeyValueStore, body: Map<String, Any?>): Pair<MaxClient, ClientState> {
+        val factory = ScriptedConnectionFactory()
+        val c = client(kv, factory, backgroundScope)
+        val starting = async { c.start() }
+        runCurrent()
+        val conn = factory.lastConnection!!
+        conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        conn.fail(Opcode.LOGIN, body)
+        val state = starting.await()
+        runCurrent()
+        return c to state
+    }
+
+    @Test
+    fun loginTokenAndBlockedClearTheTokenAndShowTheServerText() = runTest {
+        for ((error, reason) in listOf("login.token" to LoginRejection.TOKEN, "login.blocked" to LoginRejection.BLOCKED)) {
+            val kv = InMemoryKeyValueStore()
+            smsLogin(kv, ScriptedConnectionFactory()).disconnect()
+            val (c, state) = rejectedStart(kv, mapOf("error" to error, "message" to "m", "localizedMessage" to "Войдите снова", "title" to "Сессия завершена", "description" to "d"))
+            val rejected = assertIs<ClientState.TokenRejected>(state, error)
+            assertEquals(reason, rejected.reason)
+            assertTrue(rejected.tokenCleared)
+            assertEquals(error, rejected.errorKey)
+            assertEquals("Сессия завершена", rejected.serverText)
+            assertEquals("Сессия завершена", rejected.title)
+            assertEquals("Войдите снова", rejected.localizedMessage)
+            assertEquals("d", rejected.description)
+            assertEquals(ErrorKind.SESSION_EXPIRED, rejected.error?.kind)
+            assertEquals("Сессия завершена", rejected.error?.serverText)
+            assertEquals(rejected, c.state.value)
+            assertNull(CredentialStore(kv, "max.default").load()!!.token)
+            assertFalse(c.hasStoredToken)
+        }
+    }
+
+    @Test
+    fun loginFloodKeepsTheTokenForALaterStart() = runTest {
+        val kv = InMemoryKeyValueStore()
+        smsLogin(kv, ScriptedConnectionFactory()).disconnect()
+        val (c, state) = rejectedStart(kv, mapOf("error" to "login.flood", "localizedMessage" to "Слишком много попыток"))
+        val rejected = assertIs<ClientState.TokenRejected>(state)
+        assertEquals(LoginRejection.FLOOD, rejected.reason)
+        assertFalse(rejected.tokenCleared)
+        assertEquals("Слишком много попыток", rejected.serverText)
+        assertNull(rejected.title)
+        assertEquals("login-2", CredentialStore(kv, "max.default").load()!!.token)
+        assertTrue(c.hasStoredToken)
+
+        // a later start tries the same token again
+        val factory = ScriptedConnectionFactory()
+        val again = client(kv, factory, backgroundScope)
+        val starting = async { again.start() }
+        runCurrent()
+        val conn = factory.lastConnection!!
+        conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        assertEquals("login-2", conn.answer(Opcode.LOGIN, loginReply(null))!!["token"])
+        assertEquals(ClientState.Ready(5), starting.await())
+    }
+
+    @Test
+    fun legacyTokenErrorStillRejects() = runTest {
+        val kv = InMemoryKeyValueStore()
+        smsLogin(kv, ScriptedConnectionFactory()).disconnect()
+        val (_, state) = rejectedStart(kv, mapOf("error" to "FAIL_LOGIN_TOKEN"))
+        val rejected = assertIs<ClientState.TokenRejected>(state)
+        assertEquals(LoginRejection.TOKEN, rejected.reason)
+        assertEquals("FAIL_LOGIN_TOKEN", rejected.errorKey)
+        assertNull(rejected.serverText)
+        assertNull(CredentialStore(kv, "max.default").load()!!.token)
     }
 }

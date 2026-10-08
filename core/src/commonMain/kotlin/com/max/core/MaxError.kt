@@ -22,7 +22,10 @@ enum class ErrorKind {
     /** Connect or request timeout. Retryable. */
     TIMEOUT,
 
-    /** The login token is no longer valid (`FAIL_LOGIN_TOKEN`, `FAIL_LOGOUT_ALL`): log in again. */
+    /**
+     * The login was refused for good (`login.token`, `login.blocked`, `login.flood`, legacy
+     * `FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL`; [com.max.core.auth.LoginRejection]): log in again.
+     */
     SESSION_EXPIRED,
 
     /** Wrong password or another auth-flow rejection. */
@@ -55,6 +58,9 @@ enum class ErrorKind {
  *
  * @property errorKey server `error` key (e.g. `attachment.not.ready`) for [ErrorKind.SERVER] /
  *   [ErrorKind.SESSION_EXPIRED].
+ * @property title the server's `title` for the user (ERROR replies only), when sent.
+ * @property localizedMessage the server's `localizedMessage` for the user (ERROR replies only).
+ * @property description the server's `description` (longer text under [title]), when sent.
  * @property retryable whether repeating the same call later can succeed without user action.
  */
 data class MaxError(
@@ -63,20 +69,34 @@ data class MaxError(
     val errorKey: String? = null,
     val httpStatus: Int? = null,
     val cause: Throwable,
+    val title: String? = null,
+    val localizedMessage: String? = null,
+    val description: String? = null,
 ) {
     val retryable: Boolean get() = kind == ErrorKind.NETWORK || kind == ErrorKind.TIMEOUT || (kind == ErrorKind.UPLOAD && (httpStatus == null || httpStatus >= 500))
+
+    /**
+     * The server's own text to show, as the Android app picks it: [title], else
+     * [localizedMessage]; `null` when the server sent neither (show a generic text then).
+     */
+    val serverText: String? get() = title ?: localizedMessage
 }
+
+/** [this] with the server's texts of [e] ([ServerErrorException.title] and the others). */
+private fun MaxError.withTexts(e: ServerErrorException): MaxError =
+    copy(title = e.title, localizedMessage = e.localizedText, description = e.description)
 
 /** Classifies any exception thrown by the core. */
 fun Throwable.toMaxError(): MaxError {
     val msg = message ?: this::class.simpleName ?: "error"
     return when (this) {
         is CancellationException -> MaxError(ErrorKind.CANCELLED, msg, cause = this)
-        is InvalidTokenException -> MaxError(ErrorKind.SESSION_EXPIRED, msg, serverError.errorKey ?: serverError.rawMessage, cause = this)
+        is InvalidTokenException ->
+            MaxError(ErrorKind.SESSION_EXPIRED, msg, serverError.errorKey ?: serverError.rawMessage, cause = this).withTexts(serverError)
         is AuthException -> MaxError(ErrorKind.AUTH, msg, cause = this)
         is ServerErrorException ->
-            if (isSessionExpired) MaxError(ErrorKind.SESSION_EXPIRED, msg, errorKey ?: rawMessage, cause = this)
-            else MaxError(ErrorKind.SERVER, msg, errorKey, cause = this)
+            if (isSessionExpired) MaxError(ErrorKind.SESSION_EXPIRED, msg, errorKey ?: rawMessage, cause = this).withTexts(this)
+            else MaxError(ErrorKind.SERVER, msg, errorKey, cause = this).withTexts(this)
         is NotFoundException -> MaxError(ErrorKind.NOT_FOUND, msg, cause = this)
         is ConnectTimeoutException, is RequestTimeoutException -> MaxError(ErrorKind.TIMEOUT, msg, cause = this)
         is SessionClosedException -> MaxError(ErrorKind.CLOSED, msg, cause = this)

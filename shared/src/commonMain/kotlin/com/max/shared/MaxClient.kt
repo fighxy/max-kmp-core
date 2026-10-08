@@ -53,6 +53,7 @@ import com.max.core.auth.CodeRequest
 import com.max.core.auth.CodeRequestType
 import com.max.core.auth.DEFAULT_CONFIG_HASH
 import com.max.core.auth.InvalidTokenException
+import com.max.core.auth.LoginRejection
 import com.max.core.auth.LoginResult
 import com.max.core.auth.QrApproval
 import com.max.core.auth.SyncState
@@ -166,8 +167,38 @@ sealed interface ClientState {
     /** Connection lost; reconnecting with backoff (and re-login). */
     data class Reconnecting(val attempt: Int, val lastError: Throwable?) : ClientState
 
-    /** The stored token was rejected (`FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL`); it has been cleared. */
-    data class TokenRejected(val cause: InvalidTokenException) : ClientState
+    /**
+     * The server refused the login with the stored token ([InvalidTokenException]): `error`
+     * `login.token`, `login.blocked` or `login.flood` (legacy `FAIL_LOGIN_TOKEN` /
+     * `FAIL_LOGOUT_ALL` too). Auto-reconnect has stopped; nothing is retried until [MaxClient.start].
+     * Show the login screen (the Android app does for all three), with [serverText] when present.
+     *
+     * The stored token is cleared ([tokenCleared]) for [LoginRejection.TOKEN] and
+     * [LoginRejection.BLOCKED]. For [LoginRejection.FLOOD] it is kept: a later [MaxClient.start]
+     * tries `LOGIN` with it again, while a new SMS login replaces it.
+     */
+    data class TokenRejected(val cause: InvalidTokenException) : ClientState {
+        /** Which code the server sent. */
+        val reason: LoginRejection get() = cause.reason
+
+        /** Whether the stored token was cleared (every [reason] but [LoginRejection.FLOOD]). */
+        val tokenCleared: Boolean get() = reason != LoginRejection.FLOOD
+
+        /** The server's `error` code (`login.token`, ...), or the legacy `message` code when `error` is missing. */
+        val errorKey: String? get() = cause.serverError.errorKey ?: cause.serverError.rawMessage
+
+        /** The server's text for the user, as the Android app picks it (`title`, else `localizedMessage`); `null` if none. */
+        val serverText: String? get() = cause.serverError.displayText
+
+        /** The server's `title`, when sent. */
+        val title: String? get() = cause.serverError.title
+
+        /** The server's `localizedMessage`, when sent. */
+        val localizedMessage: String? get() = cause.serverError.localizedText
+
+        /** The server's `description`, when sent. */
+        val description: String? get() = cause.serverError.description
+    }
 
     /** Connection or handshake failed for good. */
     data class Failed(val cause: Throwable) : ClientState
@@ -411,10 +442,11 @@ class MaxClient @Throws(Exception::class) constructor(
         }
         this.scope.launch {
             session.state.collect { s ->
-                if (s is SessionState.Failed && s.cause is InvalidTokenException) {
+                val cause = (s as? SessionState.Failed)?.cause
+                if (cause is InvalidTokenException) {
                     // a failing credential store must not escape into the scope (uncaught on iOS = crash)
                     try {
-                        rejectToken()
+                        rejectToken(cause)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -436,7 +468,8 @@ class MaxClient @Throws(Exception::class) constructor(
     /**
      * Connects. With a stored token the handshake is followed by `LOGIN` and the result is
      * [ClientState.Ready]; without one it is [ClientState.AwaitingAuth]. A rejected token gives
-     * [ClientState.TokenRejected] (the token is cleared; call [start] again for the SMS flow).
+     * [ClientState.TokenRejected] (the token is cleared, except for `login.flood`; call [start]
+     * again for the SMS flow, or after a while to retry the kept token).
      * When the first connect fails with auto-reconnect on, the session keeps retrying in the
      * background (kolibri's supervisor) and this returns [ClientState.Reconnecting] with the
      * error; [state] reaches [ClientState.Ready] (or [ClientState.AwaitingAuth]) once a retry
@@ -456,7 +489,7 @@ class MaxClient @Throws(Exception::class) constructor(
         try {
             session.connect()
         } catch (e: InvalidTokenException) {
-            rejectToken()
+            rejectToken(e)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -465,12 +498,15 @@ class MaxClient @Throws(Exception::class) constructor(
         return currentState()
     }
 
-    /** Drops the token under [lifecycle] and invalidates any gap fill still in flight. */
-    private suspend fun rejectToken() {
+    /**
+     * Ends the login after [cause] under [lifecycle] and invalidates any gap fill still in flight.
+     * Drops the stored token, except for [LoginRejection.FLOOD] ([ClientState.TokenRejected.tokenCleared]).
+     */
+    private suspend fun rejectToken(cause: InvalidTokenException) {
         lifecycle.withLock {
             sessionEpoch += 1
             accountGen += 1
-            credentials.clearToken()
+            if (cause.reason != LoginRejection.FLOOD) credentials.clearToken()
             tokenLogin.value = null
             loggedInFlag.value = false
             gapJob?.cancel()
