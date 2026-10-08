@@ -7,6 +7,8 @@ import com.max.core.api.FolderList
 import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
+import com.max.core.api.PhoneBookImport
+import com.max.core.api.PhoneContact
 import com.max.core.api.PresenceInfo
 import com.max.core.api.ReactionInfo
 import com.max.core.auth.LoginResult
@@ -84,6 +86,26 @@ class MaxStore(
 
     /** Contact-list users ([StateReducer.putContacts]). */
     fun putContacts(contacts: List<MaxUser>) = _state.update { StateReducer.putContacts(it, contacts) }
+
+    /** A removed contact ([StateReducer.removeContact]). */
+    fun removeContact(userId: Long) = _state.update { StateReducer.removeContact(it, userId) }
+
+    /** Replaces the device address book ([StateReducer.setAddressBook]). */
+    fun setAddressBook(entries: List<PhoneContact>) = _state.update { StateReducer.setAddressBook(it, entries) }
+
+    /** Address-book name of one user ([StateReducer.setLocalName]); `null` clears it. */
+    fun setLocalName(userId: Long, name: String?) = _state.update { StateReducer.setLocalName(it, userId, name) }
+
+    /** A phone-book import ([StateReducer.putPhoneBookImport]). */
+    fun putPhoneBookImport(contacts: List<PhoneContact>, result: PhoneBookImport) =
+        _state.update { StateReducer.putPhoneBookImport(it, contacts, result) }
+
+    /** An own edit confirmed by the server ([StateReducer.putEditedMessage]). */
+    fun putEditedMessage(chatId: Long, message: MaxMessage) =
+        _state.update { StateReducer.putEditedMessage(it, chatId, message, messageLimit) }
+
+    /** The resolved name of one user ([MaxState.displayName]). */
+    fun displayName(userId: Long): Flow<String?> = state.map { it.displayName(userId) }.distinctUntilChanged()
 
     /** Inserts / replaces messages; never closes a history hole (use [putHistory] for pages). */
     fun putMessages(chatId: Long, messages: List<MaxMessage>) = _state.update { StateReducer.putMessages(it, chatId, messages, messageLimit) }

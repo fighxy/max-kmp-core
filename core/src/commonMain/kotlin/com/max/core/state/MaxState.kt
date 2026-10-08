@@ -2,11 +2,15 @@ package com.max.core.state
 
 import com.max.core.api.Chat
 import com.max.core.api.ChatFolders
+import com.max.core.api.ContactNames
 import com.max.core.api.FolderList
 import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.MessageReaders
+import com.max.core.api.PhoneBookImport
+import com.max.core.api.PhoneContact
+import com.max.core.api.PhoneNumbers
 import com.max.core.api.PresenceInfo
 import com.max.core.api.ReactionInfo
 import com.max.core.api.TypingType
@@ -41,6 +45,11 @@ import com.max.core.events.MaxEvent
  *   ([MaxEvent.Typing.effectiveType]: a `com.max.core.api.TypingType` value, `TEXT` when the push
  *   had none or an unrecognised one). Kept beside [typing] (same keys) so [typing] keeps its shape;
  *   read it through [typingUsersWithType] or [typingType], which apply the same TTL as [typingUsers].
+ * @property addressBook names from the device address book, by phone number (digits, as
+ *   [MaxUser.phone]). Supplied by the client ([StateReducer.setAddressBook]); never sent.
+ * @property localNames address-book names by user id, for users matched by a phone-book import
+ *   ([StateReducer.putPhoneBookImport]) or named by the client ([StateReducer.setLocalName]).
+ *   Both maps are device data: a `LOGIN` of another account keeps them, [MaxStore.clear] drops them.
  */
 data class MaxState(
     val me: Long? = null,
@@ -54,7 +63,19 @@ data class MaxState(
     val gapAnchors: Map<Long, Long> = emptyMap(),
     val chatFolders: ChatFolders? = null,
     val typingTypes: Map<Long, Map<Long, String>> = emptyMap(),
+    val addressBook: Map<Long, String> = emptyMap(),
+    val localNames: Map<Long, String> = emptyMap(),
 ) {
+    /** The address-book name of [userId]: [localNames], else [addressBook] by the user's `phone`. */
+    fun addressBookName(userId: Long): String? =
+        localNames[userId] ?: users[userId]?.phone?.takeIf { it > 0 }?.let { addressBook[it] }
+
+    /**
+     * The name to show for [userId] ([ContactNames.resolve]): the contact name this account set
+     * (`CUSTOM`) > the address-book name > the user's profile name. `null` when none is known.
+     */
+    fun displayName(userId: Long): String? = ContactNames.resolve(users[userId], addressBookName(userId))
+
     /**
      * Pinned chat ids, top first, as the server keeps them (`favorites` of the "all chats" folder,
      * see [ChatFolders]). `null` while unknown: no folder list yet, or no "all chats" folder in it.
@@ -188,7 +209,12 @@ object StateReducer {
      * the known folders.
      */
     fun login(state: MaxState, result: LoginResult, messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT): MaxState {
-        val base = if (result.userId != null && state.me != null && result.userId != state.me) MaxState() else state
+        // Another account: a fresh snapshot, but the device address book stays.
+        val base = if (result.userId != null && state.me != null && result.userId != state.me) {
+            MaxState(addressBook = state.addressBook, localNames = state.localNames)
+        } else {
+            state
+        }
         var s = base.copy(me = result.userId ?: base.me)
         ChatFolders.fromLoginConfig(result.raw)?.let { s = s.copy(chatFolders = it) }
         s = putChats(s, result.chats.mapNotNull(Chat::from))
@@ -291,6 +317,66 @@ object StateReducer {
         if (contacts.isEmpty()) return state
         val withUsers = putUsers(state, contacts)
         return withUsers.copy(contactIds = withUsers.contactIds + contacts.map { it.id }.filter { it != withUsers.me })
+    }
+
+    /**
+     * A contact removed on the server (`CONTACT_UPDATE` `REMOVE`): it leaves [MaxState.contactIds]
+     * and the stored user loses the `CUSTOM` name this account had given it.
+     */
+    fun removeContact(state: MaxState, userId: Long): MaxState {
+        val user = state.users[userId]
+        val users = if (user == null) state.users else state.users + (userId to ContactNames.withoutCustom(user))
+        return state.copy(contactIds = state.contactIds - userId, users = users)
+    }
+
+    /**
+     * Replaces the device address book with [entries] (phone digits via [PhoneNumbers.digits] →
+     * [PhoneContact.fullName]). Entries without digits or a name are skipped; for a repeated
+     * number the last entry wins. [MaxState.localNames] are kept.
+     */
+    fun setAddressBook(state: MaxState, entries: List<PhoneContact>): MaxState {
+        val book = LinkedHashMap<Long, String>()
+        for (e in entries) {
+            val number = PhoneNumbers.digits(e.phone) ?: continue
+            book[number] = e.fullName ?: continue
+        }
+        return state.copy(addressBook = book)
+    }
+
+    /** Sets (or with a blank / `null` [name] clears) the address-book name of [userId]. */
+    fun setLocalName(state: MaxState, userId: Long, name: String?): MaxState {
+        val clean = name?.trim()?.takeIf { it.isNotEmpty() }
+        return state.copy(localNames = if (clean == null) state.localNames - userId else state.localNames + (userId to clean))
+    }
+
+    /**
+     * A phone-book import: the users go to [MaxState.users], each matched user gets the name of
+     * its requested entry in [MaxState.localNames], and the requested entries join
+     * [MaxState.addressBook] under the server's number when [PhoneBookImport.phones] has it, else
+     * under their own digits.
+     */
+    fun putPhoneBookImport(state: MaxState, contacts: List<PhoneContact>, result: PhoneBookImport): MaxState {
+        var s = putUsers(state, result.users)
+        val names = LinkedHashMap(s.localNames)
+        val book = LinkedHashMap(s.addressBook)
+        for (c in contacts) {
+            val name = c.fullName ?: continue
+            (result.phones[c.phone] ?: PhoneNumbers.digits(c.phone))?.let { book[it] = name }
+            result.byPhone[c.phone]?.let { names[it.id] = name }
+        }
+        s = s.copy(localNames = names, addressBook = book)
+        return s
+    }
+
+    /**
+     * An edit this client made (`MSG_EDIT` reply): like an edit push, and reactions the reply
+     * left out are kept from the stored message.
+     */
+    fun putEditedMessage(state: MaxState, chatId: Long, m: MaxMessage, messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT): MaxState {
+        val stored = state.messages[chatId]?.firstOrNull { it.id == m.id }
+        val withChat = if (m.chatId == null) m.copy(chatId = chatId) else m
+        val merged = if (withChat.reactionInfo == null && stored?.reactionInfo != null) withChat.copy(reactionInfo = stored.reactionInfo) else withChat
+        return edited(state, merged, messageLimit)
     }
 
     /**
