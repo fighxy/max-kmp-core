@@ -117,7 +117,7 @@ class IosPresenceDraftsTest {
         val c = MaxIosClient(CoroutineScope(SupervisorJob() + Dispatchers.Default)) { error("not used") }
         assertEquals(listOf("1"), c.filterMembers(members, "@anya").map { it.id })
         assertEquals(listOf("1", "2"), c.filterMembers(members, " ANYA ").map { it.id })
-        assertEquals(listOf("3"), c.filterMembers(members, "петр").map { it.id })
+        assertEquals(listOf("1", "3"), c.filterMembers(members, "петр").map { it.id }) // "Петрова", "Пётр"
         assertEquals(listOf("1", "2", "3"), c.filterMembers(members, "@").map { it.id })
     }
 
