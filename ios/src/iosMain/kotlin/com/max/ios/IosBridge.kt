@@ -15,7 +15,6 @@ import com.max.core.api.StoryAudience
 import com.max.core.api.StoryOwner
 import com.max.core.api.StoryPreview
 import com.max.core.api.TypingType
-import com.max.core.transport.ConnectionClosedException
 import com.max.core.api.hasWebApp
 import com.max.core.media.OutgoingMedia
 import com.max.core.media.UploadProgress
@@ -403,10 +402,17 @@ class MaxIosClient internal constructor(
      * be sent (not connected) gets an error kind.
      */
     fun sendTyping(chatId: String, type: String, postId: String, onResult: (String?, String?) -> Unit) {
-        runUnit(onResult, waitsForSession = false) { c ->
-            val chat = parseId(chatId)
-            val post = postId.takeIf { it.isNotBlank() }?.let(::parseId)
-            if (!c.sendTyping(chat, type, post)) throw ConnectionClosedException("typing not sent")
+        // Typing is sent every few seconds and is worthless once missed: a failure goes to the
+        // callback only, never to the error log, so a stretch offline does not flood it.
+        scope.launch(start = CoroutineStart.ATOMIC) {
+            val (kind, key) = try {
+                val chat = parseId(chatId)
+                val post = postId.takeIf { it.isNotBlank() }?.let(::parseId)
+                if (client().sendTyping(chat, type, post)) null to null else "NETWORK" to null
+            } catch (t: Throwable) {
+                classify(t)
+            }
+            guarded { onResult(kind, key) }
         }
     }
 
