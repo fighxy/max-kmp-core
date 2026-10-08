@@ -136,7 +136,8 @@ data class MaxState(
  *   `newMessages + 1` when it is newer than the previous last message and not sent by [MaxState.me].
  *   The sender stops "typing" in that chat. A message without `chatId` is ignored.
  * - [MaxEvent.MessageEdited] — replaces the stored message (inserted if unknown) and the chat's
- *   `lastMessage` if it is the same id.
+ *   `lastMessage` if it is the same id. Its `updateTime` (edit time) comes from the push; a push
+ *   without one keeps the stored edit time.
  * - [MaxEvent.MessagesDeleted] — removes the ids; a chat sent along (`NOTIF_MSG_DELETE` 142)
  *   replaces the stored one; if the chat's `lastMessage` was deleted it falls back to the newest
  *   remaining stored message (or `null`).
@@ -398,8 +399,14 @@ object StateReducer {
         return s
     }
 
-    private fun edited(state: MaxState, m: MaxMessage, limit: Int): MaxState {
-        val chatId = m.chatId ?: return state
+    private fun edited(state: MaxState, pushed: MaxMessage, limit: Int): MaxState {
+        val chatId = pushed.chatId ?: return state
+        val m = if (pushed.updateTime != null) pushed else {
+            // an edit cannot make a message unedited: keep the known edit time
+            val known = state.messages[chatId]?.firstOrNull { it.id == pushed.id }?.updateTime
+                ?: state.chats[chatId]?.lastMessage?.takeIf { it.id == pushed.id }?.updateTime
+            if (known != null) pushed.copy(updateTime = known) else pushed
+        }
         var s = putMessages(state, chatId, listOf(m), limit)
         val chat = s.chats[chatId]
         if (chat?.lastMessage?.id == m.id) s = s.copy(chats = s.chats + (chatId to chat.copy(lastMessage = m)))

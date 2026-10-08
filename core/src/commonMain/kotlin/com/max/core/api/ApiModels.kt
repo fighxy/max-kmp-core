@@ -27,6 +27,8 @@ class MalformedReplyException(val opcode: Opcode, detail: String, val payload: A
  * @property elements text formatting elements (`{type, from, length, attributes?}`), raw.
  * @property attaches attachments, raw (media handling is out of scope here).
  * @property raw the map the message was parsed from (the envelope, if there was one).
+ * @property updateTime when the message was last edited (`updateTime`, ms); `null` for a message
+ *   that was never edited (no field, or `0`).
  */
 data class MaxMessage(
     val id: Long,
@@ -45,6 +47,7 @@ data class MaxMessage(
     val link: Map<*, *>?,
     val reactionInfo: ReactionInfo?,
     val raw: Map<*, *>,
+    val updateTime: Long? = null,
 ) {
     companion object {
         /** Parses [value]; `null` if it is not a map or lacks `id` / `time` / `type`. */
@@ -71,6 +74,7 @@ data class MaxMessage(
                 link = m["link"] as? Map<*, *>,
                 reactionInfo = ReactionInfo.from(m["reactionInfo"]),
                 raw = outer,
+                updateTime = m["updateTime"].asLong()?.takeIf { it > 0 },
             )
         }
     }
