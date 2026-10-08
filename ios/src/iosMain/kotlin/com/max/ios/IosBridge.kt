@@ -10,6 +10,9 @@ import com.max.core.api.Chat
 import com.max.core.api.ChatMemberEntry
 import com.max.core.api.ContactNames
 import com.max.core.api.PhoneContact
+import com.max.core.api.PresenceInfo
+import com.max.core.api.PresenceStatus
+import com.max.core.api.Presences
 import com.max.core.api.MaxDraft
 import com.max.core.api.TextElement
 import com.max.core.api.TextElementsJson
@@ -119,7 +122,13 @@ class MaxIosClient internal constructor(
     private val pacer = ReadPacer()
 
     /** The client, created on the first call; throws what the constructor threw (retried next time). */
-    private fun client(): MaxClient = clientLock.locked { created ?: factory(scope).also { created = it } }
+    private fun client(): MaxClient = clientLock.locked {
+        created ?: factory(scope).also {
+            created = it
+            // e.g. the automatic DRAFT_DISCARD after a send: no caller to tell, so it is logged
+            it.onBackgroundError = { _, t -> IosDiagnostics.reportFailure(classifyKind(t), t) }
+        }
+    }
 
     fun phaseName(): String = attempt("failed") { phaseOf(client().state.value) }
 
@@ -303,7 +312,7 @@ class MaxIosClient internal constructor(
     fun loadContacts(onResult: (List<IosContact>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
             val state = c.store.state.value
-            listedContacts(state)
+            listedContacts(state, c.presenceTtlMs)
         }
     }
 
@@ -768,7 +777,12 @@ class MaxIosClient internal constructor(
         runUnit(onResult) { c -> c.discardDraft(parseId(chatId), time.takeIf { it > 0 }) }
     }
 
-    /** The server drafts the core holds (from `LOGIN` and [saveDraft]), newest first. */
+    /**
+     * The server drafts the core holds (from `LOGIN`, [saveDraft] and drafts changed on another
+     * device, pushes 152 / 153), newest first. A successful send ([sendText], [sendFormattedText],
+     * [sendMedia]) clears the chat's draft and discards it on the server by itself: the app need
+     * not call [discardDraft] after sending. Changes come as `draft` events of [watchEvents].
+     */
     fun drafts(): List<IosDraft> = attempt(emptyList()) {
         client().drafts.values.sortedByDescending { it.updateTime }.map(::draftSnapshot)
     }
@@ -1250,7 +1264,7 @@ class MaxIosClient internal constructor(
         perform(onResult, { emptyList() }) { c ->
             c.syncContacts()
             val state = c.store.state.value
-            listedContacts(state)
+            listedContacts(state, c.presenceTtlMs)
         }
     }
 
@@ -1262,7 +1276,7 @@ class MaxIosClient internal constructor(
         perform(onResult, { null }) { c ->
             val user = c.api.users.findByPhone(phone)
             c.store.putUsers(listOf(user))
-            contactSnapshot(user, c.store.state.value)
+            contactSnapshot(user, c.store.state.value, c.presenceTtlMs)
         }
     }
 
@@ -1275,20 +1289,22 @@ class MaxIosClient internal constructor(
             val name = firstName.trim()
             val user = c.api.users.addContact(parseId(userId), if (name.isEmpty()) null else name)
             c.store.putContacts(listOf(user))
-            contactSnapshot(user, c.store.state.value)
+            contactSnapshot(user, c.store.state.value, c.presenceTtlMs)
         }
     }
 
     /**
      * Renames contact [userId] for this account (`CONTACT_UPDATE` 34, `action: "UPDATE"` with
      * [firstName] and [lastName]; an empty [lastName] goes out as `null`, each name at most 64
-     * characters). The name becomes the contact's `CUSTOM` name ([displayName]: only the address
-     * book is above it). A blank or too long name fails (`UNKNOWN`).
+     * characters). The name becomes the contact's `CUSTOM` name ([displayName]). An empty
+     * [firstName] is allowed (web client): with a last name the server shows the person's own
+     * first name, with both empty the original names come back. A name over 64 characters fails
+     * (`UNKNOWN`).
      */
     fun renameContact(userId: String, firstName: String, lastName: String, onResult: (IosContact?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
             val user = c.renameContact(parseId(userId), firstName, lastName.takeIf { it.isNotBlank() })
-            contactSnapshot(user, c.store.state.value)
+            contactSnapshot(user, c.store.state.value, c.presenceTtlMs)
         }
     }
 
@@ -1302,7 +1318,7 @@ class MaxIosClient internal constructor(
             val id = parseId(userId)
             val reply = c.removeContact(id)
             val state = c.store.state.value
-            (reply ?: state.users[id])?.let { contactSnapshot(it, state) }
+            (reply ?: state.users[id])?.let { contactSnapshot(it, state, c.presenceTtlMs) }
         }
     }
 
@@ -1313,7 +1329,7 @@ class MaxIosClient internal constructor(
     fun addContactByPhone(phone: String, firstName: String, lastName: String, onResult: (IosContact?, Boolean, String?, String?) -> Unit) {
         perform<Pair<IosContact?, Boolean>>({ value, kind, key -> onResult(value.first, value.second, kind, key) }, { null to false }) { c ->
             val added = c.addContactByPhone(phone, firstName.takeIf { it.isNotBlank() }, lastName.takeIf { it.isNotBlank() })
-            contactSnapshot(added.user, c.store.state.value) to added.isNew
+            contactSnapshot(added.user, c.store.state.value, c.presenceTtlMs) to added.isNew
         }
     }
 
@@ -1346,6 +1362,67 @@ class MaxIosClient internal constructor(
     fun displayName(userId: String): String {
         val id = userId.toLongOrNull() ?: return ""
         return attempt("") { client().displayName(id).orEmpty() }
+    }
+
+    /**
+     * The name rule of [displayName] and of every name the bridge reports: `true` (default) the
+     * address book wins over the contact name this account set, `false` the own contact name
+     * (`CUSTOM`) wins over the address book. A device setting: it survives logout and account
+     * switches, not app restarts (set it again at start).
+     */
+    fun setPreferAddressBookNames(prefer: Boolean) {
+        attempt(Unit) { client().preferAddressBookNames = prefer }
+    }
+
+    /** [setPreferAddressBookNames]; `true` when the client cannot be created. */
+    fun preferAddressBookNames(): Boolean = attempt(true) { client().preferAddressBookNames }
+
+    // ---- Presence -------------------------------------------------------------------------------
+
+    /**
+     * The presence the core holds for [userId], with the server's `presence-ttl` applied: an
+     * "online" not refreshed within it reads as offline. [IosPresence.status] `-1` when nothing
+     * is known.
+     */
+    fun presenceOf(userId: String): IosPresence {
+        val id = userId.toLongOrNull() ?: return IosPresence(userId, PresenceStatus.UNKNOWN, 0)
+        return attempt(IosPresence(userId, PresenceStatus.UNKNOWN, 0)) {
+            val c = client()
+            presenceSnapshot(id, c.presenceOf(id))
+        }
+    }
+
+    /**
+     * Asks the presence of [userIds] (`CONTACT_PRESENCE` 35, batches of 100) and stores it: the
+     * changes also come as `presence` events of [watchEvents]. [onResult] gets one entry per
+     * distinct valid id, in order; an id the server leaves out is `3` (long ago). Empty or
+     * non-numeric ids are skipped; nothing to ask gives an empty list without a request.
+     */
+    fun loadPresence(userIds: List<String>, onResult: (List<IosPresence>?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val ids = userIds.mapNotNull { it.trim().toLongOrNull() }.distinct()
+            val got = c.loadPresence(ids)
+            ids.map { id -> presenceSnapshot(id, got[id]) }
+        }
+    }
+
+    /**
+     * The app went to the foreground (`true`) or the background (`false`): the next `PING`
+     * carries `interactive` accordingly, one goes out at once when the value changed, and a
+     * reconnect `LOGIN` sends it too. The server decides the presence from it; there is no
+     * explicit "going offline" request in the protocol. Fire-and-forget, never fails.
+     */
+    fun setAppActive(active: Boolean) {
+        val c = attempt<MaxClient?>(null) { client() } ?: return
+        scope.launch {
+            try {
+                c.setInteractive(active)
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                // nothing to report: the next PING carries the flag anyway
+            }
+        }
     }
 
     /**
@@ -1521,7 +1598,7 @@ class MaxIosClient internal constructor(
             val from = marker.trim().takeIf { it.isNotEmpty() }?.let(::parseId) ?: 0L
             val page = c.loadChatMembers(parseId(chatId), from, if (count > 0) count else 50)
             val state = c.store.state.value
-            IosChatMembersPage(page.members.mapNotNull { groupMemberSnapshot(it, state) }, page.nextMarker?.toString().orEmpty())
+            IosChatMembersPage(page.members.mapNotNull { groupMemberSnapshot(it, state, ttlMs = c.presenceTtlMs) }, page.nextMarker?.toString().orEmpty())
         }
     }
 
@@ -1533,7 +1610,7 @@ class MaxIosClient internal constructor(
         perform(onResult, { emptyList() }) { c ->
             val found = c.searchChatMembers(parseId(chatId), query.trim())
             val state = c.store.state.value
-            found.mapNotNull { groupMemberSnapshot(it, state) }
+            found.mapNotNull { groupMemberSnapshot(it, state, ttlMs = c.presenceTtlMs) }
         }
     }
 
@@ -1763,11 +1840,14 @@ class MaxIosClient internal constructor(
     fun watchState(onEach: (String) -> Unit): IosWatch = watch { c -> c.watchState { guarded { onEach(phaseOf(it)) } } }
 
     /**
-     * Pushes in arrival order. A message from a sender the store does not know yet waits up to
-     * [SENDER_WAIT_MS] for `CONTACT_INFO`, so the event carries the sender name and avatar.
+     * Pushes in arrival order, each after the core applied it ([MaxClient.appliedEvents]), plus
+     * `presence` and `draft` events for changes of the core's presence and drafts (pushes,
+     * `LOGIN`, [loadPresence], members, the presence TTL, sends; see [IosEvent]). A message from a
+     * sender the store does not know yet waits up to [SENDER_WAIT_MS] for `CONTACT_INFO`, so the
+     * event carries the sender name and avatar.
      */
     fun watchEvents(onEach: (IosEvent) -> Unit): IosWatch = watch { c ->
-        val pushes = c.events.all
+        val pushes = c.appliedEvents
             .map { event ->
                 val sender = when (event) {
                     is MaxEvent.NewMessage -> event.message.sender
@@ -1777,12 +1857,13 @@ class MaxIosClient internal constructor(
                 if (sender != null) withTimeoutOrNull(SENDER_WAIT_MS) { resolveUsers(c, listOf(sender)) }
                 IosEventSource.Push(event)
             }
-        merge(pushes, configChanges(c.accountConfig))
+        merge(pushes, configChanges(c.accountConfig), storeChanges(c.store.state))
             .watch(scope) { source ->
                 guarded {
                     val events = when (source) {
                         is IosEventSource.Push -> flatten(source.event, c.store.state.value)
                         is IosEventSource.Config -> source.events
+                        is IosEventSource.Store -> source.events
                     }
                     events.forEach(onEach)
                 }
@@ -1954,7 +2035,7 @@ class MaxIosClient internal constructor(
             null // the card still shows the contact without the command list
         }
         val card = bot?.contact ?: user
-        val presence = c.store.state.value.presence[peer]
+        val seen = c.presenceOf(peer)
         return IosProfile(
             kind = if (isBot) "bot" else "user",
             chatId = chatId,
@@ -1964,12 +2045,12 @@ class MaxIosClient internal constructor(
             description = card.description?.trim().orEmpty(),
             link = card.link.orEmpty(),
             phone = user.phone?.takeIf { it > 0 }?.toString().orEmpty(),
-            lastSeenMs = presence?.seen?.let { if (it < 100_000_000_000L) it * 1000 else it } ?: 0L,
-            online = presence?.status == 1,
+            lastSeenMs = Presences.seenMs(seen?.seen),
+            online = seen?.status == PresenceStatus.ONLINE,
             official = "OFFICIAL" in user.options,
             commands = bot?.commands.orEmpty().map { IosBotCommand(it.name, it.description.orEmpty()) },
             hasWebApp = isBot && hasWebApp(user.options + card.options),
-        )
+        ).apply { this.presence = PresenceStatus.of(seen) }
     }
 
     /** Loads profiles of [ids] missing from the store. Best effort: names are cosmetic here. */
@@ -2143,11 +2224,12 @@ internal fun phoneContactsOf(entries: List<IosPhoneContact>): List<PhoneContact>
 }
 
 /** The name the app shows for [user] ([ContactNames.resolve] with the address book of [state]). */
-internal fun nameOf(user: MaxUser, state: MaxState): String? = ContactNames.resolve(user, state.addressBookName(user.id))
+internal fun nameOf(user: MaxUser, state: MaxState): String? =
+    ContactNames.resolve(user, state.addressBookName(user.id), state.preferAddressBookNames)
 
 /** [nameOf] or "Участник" ([ContactNames.label]). */
 internal fun labelOf(user: MaxUser?, state: MaxState): String =
-    ContactNames.label(user, user?.id?.let(state::addressBookName))
+    ContactNames.label(user, user?.id?.let(state::addressBookName), state.preferAddressBookNames)
 
 internal fun draftSnapshot(draft: MaxDraft): IosDraft = IosDraft(
     chatId = draft.chatId.toString(),
@@ -2157,23 +2239,26 @@ internal fun draftSnapshot(draft: MaxDraft): IosDraft = IosDraft(
     updateTime = draft.updateTime,
 )
 
-/** Presence time (seconds or ms) as ms; 0 when unknown. */
-private fun seenMs(seen: Long?): Long = seen?.let { if (it < 100_000_000_000L) it * 1000 else it } ?: 0L
 
-internal fun groupMemberSnapshot(entry: ChatMemberEntry, state: MaxState): IosGroupMember? {
+internal fun groupMemberSnapshot(
+    entry: ChatMemberEntry,
+    state: MaxState,
+    nowMs: Long = nowMs(),
+    ttlMs: Long = MaxState.DEFAULT_PRESENCE_TTL_MS,
+): IosGroupMember? {
     val id = entry.userId ?: entry.user?.id ?: return null
     val user = state.users[id] ?: entry.user
-    val presence = state.presence[id] ?: entry.member.presenceInfo
+    val seen = state.presenceAt(id, nowMs, ttlMs) ?: entry.member.presenceInfo
     return IosGroupMember(
         id = id.toString(),
-        name = ContactNames.label(user, state.addressBookName(id)),
+        name = ContactNames.label(user, state.addressBookName(id), state.preferAddressBookNames),
         avatarUrl = user?.baseUrl.orEmpty(),
         role = entry.role.name.lowercase(),
         alias = entry.admin?.alias.orEmpty(),
         permissions = entry.admin?.permissions ?: -1,
-        lastSeenMs = seenMs(presence?.seen),
-        online = presence?.status == 1,
-    )
+        lastSeenMs = Presences.seenMs(seen?.seen),
+        online = seen?.status == PresenceStatus.ONLINE,
+    ).apply { this.presence = PresenceStatus.of(seen) }
 }
 
 private fun foundFromSearch(fallbackChatId: Long, result: Any?): List<IosFoundMessage> {
@@ -2409,7 +2494,11 @@ class IosProfile(
     val hasWebApp: Boolean = false,
     /** Channel option `COMMENTS`: `1` on, `0` off, `-1` when the card does not say. */
     val comments: Int = -1,
-)
+) {
+    /** A user's presence code ([IosPresence.status]); `-1` unknown or not a user. */
+    var presence: Int = -1
+        internal set
+}
 
 /** [MaxIosClient.loadChatList]: the chats and whether they are the account's whole list. */
 class IosChatList(val chats: List<IosChat>, val complete: Boolean)
@@ -2444,6 +2533,13 @@ class IosContact(
      * stays the same.
      */
     var displayName: String = ""
+        internal set
+
+    /**
+     * The full presence code ([IosPresence.status]: `-1` unknown, `0` offline, `1` online, `2`
+     * recently, `3` long ago); [online] is `presence == 1`, the TTL applied.
+     */
+    var presence: Int = -1
         internal set
 }
 
@@ -2576,7 +2672,14 @@ class IosGroupMember(
     val permissions: Int,
     val lastSeenMs: Long,
     val online: Boolean,
-)
+) {
+    /**
+     * The full presence code ([IosPresence.status]: `-1` unknown, `0` offline, `1` online, `2`
+     * recently, `3` long ago); [online] is `presence == 1`. Read-only outside the initializer.
+     */
+    var presence: Int = -1
+        internal set
+}
 
 /** One page of members; [nextMarker] is empty after the last page. */
 class IosChatMembersPage(val members: List<IosGroupMember>, val nextMarker: String)
@@ -2779,7 +2882,15 @@ object IosTypingType {
  * (`0` sound on, `-1` muted for good, else the end of the mute in ms, so a timed mute runs out
  * without another event). `config`: the account config became known or was dropped; reload the
  * mute states ([MaxIosClient.isChatMuted]). See `configEvents`.
- * Presence and unknown pushes are not forwarded; incoming calls come from `watchIncomingCalls`.
+ * `presence`: the presence of [authorId] changed (push 132, `LOGIN`, `loadPresence`, members, or
+ * an "online" that ran out of the server's `presence-ttl`); [presence] is the status code
+ * ([IosPresence.status]: `-1` unknown, `0` offline, `1` online, `2` recently, `3` long ago),
+ * [timeMs] the last-seen time in ms (`0` unknown: never show "recently" for it).
+ * `draft`: the server draft of [chatId] changed (saved or discarded on another device, pushes
+ * 152 / 153, `LOGIN`, `saveDraft`, or cleared by a send); [draft] is the draft now, `null` when
+ * it is gone; [text], [marks], [messageId] (the answered message, empty for none) and [timeMs]
+ * (its update time, `0` when gone) repeat it.
+ * Unknown pushes are not forwarded; incoming calls come from `watchIncomingCalls`.
  */
 class IosEvent(
     val kind: String,
@@ -2809,7 +2920,22 @@ class IosEvent(
      */
     var muted: Int = -1
         internal set
+
+    /** For a `presence` event: the status code ([IosPresence.status]); `-1` for every other kind. */
+    var presence: Int = -1
+        internal set
+
+    /** For a `draft` event: the draft now, `null` when it was discarded or sent; `null` for other kinds. */
+    var draft: IosDraft? = null
+        internal set
 }
+
+/**
+ * Presence of a user. [status]: `-1` unknown (nothing known yet), `0` offline ([seenMs] is the
+ * last time online), `1` online, `2` was online recently (time hidden), `3` long ago. [seenMs]
+ * is `0` when unknown. An "online" older than the server's `presence-ttl` already reads as `0`.
+ */
+class IosPresence(val userId: String, val status: Int, val seenMs: Long)
 
 private fun phaseOf(state: ClientState): String = when (state) {
     ClientState.Idle -> "idle"
@@ -2848,11 +2974,72 @@ private fun muteCode(state: Boolean?): Int = when (state) {
     null -> -1
 }
 
-/** What [MaxIosClient.watchEvents] turns into [IosEvent]s: a push, or events of a config change. */
+/** What [MaxIosClient.watchEvents] turns into [IosEvent]s: a push, or events of a config or store change. */
 private sealed interface IosEventSource {
     class Push(val event: MaxEvent) : IosEventSource
     class Config(val events: List<IosEvent>) : IosEventSource
+    class Store(val events: List<IosEvent>) : IosEventSource
 }
+
+/** [storeEvents] for every change of [state] after the value it has when collected. */
+private fun storeChanges(state: StateFlow<MaxState>): Flow<IosEventSource> = flow {
+    var prev: MaxState? = null
+    state.collect { next ->
+        val before = prev
+        prev = next
+        if (before != null) {
+            val events = storeEvents(before, next)
+            if (events.isNotEmpty()) emit(IosEventSource.Store(events))
+        }
+    }
+}
+
+/**
+ * `presence` and `draft` events between two store snapshots: one per user whose stored presence
+ * changed and one per chat whose draft changed (set, replaced or removed). Nothing on logout
+ * ([MaxState.me] gone) or when another account replaced the snapshot; the first login of a
+ * session reports its presence and drafts.
+ */
+internal fun storeEvents(prev: MaxState, next: MaxState): List<IosEvent> {
+    if (next.me == null || (prev.me != null && prev.me != next.me)) return emptyList()
+    val out = ArrayList<IosEvent>()
+    if (prev.presence !== next.presence) {
+        for ((id, p) in next.presence) {
+            if (prev.presence[id] == p) continue
+            out += presenceEvent(id, p)
+        }
+    }
+    if (prev.drafts !== next.drafts) {
+        for ((chatId, d) in next.drafts) {
+            if (prev.drafts[chatId] == d) continue
+            out += draftEvent(chatId, d)
+        }
+        for (chatId in prev.drafts.keys) if (chatId !in next.drafts) out += draftEvent(chatId, null)
+    }
+    return out
+}
+
+/** A `presence` event of [userId] ([IosEvent.presence], `seen` in [IosEvent.timeMs]). */
+internal fun presenceEvent(userId: Long, info: PresenceInfo?): IosEvent =
+    iosEvent(kind = "presence", authorId = userId.toString(), timeMs = Presences.seenMs(info?.seen)).apply {
+        presence = PresenceStatus.of(info)
+    }
+
+/** A `draft` event of [chatId]: [IosEvent.draft] is the draft, `null` when it is gone. */
+internal fun draftEvent(chatId: Long, draft: MaxDraft?): IosEvent =
+    iosEvent(
+        kind = "draft",
+        chatId = chatId.toString(),
+        messageId = draft?.replyTo?.toString().orEmpty(),
+        text = draft?.text.orEmpty(),
+        timeMs = draft?.updateTime ?: 0L,
+    ).apply {
+        this.draft = draft?.let(::draftSnapshot)
+    }
+
+/** [IosPresence] of [userId] from [info] (`null`: unknown). */
+internal fun presenceSnapshot(userId: Long, info: PresenceInfo?): IosPresence =
+    IosPresence(userId.toString(), PresenceStatus.of(info), Presences.seenMs(info?.seen))
 
 /** [configEvents] for every change of [config] after the value it has when collected. */
 private fun configChanges(config: StateFlow<AccountConfig?>): Flow<IosEventSource> = flow {
@@ -3064,18 +3251,18 @@ private fun chatProfile(chat: Chat): IosProfile {
 }
 
 /** Contact list for the UI: a deleted account (`accountStatus != 0`) stays out, as in Komet. */
-private fun listedContacts(state: MaxState): List<IosContact> =
+private fun listedContacts(state: MaxState, ttlMs: Long = MaxState.DEFAULT_PRESENCE_TTL_MS): List<IosContact> =
     state.contactIds.mapNotNull { id ->
         val user = state.users[id] ?: return@mapNotNull null
         if ((user.accountStatus ?: 0) != 0) return@mapNotNull null
-        contactSnapshot(user, state)
+        contactSnapshot(user, state, ttlMs)
     }
 
 /**
  * Name for the list, as Komet stores it: the `CUSTOM` entry, else `ONEME`, else the first.
  * `firstName` and `lastName` win. A blank pair falls back to `name`.
  */
-private fun contactSnapshot(user: MaxUser, state: MaxState): IosContact {
+private fun contactSnapshot(user: MaxUser, state: MaxState, ttlMs: Long = MaxState.DEFAULT_PRESENCE_TTL_MS): IosContact {
     val names = user.names
     val chosen = names.firstOrNull { it.type == "CUSTOM" }
         ?: names.firstOrNull { it.type == "ONEME" }
@@ -3091,7 +3278,7 @@ private fun contactSnapshot(user: MaxUser, state: MaxState): IosContact {
         first = givenFirst
         last = givenLast
     }
-    val presence = state.presence[user.id]
+    val seen = state.presenceAt(user.id, nowMs(), ttlMs)
     val options = user.options
     return IosContact(
         id = user.id.toString(),
@@ -3099,13 +3286,16 @@ private fun contactSnapshot(user: MaxUser, state: MaxState): IosContact {
         lastName = last,
         phone = user.phone?.toString().orEmpty(),
         avatarUrl = user.baseUrl.orEmpty(),
-        lastSeenMs = presence?.seen?.let { if (it < 100_000_000_000L) it * 1000 else it } ?: 0L,
-        online = presence?.status == 1,
+        lastSeenMs = Presences.seenMs(seen?.seen),
+        online = seen?.status == PresenceStatus.ONLINE,
         accountStatus = user.accountStatus ?: 0,
         isBot = "BOT" in options,
         isOfficial = "OFFICIAL" in options,
         isServiceAccount = "SERVICE_ACCOUNT" in options,
-    ).apply { displayName = nameOf(user, state).orEmpty() }
+    ).apply {
+        displayName = nameOf(user, state).orEmpty()
+        this.presence = PresenceStatus.of(seen)
+    }
 }
 
 /** Drops loaded messages and the chat preview. The chat itself stays. */
