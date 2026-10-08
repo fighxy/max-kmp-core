@@ -78,6 +78,8 @@ interface TlsTransport {
  * @property pingInterval keepalive period; the first PING goes out one interval after connect.
  *   [Duration.INFINITE] disables the ping loop.
  * @property autoReconnect reconnect after a drop with the 2/4/8/15 s backoff ([reconnectDelay]).
+ * @property redirectDomains hosts a server `RECONNECT` (opcode 3) may send the transport to: these
+ *   domains and their subdomains ([ServerRedirect]). Empty: redirects to another host are ignored.
  */
 data class TransportConfig(
     val host: String,
@@ -90,6 +92,7 @@ data class TransportConfig(
     val pingInterval: Duration = 30.seconds,
     val pingInteractive: Boolean = true,
     val autoReconnect: Boolean = true,
+    val redirectDomains: Set<String> = ServerRedirect.DEFAULT_DOMAINS,
 )
 
 /**

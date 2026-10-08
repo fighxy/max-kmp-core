@@ -60,6 +60,9 @@ import kotlin.time.Duration
  * - PING (opcode 1, `{"interactive": <pingInteractive>}`) every [TransportConfig.pingInterval],
  *   first one after one interval, fire-and-forget (the reply is dropped); the flag starts as
  *   [TransportConfig.pingInteractive] and [setPingInteractive] switches it on a live connection;
+ * - a server `RECONNECT` (opcode 3, `{redirectHost: "host:port", tls}`) drops the connection
+ *   and reconnects at once, to the given host when it is on [TransportConfig.redirectDomains]
+ *   ([ServerRedirect]); an unsafe one is ignored. The outcome is in [lastRedirect];
  * - on a drop every pending request fails with [ConnectionClosedException]; with
  *   [TransportConfig.autoReconnect] the transport reconnects after [reconnectDelay] (2, 4, 8,
  *   15, 15 s ...), resetting the attempt counter after each successful connection.
@@ -85,9 +88,26 @@ class MaxTransport(
     private val onConnected: (suspend (MaxTransport) -> Unit)? = null,
 ) : TlsTransport {
 
-    /** Current configuration; replaced by [connect] with a non-null argument. */
+    /**
+     * Current configuration; replaced by [connect] with a non-null argument, and its `host` /
+     * `port` by an accepted server `RECONNECT` ([lastRedirect]) for every later connect.
+     */
+    @kotlin.concurrent.Volatile
     var config: TransportConfig = config
         private set
+
+    private val _lastRedirect = MutableStateFlow<ServerRedirect?>(null)
+
+    /**
+     * The last server `RECONNECT` (opcode 3) push and what was done with it (followed, or ignored
+     * with a reason), `null` before the first. For logs and diagnostics; the push itself is not
+     * published in [pushes].
+     */
+    val lastRedirect: StateFlow<ServerRedirect?> = _lastRedirect.asStateFlow()
+
+    /** Set by an accepted `RECONNECT`: the next reconnect attempt goes out without the backoff delay. */
+    @kotlin.concurrent.Volatile
+    private var reconnectAtOnce = false
 
     private val _state = MutableStateFlow(ConnectionState.Disconnected)
     override val state: StateFlow<ConnectionState> = _state.asStateFlow()
@@ -299,6 +319,7 @@ class MaxTransport(
         lifecycleLock.withLock {
             val supervisor = supervisorJob
             supervisorJob = null
+            reconnectAtOnce = false
             // closing the socket first unblocks a platform read, then the jobs can finish
             dropConnection(ConnectionClosedException("transport closed"))
             supervisor?.cancelAndJoin()
@@ -361,7 +382,12 @@ class MaxTransport(
             }
             var attempt = 0
             while (true) {
-                delay(reconnectDelay(attempt))
+                if (attempt == 0 && reconnectAtOnce) {
+                    // the server asked for it (RECONNECT): no backoff
+                    reconnectAtOnce = false
+                } else {
+                    delay(reconnectDelay(attempt))
+                }
                 attempt++
                 try {
                     reader = establish()
@@ -406,7 +432,10 @@ class MaxTransport(
                 if (n == 0) continue
                 inboundChunks++
                 rawChunks.tryEmit(buffer.copyOf(n))
-                for (frame in reassembler.feed(buffer, 0, n)) dispatch(conn, frame)
+                for (frame in reassembler.feed(buffer, 0, n)) {
+                    // a followed RECONNECT ends this connection: the supervisor reconnects
+                    if (!dispatch(conn, frame)) return
+                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -416,26 +445,30 @@ class MaxTransport(
     }
 
     /**
-     * Routes one complete packet: a reply to its waiter, a server PING to [answerServerPing],
-     * anything else to [pushes].
+     * Routes one complete packet: a reply to its waiter, a server PING to [answerServerPing], a
+     * server `RECONNECT` to [followRedirect], anything else to [pushes]. Returns `false` when the
+     * reader must stop because the connection is being replaced.
      */
-    private suspend fun dispatch(conn: RawConnection, frame: ByteArray) {
+    private suspend fun dispatch(conn: RawConnection, frame: ByteArray): Boolean {
         val header = try {
             decodeHeader(frame)
         } catch (e: IllegalArgumentException) {
-            return
+            return true
         }
         if (isServerPing(header)) {
             answerServerPing(conn, header)
-            return
+            return true
         }
         val decoded = runCatching { decodePayloadPacket(frame, codec) }
         if (isReply(header.cmd)) {
-            val waiter = stateLock.withLock { pending.take(header.seq) } ?: return
+            val waiter = stateLock.withLock { pending.take(header.seq) } ?: return true
             decoded.fold(
                 onSuccess = { (h, payload) -> waiter.complete(TransportPacket(h, payload)) },
                 onFailure = { waiter.completeExceptionally(TransportException("cannot decode reply seq ${header.seq}", it)) },
             )
+        } else if (header.opcodeValue == Opcode.RECONNECT.value) {
+            val payload = decoded.getOrNull()?.second
+            return !followRedirect(payload)
         } else {
             // compressed pushes are decompressed by decodePayloadPacket (LZ4 block / LZ4 frame / Zstd);
             // undecodable ones (unknown flag, corrupt body, bad MessagePack) are skipped, like kolibri
@@ -445,6 +478,28 @@ class MaxTransport(
                 _pushes.tryEmit(packet)
             }
         }
+        return true
+    }
+
+    /**
+     * Handles a server `RECONNECT` push ([ServerRedirect]): records it in [lastRedirect] and, when
+     * it may be followed, switches [config] to the new host and port (if any), fails the pending
+     * requests and arms [reconnectAtOnce]. Returns `true` when the connection must end now; the
+     * supervisor then reconnects without delay (the session runs its handshake and `LOGIN` again).
+     */
+    private suspend fun followRedirect(payload: Any?): Boolean {
+        val cfg = config
+        var r = ServerRedirect.evaluate(payload, cfg.redirectDomains)
+        if (r.accepted && !cfg.autoReconnect) {
+            r = r.copy(host = null, port = null, accepted = false, reason = "auto-reconnect is off")
+        }
+        _lastRedirect.value = r
+        if (!r.accepted) return false
+        if (r.host != null && r.port != null) config = cfg.copy(host = r.host, port = r.port)
+        reconnectAtOnce = true
+        // waiters must not sit out their timeout on a connection that is going away
+        stateLock.withLock { pending.failAll(ConnectionClosedException("server asked to reconnect")) }
+        return true
     }
 
     /**

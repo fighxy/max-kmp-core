@@ -374,7 +374,8 @@ class MaxClient @Throws(Exception::class) constructor(
     var onBackgroundError: ((String, Throwable) -> Unit)? = null
 
     /**
-     * Diagnostics lines for the app's log, today one per push `NOTIF_DRAFT` 152 /
+     * Diagnostics lines for the app's log: one per server `RECONNECT` 3 with what the transport did
+     * ([com.max.core.events.DiagnosticLog.serverRedirect]; followed or ignored and why), and one per push `NOTIF_DRAFT` 152 /
      * `NOTIF_DRAFT_DISCARD` 153 (parsed or not), with the raw payload redacted by
      * [com.max.core.events.DiagnosticLog.draftPush]: keys, ids, times and types stay, a draft
      * `text` keeps only its length and first 2 characters, a line is at most
@@ -394,6 +395,12 @@ class MaxClient @Throws(Exception::class) constructor(
         }
         router.on<MaxEvent> { _appliedEvents.emit(it) }
         router.start(this.scope)
+        this.scope.launch {
+            session.transport.lastRedirect.collect { r ->
+                val log = onDiagnostic
+                if (r != null && log != null) runCatching { log(DiagnosticLog.serverRedirect(r)) }
+            }
+        }
         if (config.presenceSweepIntervalMs > 0) {
             presenceJob = this.scope.launch {
                 while (true) {

@@ -43,6 +43,20 @@ object DiagnosticLog {
         return cap("push ${event.opcode} -> $outcome | ${redact(event.raw)}")
     }
 
+    /**
+     * One line for a server `RECONNECT` (opcode 3) and what the transport did with it:
+     * `push 3 -> Reconnect | followed to api2.oneme.ru:443`, `... | restart on the current host`
+     * or `... | ignored (host outside oneme.ru): redirectHost="evil.example:443", tls=true`.
+     */
+    fun serverRedirect(r: com.max.core.transport.ServerRedirect): String {
+        val what = when {
+            r.accepted && r.host != null -> "followed to ${r.host}:${r.port}"
+            r.accepted -> "restart on the current host"
+            else -> "ignored (${r.reason}): redirectHost=${r.redirectHost?.let(::quote) ?: "null"}, tls=${r.tls}"
+        }
+        return cap("push ${Opcode.RECONNECT.value} -> Reconnect | $what")
+    }
+
     /** [value] rendered JSON-like with the redaction rules above. */
     fun redact(value: Any?): String = StringBuilder().also { render(it, value, null, 0) }.toString()
 
