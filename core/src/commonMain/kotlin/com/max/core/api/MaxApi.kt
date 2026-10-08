@@ -8,7 +8,7 @@ import com.max.core.session.SessionMachine
 
 /**
  * Request/response API over a logged-in connection: [messages], [chats], [users], [account],
- * [twoFactor], [bots], [calls], [complaints] and [stories].
+ * [twoFactor], [bots], [calls], [complaints], [stories] and [readers].
  *
  * Use it with a `SessionMachine` that logs in through `TokenLogin.hook` (the requests need an
  * authenticated session), or with any [RequestSink]. Events (`com.max.core.events`) and media
@@ -39,4 +39,5 @@ class MaxApi(sink: RequestSink, clock: () -> Long, val cids: ClientIdGenerator) 
     val search: SearchApi = SearchApi(sink)
     val complaints: ComplaintsApi = ComplaintsApi(sink)
     val stories: StoriesApi = StoriesApi(sink, clock)
+    val readers: ReadersApi = ReadersApi(chats, messages)
 }
