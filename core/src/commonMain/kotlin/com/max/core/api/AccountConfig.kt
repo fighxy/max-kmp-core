@@ -148,6 +148,20 @@ data class AccountConfig(
         get() = serverFlag("photo-url-refresh") ?: false
 
     /**
+     * `config.server["stories-history"]`: the settings item for the own story archive is shown
+     * only when this is on. `false` when the key is absent or not a flag (the app's default).
+     */
+    val storiesHistory: Boolean
+        get() = serverFlag("stories-history") ?: false
+
+    /**
+     * `config.server["family-protection-botid"]`: the mini-app bot for family protection.
+     * A `Long` in the app, default `0`. `null` when the key is absent, not a number, or not positive.
+     */
+    val familyProtectionBotId: Long?
+        get() = server["family-protection-botid"].asLong()?.takeIf { it > 0 }
+
+    /**
      * `config.server["photo-url-refresh-max-media-per-request"]`: how many messages one opcode 203
      * request may carry. [DEFAULT_PHOTO_URL_REFRESH_MAX_MEDIA] (100) when the key is absent, not
      * a number or not positive.

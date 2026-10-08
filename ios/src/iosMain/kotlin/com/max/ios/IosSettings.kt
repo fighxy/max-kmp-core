@@ -51,6 +51,10 @@ class IosMyProfile(
  * - [inviteLink]: full URL or empty; [sferumBotId], [digitalIdBotId]: mini app bots.
  * - [quickReaction]: emoji for a double tap (`DOUBLE_TAP_REACTION_VALUE`), 👍 when unset.
  * - [quickReactionDisabled]: `DOUBLE_TAP_REACTION_DISABLED`.
+ * - [storiesHistory]: `config.server["stories-history"]`, show the own-archive settings item
+ *   (`false` when the server did not turn it on);
+ * - [familyProtectionBotId]: `config.server["family-protection-botid"]` as a decimal string,
+ *   empty when the server sent no positive id (the app's default is `0`).
  */
 class IosAccountSettings(
     val known: Boolean,
@@ -72,6 +76,8 @@ class IosAccountSettings(
     val privacyLocked: Boolean,
     val showReadMark: Boolean,
     val showReadMarkKnown: Boolean,
+    val storiesHistory: Boolean,
+    val familyProtectionBotId: String,
 )
 
 /** One active session. [lastSeenMs] is Unix milliseconds (0 when unknown). */
@@ -145,6 +151,8 @@ internal fun settingsSnapshot(config: AccountConfig?): IosAccountSettings {
         privacyLocked = p.locked,
         showReadMark = p.showReadMark ?: true,
         showReadMarkKnown = p.showReadMark != null,
+        storiesHistory = c.storiesHistory,
+        familyProtectionBotId = c.familyProtectionBotId?.toString().orEmpty(),
     )
 }
 

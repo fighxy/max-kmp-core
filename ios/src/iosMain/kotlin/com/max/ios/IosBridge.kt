@@ -1370,6 +1370,20 @@ class MaxIosClient internal constructor(
     }
 
     /**
+     * One page of this account's story archive (`STORIES_HISTORY_GET_BY_OWNER_ID` 219,
+     * [MaxClient.ownStoryArchive]). [marker] is the previous page's cursor as a decimal string;
+     * empty or `"0"` is the first page. [IosStoryArchive.marker] is empty when there is no next
+     * page. Thirty stories per page. Not stored.
+     */
+    fun ownStoryArchive(marker: String, onResult: (IosStoryArchive?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val cursor = marker.trim().takeIf { it.isNotEmpty() && it != "0" }?.let(::parseId)
+            val page = pacer.background { c.ownStoryArchive(cursor) }
+            IosStoryArchive(page.marker?.toString().orEmpty(), page.stories.map(::storySnapshot))
+        }
+    }
+
+    /**
      * Marks story [storyId] of the owner seen (`STORIES_MARK` 214, [MaxClient.markStorySeen]);
      * paced like other background writes of the viewer. With [hideReadReceipts] on nothing is
      * sent and [onResult] gets no error (keep the ring seen locally).
@@ -3229,6 +3243,9 @@ class IosStory(
 
 /** [MaxIosClient.loadOwnerStories]: the owner's ring (`null` when none) and stories, oldest first. */
 class IosOwnerStories(val preview: IosStoryPreview?, val stories: List<IosStory>)
+
+/** One page of the own story archive. [marker] is empty when there is no next page. */
+class IosStoryArchive(val marker: String, val stories: List<IosStory>)
 
 /** [MaxIosClient.publishStory]: the account's new ring and the published stories. */
 class IosPublishedStory(val preview: IosStoryPreview?, val stories: List<IosStory>)

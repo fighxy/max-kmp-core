@@ -263,6 +263,7 @@ enum class Opcode(val value: Int) {
     NOTIF_STORIES_UPDATE(216), // Komet: {storiesPreview}
     STORIES_EDIT(217), // TODO: payload unknown
     STORIES_DELETE(218), // Komet: {storyIds}
+    STORIES_HISTORY_GET_BY_OWNER(219), // own archive {count:30, marker?} -> {stories, marker}
     STORIES_GET_BY_STORY_ID(220); // TODO: payload unknown
 
     companion object {

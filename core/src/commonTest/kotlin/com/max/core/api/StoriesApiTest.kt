@@ -6,6 +6,7 @@ import com.max.core.protocol.Opcode
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -101,5 +102,49 @@ class StoriesApiTest {
         assertEquals(7L, update.preview.owner.ownerId)
         assertTrue(update.preview.isEmpty)
         assertTrue(EventParser.parse(Opcode.NOTIF_STORIES_UPDATE.value, 0, emptyMap<String, Any?>()) is MaxEvent.Unknown)
+    }
+
+    @Test
+    fun ownArchivePagesThirtyAndKeepsTheCursor() = runTest {
+        val story = mapOf(
+            "id" to 301L, "owner" to owner(5), "time" to 1_700_000_000L,
+            "media" to mapOf("_type" to "PHOTO", "baseUrl" to "https://i/a"),
+            "viewsCount" to 4, "reactionsCount" to 1, "version" to 2,
+        )
+        val sink = ScriptSink(mapOf("stories" to listOf(story, mapOf("id" to 1), "junk"), "marker" to 88L))
+        val page = StoriesApi(sink) { now }.ownArchive()
+        assertEquals(Opcode.STORIES_HISTORY_GET_BY_OWNER, sink.opcodes.single())
+        assertEquals(mapOf("count" to 30), sink.sent.single().second)
+        assertEquals(listOf(301L), page.stories.map { it.id })
+        assertEquals(88L, page.marker)
+        val next = ScriptSink(mapOf("stories" to emptyList<Any>(), "marker" to 0))
+        val last = StoriesApi(next) { now }.ownArchive(88L)
+        val sent = next.sent.single().second as Map<*, *>
+        assertEquals(setOf("count", "marker"), sent.keys)
+        assertEquals(30, sent["count"])
+        assertEquals(88L, sent["marker"])
+        assertEquals(emptyList(), last.stories)
+        assertNull(last.marker)
+    }
+
+    @Test
+    fun ownArchiveOmitsAZeroMarker() = runTest {
+        val sink = ScriptSink(emptyMap<String, Any?>())
+        val page = StoriesApi(sink) { now }.ownArchive(0L)
+        assertEquals(mapOf("count" to 30), sink.sent.single().second)
+        assertEquals(emptyList(), page.stories)
+        assertNull(page.marker)
+    }
+
+    @Test
+    fun archiveConfigFlags() {
+        assertFalse(AccountConfig().storiesHistory)
+        assertNull(AccountConfig().familyProtectionBotId)
+        val on = AccountConfig(server = mapOf("stories-history" to "ON", "family-protection-botid" to "4401"))
+        assertEquals(true, on.storiesHistory)
+        assertEquals(4401L, on.familyProtectionBotId)
+        val off = AccountConfig(server = mapOf("stories-history" to false, "family-protection-botid" to 0))
+        assertFalse(off.storiesHistory)
+        assertNull(off.familyProtectionBotId)
     }
 }

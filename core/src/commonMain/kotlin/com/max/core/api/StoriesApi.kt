@@ -74,6 +74,27 @@ class StoriesApi(private val sink: RequestSink, private val clock: () -> Long) {
         )
     }
 
+    /**
+     * The account's own story archive (`STORIES_HISTORY_GET_BY_OWNER_ID` 219).
+     * The app always sends `count` 30 and sends `marker` only when it is not zero.
+     * There is no owner id: this is the signed-in account. [marker] `null` or `0` is the first page.
+     * A reply marker of `0` or a missing marker is [StoryArchivePage.marker] `null` (no next page).
+     * Items are the same story objects as the feed; `version`, `layers`, `reaction`, `viewsCount`
+     * and `reactionsCount` are on the wire and not kept.
+     */
+    suspend fun ownArchive(marker: Long? = null): StoryArchivePage {
+        val payload = linkedMapOf<String, Any?>("count" to OWN_ARCHIVE_PAGE)
+        if (marker != null && marker != 0L) payload["marker"] = marker
+        val map = replyMap(sink.request(Opcode.STORIES_HISTORY_GET_BY_OWNER, payload), Opcode.STORIES_HISTORY_GET_BY_OWNER)
+        val items = map["stories"]
+        val stories = when (items) {
+            null -> emptyList()
+            is List<*> -> items.mapNotNull(Story::from)
+            else -> throw MalformedReplyException(Opcode.STORIES_HISTORY_GET_BY_OWNER, "stories is not a list", map)
+        }
+        return StoryArchivePage(stories, map["marker"].asLong()?.takeIf { it != 0L })
+    }
+
     /** Deletes the account's own stories. */
     suspend fun delete(storyIds: List<Long>) {
         if (storyIds.isEmpty()) return
@@ -83,8 +104,14 @@ class StoriesApi(private val sink: RequestSink, private val clock: () -> Long) {
     companion object {
         /** Komet's story lifetime: a day. */
         const val DAY_MS: Long = 86_400_000L
+
+        /** Page size the app hardcodes for opcode 219. */
+        const val OWN_ARCHIVE_PAGE: Int = 30
     }
 }
+
+/** One page of [StoriesApi.ownArchive]. [marker] `null` means there is no next page. */
+data class StoryArchivePage(val stories: List<Story>, val marker: Long?)
 
 /** Who sees a published story (`settings`). */
 enum class StoryAudience(val code: Int) { EVERYONE(1), CONTACTS(2) }

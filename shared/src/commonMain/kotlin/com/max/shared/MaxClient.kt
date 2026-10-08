@@ -1278,6 +1278,15 @@ class MaxClient @Throws(Exception::class) constructor(
         return true
     }
 
+    /**
+     * One page of the account's own story archive (`STORIES_HISTORY_GET_BY_OWNER_ID` 219).
+     * [marker] `null` or `0` asks for the first page (the request then omits `marker`).
+     * The page is not stored. See [com.max.core.api.StoriesApi.ownArchive].
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun ownStoryArchive(marker: Long? = null): com.max.core.api.StoryArchivePage =
+        api.stories.ownArchive(marker)
+
     private fun readSetting(key: String): String? = try {
         settings.get(key)
     } catch (e: Exception) {
