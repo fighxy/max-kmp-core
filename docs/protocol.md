@@ -337,6 +337,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 - `MaxClient.state` → `ClientState.TokenRejected` с полями `reason`, `errorKey`, `title`, `localizedMessage`, `description`, `serverText` (`title ?: localizedMessage`) и `tokenCleared`. В мосте iOS — `MaxIosClient.loginRejection()` → `IosLoginRejection` (`reason`: `token` / `blocked` / `flood`).
 - Токен: при `TOKEN` и `BLOCKED` сохранённый токен удаляется. При `FLOOD` — **остаётся** (`tokenCleared = false`): ограничение частоты временное, позже `start()` может повторить вход. Это отличие от Android-клиента; решение за владельцем.
 - Тексты сервера есть и у любой ошибки: `ServerErrorException.localizedText` / `title` / `description` / `displayText`, `MaxError.title` / `localizedMessage` / `description` / `serverText`. Все три отказа в `MaxError` — `SESSION_EXPIRED`.
+- В мосте iOS колбэки остаются `(…, kind, errorKey)`; внутри колбэка с ошибкой `IosErrors.current()` даёт `IosError` (`kind`, `errorKey`, `title`, `localizedMessage`, `description`, `serverText` = `displayText`; пустая строка, если сервер не прислал). Читать синхронно в самом колбэке: значение привязано к его потоку.
 
 ---
 
