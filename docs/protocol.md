@@ -302,7 +302,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
-| 1 | `PING` | `PING` | `{interactive}`; `MaxClient.setInteractive` / мост `setAppActive` меняют флаг, при смене сразу уходит один `PING` (opcodes.md, «Присутствие») |
+| 1 | `PING` | `PING` | `{interactive}`; `MaxClient.setInteractive` / мост `setAppActive` меняют флаг, при смене сразу уходит один `PING` (opcodes.md, «Присутствие»); в режиме призрака всегда `false` |
 | 2 | `DEBUG` | `DEBUG` |  |
 | 3 | `RECONNECT` | `RECONNECT` |  |
 | 5 | `LOG` | `LOG` |  |
@@ -316,7 +316,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 16 | `PROFILE` | `PROFILE` |  |
 | 17 | `AUTH_REQUEST` | `AUTH_REQUEST` |  |
 | 18 | `AUTH` | `AUTH` |  |
-| 19 | `LOGIN` | `LOGIN` | ответ: `presence {userId: {seen, status}}` читается в стор; `presenceSync` двигается только после этого; `interactive` — текущий флаг клиента |
+| 19 | `LOGIN` | `LOGIN` | ответ: `presence {userId: {seen, status}}` читается в стор; `presenceSync` двигается только после этого; `interactive` — текущий флаг клиента (`false` в режиме призрака, уже в первом `LOGIN`) |
 | 20 | `LOGOUT` | `LOGOUT` |  |
 | 21 | `SYNC` | `SYNC` | не используется: книга устройства на сервер не отправляется, форма не подтверждена (opcodes.md, «Контакты») |
 | 22 | `CONFIG` | `CONFIG` |  |
@@ -360,7 +360,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 32 | `CONTACT_INFO` | `CONTACT_INFO` |  |
 | 33 | `CONTACT_ADD` | `CONTACT_ADD` |  |
 | 34 | `CONTACT_UPDATE` | `CONTACT_UPDATE` | `action`: `ADD`, `UPDATE` (`{contactId, action, firstName, lastName \| null}` → `{contact}`, имя до 64 символов, пустое имя `""` разрешено), `REMOVE` (отмена — `ADD`), `BLOCK`, `UNBLOCK` |
-| 35 | `CONTACT_PRESENCE` | `CONTACT_PRESENCE` | `{contactIds}` → `{presence: {userId: {seen, status}}}`, пачки по 100; нет id в ответе — «давно» (`3`); `UsersApi.getPresence`, `MaxClient.loadPresence` |
+| 35 | `CONTACT_PRESENCE` | `CONTACT_PRESENCE` | `{contactIds}` → `{presence: {userId: {seen, status}}}`, пачки по 100; нет id в ответе — «давно» (`3`); `UsersApi.getPresence`, `MaxClient.loadPresence`; свой статус — `MaxClient.checkOwnPresence` (без кэша, нет записи — `null`) |
 | 36 | `CONTACT_LIST` | `CONTACT_LIST` |  |
 | 37 | `CONTACT_SEARCH` | `CONTACT_SEARCH` |  |
 | 38 | `CONTACT_MUTUAL` | `CONTACT_MUTUAL` |  |
@@ -376,8 +376,8 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
 | 48 | `CHAT_INFO` | `CHAT_INFO` | `participants` — `{userId: readMark}`, отметки прочтения (opcodes.md, «Кто прочитал сообщение») |
-| 49 | `CHAT_HISTORY` | `CHAT_HISTORY` |  |
-| 50 | `CHAT_MARK` | `CHAT_MARK` |  |
+| 49 | `CHAT_HISTORY` | `CHAT_HISTORY` | в режиме призрака `interactive: true` уходит как `false` (opcodes.md, «Режим призрака») |
+| 50 | `CHAT_MARK` | `CHAT_MARK` | `READ_MESSAGE` не уходит при `hideReadReceipts` — чат читается локально (opcodes.md, «Режим призрака») |
 | 51 | `CHAT_MEDIA` | `CHAT_MEDIA` |  |
 | 52 | `CHAT_DELETE` | `CHAT_DELETE` |  |
 | 53 | `CHATS_LIST` | `CHATS_LIST` |  |
@@ -397,7 +397,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
 | 64 | `MSG_SEND` | `MSG_SEND` | `elements` — форматирование; пересылка — ссылка `FORWARD`, по кадру на сообщение |
-| 65 | `MSG_TYPING` | `MSG_TYPING` | `{chatId, type, postId?}`, без ожидания ответа; `type`: `TEXT`, `AUDIO`, `VIDEO_MSG`, `PHOTO`, `VIDEO`, `FILE`, `STICKER` (opcodes.md, «Печатает: 65 и 129») |
+| 65 | `MSG_TYPING` | `MSG_TYPING` | `{chatId, type, postId?}`, без ожидания ответа; в режиме призрака не уходит; `type`: `TEXT`, `AUDIO`, `VIDEO_MSG`, `PHOTO`, `VIDEO`, `FILE`, `STICKER` (opcodes.md, «Печатает: 65 и 129») |
 | 66 | `MSG_DELETE` | `MSG_DELETE` | `{chatId, postId?, messageIds, forMe, itemType?}` → `{messageIds, failedMessageIds?}`: весь выбор одним запросом |
 | 67 | `MSG_EDIT` | `MSG_EDIT` | `{chatId, messageId, text, elements, attachments}`; ответ без реакций |
 | 68 | `CHAT_SEARCH` | `CHAT_SEARCH` |  |
@@ -549,7 +549,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 290 | `AUTH_QR_APPROVE` | `AUTH_QR_APPROVE` |  |
 | 300 | `CHAT_SUGGEST` | `CHAT_SUGGEST` |  |
 | 302 | `—` | `BANNERS_GET` | только PyMax |
-| 303 | `—` | `MSG_DELIVERY` | только PyMax |
+| 303 | `—` | `MSG_DELIVERY` | только PyMax; не уходит при `hideReadReceipts` |
 
 ### QR auth
 
@@ -630,7 +630,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 211 | `STORIES_GET_STATS` | `STORIES_GET_STATS` |  |
 | 212 | `STORIES_GET_DETAILED_STATS` | `STORIES_GET_DETAILED_STATS` |  |
 | 213 | `STORIES_REACT` | `STORIES_REACT` |  |
-| 214 | `STORIES_MARK` | `STORIES_MARK` |  |
+| 214 | `STORIES_MARK` | `STORIES_MARK` | не уходит при `hideReadReceipts` |
 | 215 | `STORIES_SEND` | `STORIES_SEND` |  |
 | 216 | `NOTIF_STORIES_UPDATE` | `NOTIF_STORIES_UPDATE` |  |
 | 217 | `STORIES_EDIT` | `STORIES_EDIT` |  |
