@@ -4,7 +4,9 @@ import com.max.core.api.ChatMember
 import com.max.core.api.ChatMembersPage
 import com.max.core.api.ChatMembersResult
 import com.max.core.api.ChatRoles
+import com.max.core.api.MaxDraft
 import com.max.core.api.MaxMessage
+import com.max.core.api.TextElement
 import com.max.core.api.MaxUser
 import com.max.core.api.PhoneContact
 import com.max.core.api.TextElementType
@@ -326,11 +328,27 @@ class MaxIosClientTest {
         assertEquals(null to "UNKNOWN", callback<Pair<IosChatMembersPage?, String?>> { d -> c.loadChatMembers("1", "x", 50) { p, k, _ -> d.complete(p to k) } })
         assertEquals(null to "NETWORK", callback<Pair<IosChatMembersPage?, String?>> { d -> c.loadChatMembers("1", "", 0) { p, k, _ -> d.complete(p to k) } })
         assertEquals(null to "UNKNOWN", callback<Pair<IosContact?, String?>> { d -> c.renameContact("x", "Ann", "") { u, k, _ -> d.complete(u to k) } })
-        assertEquals("NETWORK", callback<String?> { d -> c.removeContact("5") { k, _ -> d.complete(k) } })
-        val noEntries = callback<Pair<Int, String?>> { d -> c.importPhoneBook(listOf(IosPhoneContact(" ", "Ann"))) { l, k, _ -> d.complete(l.size to k) } }
-        assertEquals(0 to "UNKNOWN", noEntries)
-        val import = callback<Pair<Int, String?>> { d -> c.importPhoneBook(listOf(IosPhoneContact("+79990000001", "Ann"))) { l, k, _ -> d.complete(l.size to k) } }
-        assertEquals(0 to "NETWORK", import)
+        assertEquals(null to "NETWORK", callback<Pair<IosContact?, String?>> { d -> c.removeContact("5") { u, k, _ -> d.complete(u to k) } })
+        val added = callback<Triple<IosContact?, Boolean, String?>> { d -> c.addContactByPhone("+79990000001", "Ann", "") { u, n, k, _ -> d.complete(Triple(u, n, k)) } }
+        assertEquals(Triple(null, false, "NETWORK"), added)
+        // the selection delete with its result
+        assertEquals(null to "UNKNOWN", callback<Pair<IosDeleteResult?, String?>> { d -> c.deleteMessages("1", listOf("2"), true, "x") { r, k, _ -> d.complete(r to k) } })
+        assertEquals(null to "NETWORK", callback<Pair<IosDeleteResult?, String?>> { d -> c.deleteMessages("1", listOf("2", "3"), true, "") { r, k, _ -> d.complete(r to k) } })
+        // formatting as JSON: malformed fails before sending
+        assertEquals(null to "UNKNOWN", callback<Pair<IosMessage?, String?>> { d -> c.editMessage("1", "2", "hi", "{") { m, k, _ -> d.complete(m to k) } })
+        assertEquals(null to "NETWORK", callback<Pair<IosMessage?, String?>> { d -> c.editMessage("1", "2", "hi", "[]") { m, k, _ -> d.complete(m to k) } })
+        assertEquals(null to "NETWORK", callback<Pair<IosMessage?, String?>> { d -> c.editMessage("1", "2", "hi") { m, k, _ -> d.complete(m to k) } })
+        val json = """[{"type":"STRONG","from":0,"length":2}]"""
+        assertEquals(null to "NETWORK", callback<Pair<IosMessage?, String?>> { d -> c.sendFormattedText("1", "hi", json, "") { m, k, _ -> d.complete(m to k) } })
+        // drafts
+        assertEquals(0L to "UNKNOWN", callback<Pair<Long, String?>> { d -> c.saveDraft("1", "hi", "nope", "") { t, k, _ -> d.complete(t to k) } })
+        assertEquals(0L to "NETWORK", callback<Pair<Long, String?>> { d -> c.saveDraft("1", "hi", json, "") { t, k, _ -> d.complete(t to k) } })
+        assertEquals(null, callback<String?> { d -> c.discardDraft("1", 0) { k, _ -> d.complete(k) } }) // nothing to discard
+        assertEquals("NETWORK", callback<String?> { d -> c.discardDraft("1", 100) { k, _ -> d.complete(k) } })
+        assertTrue(c.drafts().isEmpty())
+        // member search
+        assertEquals(0 to "UNKNOWN", callback<Pair<Int, String?>> { d -> c.searchChatMembers("1", " ") { l, k, _ -> d.complete(l.size to k) } })
+        assertEquals(0 to "NETWORK", callback<Pair<Int, String?>> { d -> c.searchChatMembers("1", "Ann") { l, k, _ -> d.complete(l.size to k) } })
         // the address book needs no network
         c.setAddressBook(listOf(IosPhoneContact("+79990000001", "Ann", "Lee")))
         c.setLocalName("5", "Сосед")
@@ -374,18 +392,34 @@ class MaxIosClientTest {
         assertEquals("https://a", snap.marks[1].url)
         assertEquals(2, messageEvent("edited", message, MaxState(), withReactions = false).marks.size)
         assertTrue(IosMessage("5", "7", "20", "hi", 1_000).marks.isEmpty())
+        assertEquals("[]", IosMessage("5", "7", "20", "hi", 1_000).elementsJson)
+        assertEquals(
+            """[{"type":"EMPHASIZED","from":0,"length":2},{"type":"LINK","from":3,"length":5,"attributes":{"url":"https://a"}}]""",
+            snap.elementsJson,
+        )
+        val draft = draftSnapshot(MaxDraft(7, "hi", listOf(TextElement.strong(0, 2)), 5, 900))
+        assertEquals(listOf("7", "hi", """[{"type":"STRONG","from":0,"length":2}]""", "5", "900"), listOf(draft.chatId, draft.text, draft.elementsJson, draft.replyTo, draft.updateTime.toString()))
+        assertEquals("", draftSnapshot(MaxDraft(7, "", emptyList(), null, 1)).replyTo)
         assertEquals(listOf(PhoneContact("+7999", "Ann", "Lee"), PhoneContact("1", "B")), phoneContactsOf(listOf(IosPhoneContact(" +7999 ", " Ann ", "Lee"), IosPhoneContact("1", "B", " "), IosPhoneContact("2", " "))))
     }
 
     @Test
-    fun namesFollowContactThenAddressBookThenProfile() {
+    fun namesFollowAddressBookThenContactThenProfile() {
         fun user(id: Long, phone: Long, vararg names: Map<String, Any?>) = MaxUser.from(mapOf("id" to id, "phone" to phone, "names" to names.toList()))!!
         val oneme = mapOf("name" to "Ivan Petrov", "type" to "ONEME")
-        var state = StateReducer.putUsers(MaxState(), listOf(user(1, 79990000001, oneme), user(2, 79990000002, mapOf("firstName" to "Vanya", "type" to "CUSTOM"), oneme)))
-        state = StateReducer.setAddressBook(state, listOf(PhoneContact("+79990000001", "Brother"), PhoneContact("+79990000002", "Book")))
+        val custom = mapOf("firstName" to "Vanya", "type" to "CUSTOM")
+        var state = StateReducer.putUsers(
+            MaxState(),
+            listOf(user(1, 79990000001, oneme), user(2, 79990000002, custom, oneme), user(4, 79990000004, custom, oneme), user(5, 79990000005)),
+        )
+        // "8 999 ..." and "+7 999 ..." are one number; the book beats the contact name
+        state = StateReducer.setAddressBook(state, listOf(PhoneContact("8 (999) 000-00-01", "Brother"), PhoneContact("+7 999 000-00-04", "Book")))
         val message = MaxMessage.from(mapOf("id" to 5L, "chatId" to 7L, "sender" to 1L, "time" to 1_000L, "type" to "USER", "text" to "hi"))!!
         assertEquals("Brother", messageSnapshot(message, "7", state).authorName)
         assertEquals("Vanya", messageSnapshot(message.copy(sender = 2), "7", state).authorName)
+        assertEquals("Book", messageSnapshot(message.copy(sender = 4), "7", state).authorName)
+        assertEquals("+79990000005", nameOf(state.users.getValue(5), state))
+        assertEquals("Участник", labelOf(null, state))
         assertEquals("Brother", nameOf(state.users.getValue(1), state))
         assertEquals("Ivan Petrov", nameOf(state.users.getValue(1), MaxState()))
 
