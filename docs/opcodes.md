@@ -78,10 +78,11 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | «печатает» | `65` (исходящий, без ожидания ответа), `129` (push, с `type`) | `MessagesApi.sendTyping`, `MaxClient.sendTyping`, `TypingType`; `MaxEvent.Typing.type` / `effectiveType`, `MaxState.typingUsersWithType` / `typingType`; мост iOS `sendTyping`, `IosTypingType`, `text` у события `typing`. См. «Печатает: 65 и 129» |
 | кто прочитал | `48` (`participants`), `59` (`readMark`), `71` (время и автор сообщения, если его нет в сторе), `130` (push), `181`; ключ конфига `max-readmarks` | `MessageReaders`, `ReadersApi` (`MaxApi.readers`), `Chat.participants`, `ChatMember.readMark`, `AccountConfig.maxReadmarks`, `MaxState.chatReadMarks`; `MaxClient.loadMessageReaders` / `isMessageReadersAvailable`; мост iOS `loadMessageReaders`, `isReadersAvailable`, `IosMessageReader`. См. «Кто прочитал сообщение» |
 | время правки сообщения | поле `updateTime` сообщения везде, где приходит сообщение (`19`, `49`, `67`, `71`, `128` и др.) | `MaxMessage.updateTime` (`null`, если поля нет или `0`); push правки без поля сохраняет известное время; мост iOS `IosMessage.updateTime`, `IosEvent.updateTime` (`0` — не правилось) |
-| выбор нескольких сообщений | `66` `MSG_DELETE` (весь выбор одним запросом, `forMe`, `itemType` по Komet), `64` `MSG_SEND` со ссылкой `FORWARD` (по одному кадру на сообщение) | `MessagesApi.deleteMessages` / `forwardMessages` (`ForwardBatch`), `MaxClient.deleteMessages` / `forwardMessages`; мост iOS `deleteMessages`, `forwardMessages` (`IosForwardResult`). См. «Выбор сообщений, форматирование, участники, контакты» |
-| форматирование текста | `elements` в `64` и `67`, в каждом пришедшем сообщении | `TextElement`, `TextElementType`, `MaxMessage.textElements`; `MaxClient.sendFormattedText` / `editText`; мост iOS `sendFormattedText`, `editFormattedText`, `IosTextMark`, `IosTextMarkType`, `IosMessage.marks`, `IosEvent.marks` |
-| участники группы | `59` `CHAT_MEMBERS` (страницы по `marker`), роли из `48` (`owner`, `admins`, `adminParticipants`) | `ChatRoles`, `ChatMemberEntry`, `ChatMembersResult`, `ChatMember.presenceInfo`; `MaxClient.loadChatMembers`; мост iOS `loadChatMembers` (`IosChatMembersPage`, `IosGroupMember`) |
-| контакты: имя, удаление, телефонная книга | `34` `UPDATE` / `REMOVE`, `21` `SYNC` | `UsersApi.renameContact` / `removeContact` / `importPhoneBook` (`PhoneBookImport`); `MaxClient.renameContact` / `removeContact` / `importPhoneBook` / `setAddressBook` / `setLocalName` / `displayName`; мост iOS те же имена, `IosPhoneContact`, `IosImportedContact`, `IosContact.displayName` |
+| выбор нескольких сообщений | `66` `MSG_DELETE` (весь выбор одним запросом, `postId?`, `forMe`, `itemType`; ответ `messageIds` / `failedMessageIds`), `64` `MSG_SEND` со ссылкой `FORWARD` (по одному кадру на сообщение) | `MessagesApi.deleteMessages` (`DeleteResult`) / `forwardMessages` (`ForwardBatch`), `MaxClient.deleteMessages` / `forwardMessages`; мост iOS `deleteMessages` (с `postId` — `IosDeleteResult`), `forwardMessages` (`IosForwardResult`). См. «Выбор сообщений, черновики, форматирование, участники, контакты» |
+| форматирование текста | `elements` в `64` и `67`, в каждом пришедшем сообщении и черновике | `TextElement`, `TextElementType`, `TextElementsJson`, `MaxMessage.textElements`; `MaxClient.sendFormattedText` / `editText`; мост iOS `sendFormattedText` и `editMessage` (метки `IosTextMark` или `elementsJson`), `editFormattedText`, `IosMessage.marks` / `elementsJson`, `IosEvent.marks` |
+| черновики на сервере | `176` `DRAFT_SAVE`, `177` `DRAFT_DISCARD`, `drafts` в ответе `19` `LOGIN` | `DraftsApi`, `Drafts`, `MaxDraft`, `MaxState.drafts`; `MaxClient.saveDraft` / `discardDraft` / `drafts`; мост iOS `saveDraft`, `discardDraft`, `drafts()` (`IosDraft`) |
+| участники группы | `59` `CHAT_MEMBERS` (страницы по `marker`, поиск по `query`), роли из `48` (`owner`, `admins`, `adminParticipants`) | `ChatsApi.getChatMembers` / `searchChatMembers`, `MemberListType`, `ChatRoles`, `ChatMemberEntry`, `ChatMembersResult`; `MaxClient.loadChatMembers` / `searchChatMembers`; мост iOS `loadChatMembers` (`IosChatMembersPage`, `IosGroupMember`), `searchChatMembers` |
+| контакты и имена | `34` `UPDATE` / `REMOVE`, `41` `CONTACT_ADD_BY_PHONE`, пуш `131` `NOTIF_CONTACT`; книга устройства — без запросов | `UsersApi.renameContact` / `removeContact` / `addContactByPhone`, `PhoneNumbers`, `ContactNames`; `MaxClient.renameContact` / `removeContact` / `addContactByPhone` / `setAddressBook` / `setLocalName` / `displayName` / `displayLabel`; мост iOS те же имена, `IosPhoneContact`, `IosContact.displayName`, событие `contact` |
 
 ## Печатает: 65 и 129
 
@@ -121,44 +122,71 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 - Загрузка (`ReadersApi.loadMessageReaders`, `MaxClient.loadMessageReaders`): каждое открытие экрана заново спрашивает `48`, чтобы отметки были свежими; свежий чат кладётся в стор. Недоступный чат — пустой список, больше запросов нет. Время и автор сообщения: из стора (загруженные сообщения или `lastMessage` чата), иначе `71` `MSG_GET`; не нашлось — ошибка. Затем `59` (при необходимости, ошибки игнорируются) и `181`. Имена неизвестных пользователей догружаются `CONTACT_INFO` (32) без ошибки при сбое.
 - `74` `MSG_GET_STAT` к этому не относится (просмотры постов каналов) и не используется.
 
-## Выбор сообщений, форматирование, участники, контакты
+## Выбор сообщений, черновики, форматирование, участники, контакты
 
-Схемы — по Komet (`feature/FullStack`, модули `messages`, `contacts`, `chats`) и PyMax; код ни откуда не брали.
+Главный источник — разбор веб-клиента MAX (что он шлёт и как читает ответы); Komet и PyMax — для сверки. Код ни откуда не брали.
 
 ### Выбор нескольких сообщений
 
-- Удаление: один `66` `MSG_DELETE` на весь выбор, `{chatId, messageIds, forMe}`; `forMe: true` — только у себя, `false` — у всех. Komet всегда добавляет `itemType` (`REGULAR`, для отложенных `DELAYED`); ядро шлёт его, только если вызывающий передал `itemType`, иначе тело как у PyMax. Свои удаления сервер обратно не присылает, поэтому `MaxClient.deleteMessages` после ответа сам убирает сообщения из стора (как пуш удаления: последнее сообщение чата пересчитывается).
-- Пересылка: пакетной формы в протоколе нет (ни у Komet, ни у PyMax, ни у kolibri нет списка ссылок или `messageIds` в одном `64`). Как у Komet, каждое сообщение — отдельный `64` `MSG_SEND` с `link: {type: "FORWARD", messageId: "<id строкой>", chatId: <источник>}` и своим отрицательным `cid` (`messageId` строкой, как у PyMax; Komet шлёт числом — какой вид обязателен, не проверено), по порядку списка (передавать от старых к новым). Первая ошибка останавливает остальное: `ForwardBatch.failedIndex` — индекс неотправленного, `sent` — что ушло (в мосте iOS `IosForwardResult.failedAt`, `-1` — всё отправлено, вид ошибки во втором аргументе колбэка). Отправленное попадает в стор.
+- Удаление: один `66` `MSG_DELETE` на весь выбор, `{chatId, postId?, messageIds, forMe}` (`postId` — для комментариев поста канала); `forMe: true` — только у себя, `false` — у всех. Komet добавляет `itemType` (`REGULAR`, для отложенных `DELAYED`); ядро шлёт его, только если вызывающий передал `itemType`. Ответ `{messageIds, failedMessageIds?}`: `DeleteResult.deleted` — удалённые (`messageIds` ответа, без него — запрошенные) без отказанных, `DeleteResult.failed` — `failedMessageIds`. Другие устройства получают пуш `142`; себе сервер, судя по веб-клиенту, удаление не присылает, поэтому `MaxClient.deleteMessages` сам убирает из стора только `deleted` (последнее сообщение чата пересчитывается).
+- Где что: ядро — `MessagesApi.deleteMessages(chatId, messageIds, forMe, itemType, postId): DeleteResult`; `MaxClient.deleteMessages(...)`: `DeleteResult`; мост iOS — прежний `deleteMessages(chatId, messageIds, forEveryone, onResult: (kind, key))` и `deleteMessages(chatId, messageIds, forEveryone, postId, onResult: (IosDeleteResult?, kind, key))`.
+- Пересылка: пакетной формы нет (ни у веб-клиента, ни у Komet, PyMax, kolibri). Каждое сообщение — отдельный `64` `MSG_SEND` с `link: {type: "FORWARD", chatId: <источник>, messageId}` и своим `cid`. `messageId` уходит строкой, как у PyMax (Komet шлёт числом; какой вид обязателен, не проверено). `MaxClient.forwardMessages` сортирует известные стору сообщения по `time` (от старых к новым, неизвестные — после, в данном порядке), необязательный комментарий уходит первым обычным текстом. Первая ошибка останавливает остальное: `ForwardBatch.failedIndex` — индекс неотправленного, `sent` — что ушло (в мосте `IosForwardResult.failedAt`, `-1` — всё отправлено). Пересылка в несколько чатов сразу — цикл на стороне приложения (веб: сначала комментарий во все чаты, потом каждое сообщение во все чаты).
 - Копирование текста — только на клиенте, протокола нет.
+
+### Черновики на сервере
+
+- `176` `DRAFT_SAVE` `{chatId | userId, draft: {text?, elements, replyTo?}}` → `{time}`. Диалоги и «Избранное» адресуются `userId` собеседника (для «Избранного» — свой id), остальные чаты — `chatId` (`Drafts.address`). Пустой текст не шлётся, `elements` — всегда (может быть `[]`). `time` ответа становится `updateTime` черновика.
+- `177` `DRAFT_DISCARD` `{chatId | userId, time}`, `time` — `updateTime` удаляемого черновика (`MaxClient.discardDraft` берёт его из стора; если черновика нет и время не передано, запрос не уходит).
+- Вход: ответ `19` `LOGIN` несёт `drafts: {chats: {saved: {chatId: draft}, discarded: {chatId: time}}, users: {saved: {userId: draft}, discarded: {userId: time}}}`. Ключ `users` переводится в id диалога `me xor userId`. Черновик: `{saveTime, text, elements, replyTo?}`. В сторе (`MaxState.drafts`) побеждает более позднее время (равное заменяет); `discarded` удаляет черновик, если тот не новее времени удаления (веб-клиент удаляет без проверки — небольшое расхождение, чтобы не потерять свежий локальный черновик). При входе другим аккаунтом черновики прежнего сбрасываются.
+- Исправлено: `SyncState.updatedBy` ставил `draftsSync` во время входа, хотя черновики выбрасывались, и сервер больше их не присылал. Теперь `draftsSync` при входе не меняется; ядро черновики между запусками не хранит, поэтому шлёт `-1` и получает все. `CredentialStore` пишет маркер под новым ключом `sync.drafts.v2`, старое значение `sync.drafts` (время входа) не читается и удаляется. `MaxState.draftsSyncTime` — наибольшее `updateTime` из стора, для приложения, которое будет хранить черновики само.
+- Пуши `152` / `153`: веб-клиент их игнорирует, форма не подтверждена — ядро их не разбирает (остаются `MaxEvent.Unknown` с сырым телом).
 
 ### Форматирование текста
 
-- `elements` сообщения: `[{type, from, length, entityId?, entityName?, attributes?}]`. `from` / `length` — в UTF-16 (индексы `String` в Kotlin и `NSString`). Элементы могут перекрываться.
-- Типы (`TextElementType`, в мосте `IosTextMarkType`): `STRONG` (жирный), `EMPHASIZED` (курсив), `UNDERLINE`, `STRIKETHROUGH`, `MONOSPACED`, `HEADING`, `QUOTE`, `LINK` (`attributes.url`), `USER_MENTION` (`entityId` — пользователь, Komet иногда добавляет `entityName`), `ANIMOJI` (`entityId`, `attributes.animojiLottieUrl`). `CODE` (блок кода) есть только у PyMax: принимаем, официальные клиенты шлют `MONOSPACED`. Незнакомый тип с сервера сохраняется как есть.
-- Отправка и правка: `64` и `67` с `elements` в порядке ключей Komet. Элемент за пределами текста отбрасывается. Пустой список при правке снимает форматирование (так уходил и прежний `editMessage`). Ответ `67` приходит без реакций; `StateReducer.putEditedMessage` кладёт правку в стор, сохраняя известные реакции и время правки.
-- Приём: `MaxMessage.textElements` (битые элементы пропускаются), в мосте `IosMessage.marks` / `IosEvent.marks`; сырые `elements` по-прежнему лежат в `contentJson`.
+- `elements`: `[{type, from, length, entityId?, entityName?, attributes?}]`. `from` / `length` — в единицах UTF-16 (индексы `String` в Kotlin и `NSString`). Элементы могут перекрываться.
+- Типы (`TextElementType`, в мосте `IosTextMarkType`): `STRONG` (жирный), `EMPHASIZED` (курсив), `UNDERLINE`, `STRIKETHROUGH`, `MONOSPACED`, `LINK` (`attributes.url`), `QUOTE`, `HEADING`, `USER_MENTION` (`entityId` — пользователь, бывает `entityName`), `ANIMOJI` (`entityId`, `attributes.animojiLottieUrl`).
+- Чтение — как у веб-клиента: `CODE` читается как `MONOSPACED`; незнакомый тип сохраняется как есть; нет `from` — 0; нет `length` — до конца текста; элементы нулевой длины выбрасываются.
+- Отправка и правка: `64` и `67` с `elements`. Элемент за пределами текста отбрасывается. `67` всегда несёт полный список, поле не опускается; `elements: []` снимает форматирование. Ответ `67` приходит без реакций; `StateReducer.putEditedMessage` сохраняет известные реакции.
+- Мост iOS: `sendFormattedText` / `editMessage` принимают метки (`IosTextMark`) или `elementsJson` — JSON-массив тех же объектов (`TextElementsJson`); битый JSON — ошибка `UNKNOWN` до отправки. Исправлено: `editMessage(chatId, messageId, text)` без форматирования раньше слал `[]` и стирал разметку; теперь сохраняет форматирование сообщения из стора там, где оно помещается в новый текст. Приём: `MaxMessage.textElements`, в мосте `IosMessage.marks` / `IosMessage.elementsJson` / `IosEvent.marks`.
 
 ### Участники группы
 
-- `59` `CHAT_MEMBERS` `{type: "MEMBER", chatId, marker, count}`: первая страница — `marker` 0, дальше `marker` из ответа. Конец (`ChatMembersResult.nextMarker == null`, в мосте пустая строка): в ответе нет `marker` или он 0, повторяет запрошенный, или страница пустая.
-- Роли (`ChatRoles`) берутся из чата (`48` `CHAT_INFO` или список чатов): `owner` — владелец, `admins` — список id админов, `adminParticipants` — `{userId: {permissions, alias}}` (биты прав как прислал сервер, `alias` — подпись админа). Обе формы админов объединяются. Если чата нет в сторе, `MaxClient.loadChatMembers` перед первой страницей спрашивает `48` (без ошибки при сбое: тогда все — обычные участники).
-- Профили участников уходят в стор, `presence` участника — тоже, если она новее известной.
+- `59` `CHAT_MEMBERS` `{chatId, type: "MEMBER", marker, count: 50}`: первая страница — `marker` 0, дальше `marker` из ответа. Ответ без `marker` — последняя страница: `ChatMembersPage.marker == null` (раньше ядро превращало отсутствие в 0, и загрузчик мог начать сначала). Конец (`ChatMembersResult.nextMarker == null`, в мосте пустая строка): нет `marker`, он 0, повторяет запрошенный или страница пустая. Загрузчик «кто прочитал» (`ReadersApi`) останавливается так же.
+- Поиск: `59` `{chatId, type, query}` (`ChatsApi.searchChatMembers`, `MaxClient.searchChatMembers`, мост `searchChatMembers`). Типы списка (`MemberListType`): `MEMBER`, `ADMIN`, `BLOCKED_MEMBER`, `JOIN_REQUEST`, `COMMENTS_BLACKLIST`.
+- Роли (`ChatRoles`) — из чата (`48` `CHAT_INFO` или список чатов): `owner` — владелец, `admins` — id админов, `adminParticipants` — `{userId: {permissions, alias, inviterId?}}` (биты прав как прислал сервер). Если чата нет в сторе, `MaxClient.loadChatMembers` перед первой страницей спрашивает `48` (без ошибки при сбое: тогда все — обычные участники). Профили и `presence` (если новее) уходят в стор.
 
 ### Контакты
 
-- Переименовать: `34` `CONTACT_UPDATE` `{contactId, action: "UPDATE", firstName, lastName}` (Komet `updateContact`), ответ `contact`. Новое имя — запись `CUSTOM` в `names`.
-- Удалить: `34` `{contactId, action: "REMOVE"}`. Стор убирает id из списка контактов и запись `CUSTOM` у пользователя (как Komet); сам пользователь и чат с ним остаются.
-- Импорт телефонной книги: `21` `SYNC` `{contactList: {<телефон как есть>: {firstName}}}` (PyMax `ImportContactsPayload`; фамилию не шлёт ни один референс). Ответ `contacts` — найденные пользователи MAX. Телефон из запроса сопоставляется с `phone` пользователя по цифрам; если в ответе есть `phones` (`{телефон из запроса: номер на сервере}`, упомянут только в комментарии PyMax), используется он. Код страны не угадываем: «8 999…» без `phones` не совпадёт с «7999…». Импортированные пользователи не становятся контактами.
+- Переименовать: `34` `CONTACT_UPDATE` `{contactId, action: "UPDATE", firstName, lastName}`; пустая фамилия уходит `null`, каждое имя не длиннее 64 символов. Ответ `{contact}`, имя становится записью `CUSTOM`.
+- Удалить: `34` `{contactId, action: "REMOVE"}`, отмена — `ADD`. Стор убирает id из контактов и запись `CUSTOM`; пользователь и чат остаются (с контактом из ответа, если он есть).
+- Добавить по телефону: `41` `CONTACT_ADD_BY_PHONE` `{phone, firstName?, lastName?}` → `{contact, new}` (`ContactByPhone.isNew`).
+- Пуш `131` `NOTIF_CONTACT` `{contact}` (`MaxEvent.ContactUpdated`): стор обновляет пользователя, если `updateTime` не старее известного; в мосте — событие `contact`.
+- Книга устройства на сервер не отправляется: `21` `SYNC` не используется (форма не подтверждена), импорт удалён. Ядро только принимает локальные имена (`setAddressBook`, `setLocalName`) и сопоставляет их по нормализованному телефону.
+
+### Нормализация телефона (`PhoneNumbers.normalize`)
+
+Ядро следует правилам, фикстуры к которым лежат в Orbitle `test-fixtures/names/` (по одному тесту на правило в `ContactsEditTest`, правило 7 — в `ContactNamesStateTest`):
+
+1. убираются пробелы, дефисы, скобки и точки; ведущий `+` сохраняется;
+2. ведущие `00` считаются `+`;
+3. 11 цифр без `+`, начинаются с 8 → `+7…`; 11 цифр с 7 → добавляется `+`;
+4. ровно 10 цифр без `+` → `+7` перед ними;
+5. иностранные номера сохраняют `+`; результат всегда с `+`;
+6. меньше 7 или больше 15 цифр (или посторонние символы) → `null`;
+7. один нормализованный номер дважды в книге → побеждает первое непустое имя.
 
 ### Какое имя показывать
 
-`MaxState.displayName(userId)` (`ContactNames.resolve`, `MaxClient.displayName`, мост iOS `displayName` и все имена, которые отдаёт мост: заголовки диалогов, авторы, участники, звонки, `IosContact.displayName`):
+Один резолвер в ядре — `ContactNames.resolve` (`MaxState.displayName`, `MaxClient.displayName`, мост iOS `displayName` и все имена моста: заголовки диалогов, авторы, участники, звонки, `IosContact.displayName`):
 
-1. имя контакта, заданное этим аккаунтом на сервере — запись `CUSTOM` (`34` `ADD` / `UPDATE`); внутри неё `firstName lastName` важнее `name`;
-2. имя из телефонной книги устройства: локальное имя пользователя (`setLocalName`, совпадения импорта), иначе запись книги с тем же номером (`setAddressBook`, записи импорта);
-3. имя профиля — запись `ONEME`, иначе первая запись `names` (здесь `name` важнее `firstName lastName`, как и раньше).
+1. имя из книги устройства (локальное имя пользователя, иначе запись книги с тем же нормализованным номером);
+2. имя контакта, заданное этим аккаунтом (`CUSTOM`);
+3. собственное имя профиля (`ONEME`);
+4. первая запись `names`;
+5. телефон (`+7…`);
+6. «Участник» (`ContactNames.label`, `MaxState.displayLabel`, `MaxClient.displayLabel`).
 
-Книга и локальные имена — только на устройстве, на сервер не уходят (кроме явного импорта `21`). Переживают смену аккаунта в `LOGIN`, сбрасываются при выходе (`MaxStore.clear`).
+Книга и локальные имена — только на устройстве. Переживают смену аккаунта в `LOGIN`, сбрасываются при выходе (`MaxStore.clear`).
 
 ## Блокеры: нужен снятый трафик
 
@@ -172,8 +200,7 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 - 2FA/пароль: `101`, `116`
 - транскрипция `202`/`293`, stories `208`–`218`, `220`
 - `LOG` (`5`) — телеметрия, намеренно не отправляется
-- черновики на сервере: `176` `DRAFT_SAVE`, `177` `DRAFT_DISCARD`, пуши `152` `NOTIF_DRAFT`, `153` `NOTIF_DRAFT_DISCARD`. Во всех референсах есть только номера опкодов и `draftsSync` в `LOGIN`; тел запросов и ответов нет (Komet хранит черновики локально). Неизвестно, где черновик приходит при входе и в чате
-- `131` `NOTIF_CONTACT` — форма пуша об изменении контакта неизвестна; `41` `CONTACT_ADD_BY_PHONE` (`{phone, firstName, lastName}` у Komet) пока не в таблице ядра
+- пуши черновиков `152` `NOTIF_DRAFT`, `153` `NOTIF_DRAFT_DISCARD` — веб-клиент их игнорирует, форма не подтверждена; `21` `SYNC` (загрузка книги) — не подтверждён и не используется
 
 QR-вход на стороне нового устройства (`288`/`289`/`291`) у PyMax требует `deviceType = WEB`; это
 противоречит правилу «клиент всегда Android», поэтому не реализован. Подтверждение QR с телефона
