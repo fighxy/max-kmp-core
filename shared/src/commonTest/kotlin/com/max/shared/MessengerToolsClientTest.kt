@@ -134,6 +134,27 @@ class MessengerToolsClientTest {
     }
 
     @Test
+    fun forwardingOrdersEqualTimesByIdAndTrimsTheComment() = runTest {
+        val chats = listOf(mapOf("id" to 7, "type" to "CHAT", "status" to "ACTIVE"), mapOf("id" to 8, "type" to "CHAT", "status" to "ACTIVE"))
+        val (c, conn) = loggedIn(backgroundScope, chats, mapOf("7" to listOf(message(100, 300), message(99, 300))))
+        val batch = async { c.forwardMessages(toChatId = 8, fromChatId = 7, messageIds = listOf(100, 99), comment = "  смотри  ") }
+        runCurrent()
+        assertEquals("смотри", (conn.answer(Opcode.MSG_SEND, mapOf("message" to message(200, 500, "смотри")))["message"] as Map<*, *>)["text"])
+        val ids = mutableListOf<Any?>()
+        for (id in 201L..202L) {
+            runCurrent()
+            ids += ((conn.answer(Opcode.MSG_SEND, mapOf("message" to message(id, 500 + id)))["message"] as Map<*, *>)["link"] as Map<*, *>)["messageId"]
+        }
+        assertTrue(batch.await().complete)
+        assertEquals<List<Any?>>(listOf("99", "100"), ids)
+        // a blank comment is not sent
+        val quietBatch = async { c.forwardMessages(toChatId = 8, fromChatId = 7, messageIds = listOf(99), comment = "   ") }
+        runCurrent()
+        assertEquals("99", ((conn.answer(Opcode.MSG_SEND, mapOf("message" to message(203, 600)))["message"] as Map<*, *>)["link"] as Map<*, *>)["messageId"])
+        assertTrue(quietBatch.await().complete)
+    }
+
+    @Test
     fun forwardingSeveralStopsAtTheFirstFailureAndKeepsTheSentOnes() = runTest {
         val chats = listOf(mapOf("id" to 7, "type" to "CHAT", "status" to "ACTIVE"), mapOf("id" to 8, "type" to "CHAT", "status" to "ACTIVE"))
         val (c, conn) = loggedIn(backgroundScope, chats)

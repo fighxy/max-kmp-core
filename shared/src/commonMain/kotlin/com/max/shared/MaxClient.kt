@@ -25,6 +25,8 @@ import com.max.core.api.MaxUser
 import com.max.core.api.MessageReader
 import com.max.core.api.MessageReaders
 import com.max.core.api.PhoneContact
+import com.max.core.api.PresenceInfo
+import com.max.core.api.PresenceStatus
 import com.max.core.api.TextElement
 import com.max.core.api.Transcription
 import com.max.core.api.PrivacySettings
@@ -82,7 +84,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -107,6 +112,12 @@ import kotlinx.coroutines.withContext
  * @property gapFillCount messages requested per history page when filling a gap (PyMax history default 40).
  * @property gapFillPageLimit how many pages to walk per chat. The hole stays open when the cap is
  *   hit, or when a page repeats the same oldest id. Values below 1 are treated as 1.
+ * @property presenceSweepIntervalMs how often "online" entries older than the server's
+ *   `presence-ttl` are degraded in [MaxClient.store] ([MaxClient.expirePresence]); `0` or less
+ *   turns the periodic sweep off (reads through [MaxClient.presenceOf] still apply the TTL).
+ * @property refreshPresenceOnLogin after a `LOGIN` of the same account, users that were "online"
+ *   but are not in the reply's `presence` (a delta) are degraded and asked again with
+ *   `CONTACT_PRESENCE` 35 in the background ([MaxClient.loadPresence], best effort).
  */
 data class MaxClientConfig(
     val host: String = DEFAULT_HOST,
@@ -121,6 +132,8 @@ data class MaxClientConfig(
     val fillGapsOnReconnect: Boolean = true,
     val gapFillCount: Int = 40,
     val gapFillPageLimit: Int = 16,
+    val presenceSweepIntervalMs: Long = 15_000,
+    val refreshPresenceOnLogin: Boolean = true,
 )
 
 /** High-level state of a [MaxClient]. */
@@ -225,6 +238,11 @@ class MaxClient @Throws(Exception::class) constructor(
      */
     private var serverConfigLoaded = false
     private var gapJob: Job? = null
+    private var presenceJob: Job? = null
+
+    /** `interactive` for PING and `LOGIN` ([setInteractive]); the user is looking at the app. */
+    @kotlin.concurrent.Volatile
+    private var interactiveFlag: Boolean = config.transport.pingInteractive
 
     init {
         DeviceProfile.requireAndroid(config.userAgent)
@@ -299,10 +317,41 @@ class MaxClient @Throws(Exception::class) constructor(
      */
     val accountConfig: StateFlow<AccountConfig?> = _accountConfig.asStateFlow()
 
+    private val _appliedEvents = MutableSharedFlow<MaxEvent>(extraBufferCapacity = APPLIED_EVENTS_BUFFER)
+
+    /**
+     * Every push, in order, emitted only once it has been applied: [store] already holds it (the
+     * router's first stage) and a `NOTIF_CONFIG` 134 ([MaxEvent.ConfigUpdated]) is already merged
+     * into [accountConfig]. Covers all [MaxEvent]s the router sees, among them presence 132,
+     * drafts 152 / 153, contacts 131 and config 134; a collector can read the new state right
+     * away without racing the merge. The state it reads may already contain later pushes too
+     * (the store runs ahead of this stream), never less than the event. Hot, no replay, lossless while a collector keeps up: a
+     * collector more than [APPLIED_EVENTS_BUFFER] events behind delays only the router's handler
+     * stage (handlers registered after the client's own), never [store].
+     */
+    val appliedEvents: SharedFlow<MaxEvent> = _appliedEvents.asSharedFlow()
+
+    /**
+     * Called with a description and the error when a background step of the client fails without
+     * a caller to tell: today the automatic `DRAFT_DISCARD` after a send. Must not throw.
+     */
+    @kotlin.concurrent.Volatile
+    var onBackgroundError: ((String, Throwable) -> Unit)? = null
+
     init {
         // registered before any caller's handler, so those already see the merged config
         router.on<MaxEvent.ConfigUpdated> { applyConfigPush(it) }
+        // after the config merge and the store (stage 1): the "applied" stream
+        router.on<MaxEvent> { _appliedEvents.emit(it) }
         router.start(this.scope)
+        if (config.presenceSweepIntervalMs > 0) {
+            presenceJob = this.scope.launch {
+                while (true) {
+                    delay(config.presenceSweepIntervalMs)
+                    expirePresence()
+                }
+            }
+        }
         this.scope.launch {
             session.state.collect { s ->
                 if (s is SessionState.Failed && s.cause is InvalidTokenException) {
@@ -344,7 +393,7 @@ class MaxClient @Throws(Exception::class) constructor(
                 // [store] is not persisted: saved markers describe a snapshot this process does not
                 // have, and a LOGIN with them would return only the delta. Ask for everything instead.
                 val sync = if (snapshotLoaded) c.sync else SyncState()
-                tokenLogin.value = TokenLogin(c.token, device, config.fingerprint, sync)
+                tokenLogin.value = TokenLogin(c.token, device, config.fingerprint, sync, interactiveFlag)
             }
         }
         try {
@@ -409,7 +458,7 @@ class MaxClient @Throws(Exception::class) constructor(
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun loginWithToken(token: String): LoginResult {
-        val login = TokenLogin(token, device, config.fingerprint)
+        val login = TokenLogin(token, device, config.fingerprint, interactive = interactiveFlag)
         lifecycle.withLock { tokenLogin.value = login }
         val handshake = session.connect()
         if (login.result.value == null) {
@@ -485,6 +534,7 @@ class MaxClient @Throws(Exception::class) constructor(
 
     private suspend fun onLoggedIn(login: TokenLogin) {
         val r = login.result.value ?: return
+        var stale: List<Long> = emptyList()
         val fillEpoch = lifecycle.withLock {
             if (tokenLogin.value !== login) return@withLock null
             sessionEpoch += 1
@@ -494,7 +544,15 @@ class MaxClient @Throws(Exception::class) constructor(
             val sameAccount = r.userId == null || loggedIn.value == null || r.userId == loggedIn.value
             // config first: an observer of the store never sees the new chats with the old (or no) mutes
             applyLoginConfig(login, r.raw, login.login2Result.value?.raw, sameAccount)
+            // "online" users the reply does not refresh are degraded by applyLogin; ask them again
+            val before = store.state.value
+            val refreshed = com.max.core.api.Presences.parseMap(r.raw["presence"])?.keys.orEmpty()
+            if (sameAccount) {
+                stale = before.presence.filter { (id, p) -> p.status == PresenceStatus.ONLINE && id !in refreshed }.keys.toList()
+            }
             store.applyLogin(r)
+            // the reply's presence is in the store now: the next LOGIN may ask only for the delta
+            login.presenceApplied(r)
             snapshotLoaded = true
             login.login2Result.value?.let { r2 -> r2.contacts.mapNotNull(com.max.core.api.MaxUser::from).let(store::putContacts) }
             // r already carries the LOGIN2 profile; a reconnect without a profile keeps this login's id
@@ -506,6 +564,17 @@ class MaxClient @Throws(Exception::class) constructor(
             if (relogin && config.fillGapsOnReconnect) epoch else null
         }
         if (fillEpoch != null) scheduleGapFill(fillEpoch)
+        if (stale.isNotEmpty() && config.refreshPresenceOnLogin) {
+            scope.launch {
+                try {
+                    loadPresence(stale)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // best effort: they stay offline until a push or the next request
+                }
+            }
+        }
     }
 
     /**
@@ -797,14 +866,78 @@ class MaxClient @Throws(Exception::class) constructor(
 
     private fun putMembers(members: List<ChatMemberEntry>) {
         store.putUsers(members.mapNotNull { it.user })
+        val fresh = LinkedHashMap<Long, PresenceInfo>()
+        val stored = store.state.value.presence
         for (m in members) {
             val id = m.userId ?: continue
             val p = m.member.presenceInfo ?: continue
             // A live NOTIF_PRESENCE may be newer than the page.
-            val known = store.state.value.presence[id]?.seen
+            val known = stored[id]?.seen
             if (known != null && (p.seen == null || p.seen!! <= known)) continue
-            store.apply(MaxEvent.Presence(id, p.seen, p.status, Opcode.CHAT_MEMBERS.value, m.member.presence))
+            fresh[id] = p
         }
+        store.putPresence(fresh)
+    }
+
+    // ---- Presence -------------------------------------------------------------------------------
+
+    /**
+     * How long a presence is trusted without a refresh, in ms: `presence-ttl` of the server config
+     * ([AccountConfig.presenceTtlSeconds]), 300 s while the config is unknown.
+     */
+    val presenceTtlMs: Long
+        get() = (_accountConfig.value?.presenceTtlSeconds ?: AccountConfig.DEFAULT_PRESENCE_TTL_S) * 1000
+
+    /**
+     * Presence of [userId] now ([MaxState.presenceAt] with [presenceTtlMs]): an "online" that was
+     * not refreshed within the TTL reads as offline with the last known time. `null` when unknown.
+     */
+    fun presenceOf(userId: Long): PresenceInfo? = store.presenceAt(userId, presenceTtlMs)
+
+    /** [PresenceStatus] code of [presenceOf]: `-1` unknown, `0` offline, `1` online, `2` recently, `3` long ago. */
+    fun presenceStatusOf(userId: Long): Int = PresenceStatus.of(presenceOf(userId))
+
+    /**
+     * Degrades in [store] every "online" not refreshed within [presenceTtlMs] (offline, `seen` =
+     * the last time it was known online). The client runs it every
+     * [MaxClientConfig.presenceSweepIntervalMs]; returns the users that changed.
+     */
+    fun expirePresence(): List<Long> = store.expirePresence(presenceTtlMs)
+
+    /**
+     * Asks the presence of [userIds] (`CONTACT_PRESENCE` 35 `{contactIds}`, batches of 100,
+     * [com.max.core.api.UsersApi.getPresence]) and puts it into [store] (refresh time now, a
+     * missing `seen` keeps the stored time). An id the server leaves out is
+     * [PresenceStatus.LONG_AGO]. Duplicates are dropped; an empty list sends nothing.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun loadPresence(userIds: List<Long>): Map<Long, PresenceInfo> {
+        val ids = userIds.distinct()
+        if (ids.isEmpty()) return emptyMap()
+        val t = ticket()
+        val presence = api.users.getPresence(ids)
+        commit(t) { store.putPresence(presence) }
+        return presence
+    }
+
+    /** Whether the app is in the foreground ([setInteractive]); starts as [TransportConfig.pingInteractive]. */
+    val isInteractive: Boolean get() = interactiveFlag
+
+    /**
+     * Tells the server whether the user is looking at the app: `true` in the foreground, `false`
+     * in the background. Every later `PING` 1 carries `{interactive}` (the MAX web client sends
+     * "not idle", PyMax `set_presence`, kolibri `set_ping_interactive`), and so does the `LOGIN`
+     * of the next reconnect. When the flag changes on a live connection one `PING` goes out at
+     * once (as kolibri does), so the server need not wait for the next 30 s tick. The references
+     * have no explicit "going offline" request: after `interactive: false` the server decides the
+     * presence by itself. Returns `true` when that immediate `PING` was written; never throws
+     * for a send error.
+     */
+    @Throws(CancellationException::class)
+    suspend fun setInteractive(interactive: Boolean): Boolean {
+        interactiveFlag = interactive
+        tokenLogin.value?.interactive = interactive
+        return session.transport.setPingInteractive(interactive)
     }
 
     /**
@@ -953,8 +1086,9 @@ class MaxClient @Throws(Exception::class) constructor(
     /**
      * Renames contact [userId] for this account (`CONTACT_UPDATE` 34, `{contactId, action:
      * "UPDATE", firstName, lastName}`; a blank [lastName] is sent as `null`, each name at most
-     * 64 characters). The renamed contact goes into [store]; its name is the `CUSTOM` entry
-     * ([MaxState.displayName]: only the address book is above it).
+     * 64 characters). An empty [firstName] is allowed (web client): with a last name the server
+     * uses the person's own first name, with both empty the original names come back. The
+     * renamed contact goes into [store]; its name is the `CUSTOM` entry ([MaxState.displayName]).
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun renameContact(userId: Long, firstName: String, lastName: String? = null): MaxUser {
@@ -1002,16 +1136,26 @@ class MaxClient @Throws(Exception::class) constructor(
     fun setLocalName(userId: Long, name: String?) = store.setLocalName(userId, name)
 
     /**
+     * The name rule of [displayName] ([MaxState.preferAddressBookNames]): `true` (default) the
+     * address book wins over the contact name this account set, `false` the contact name wins.
+     * A device setting kept in [store]; it survives logout and account switches.
+     */
+    var preferAddressBookNames: Boolean
+        get() = store.state.value.preferAddressBookNames
+        set(value) = store.setPreferAddressBookNames(value)
+
+    /**
      * The name to show for [userId]: address book, else the own contact name (`CUSTOM`), else the
      * own profile name (`ONEME`), else the first `names` entry, else the phone; `null` when
-     * nothing is known ([displayLabel] falls back to "Участник").
+     * nothing is known ([displayLabel] falls back to "Участник"). With [preferAddressBookNames]
+     * `false` the contact name comes before the address book.
      */
     fun displayName(userId: Long): String? = store.state.value.displayName(userId)
 
     /** [displayName] or "Участник". */
     fun displayLabel(userId: Long): String = store.state.value.displayLabel(userId)
 
-    /** Server drafts kept in [store] by chat id (from `LOGIN` and [saveDraft]). */
+    /** Server drafts kept in [store] by chat id (from `LOGIN`, [saveDraft] and the pushes 152 / 153). */
     val drafts: Map<Long, MaxDraft> get() = store.state.value.drafts
 
     /**
@@ -1108,13 +1252,44 @@ class MaxClient @Throws(Exception::class) constructor(
     /**
      * Sends a text message and adds the server's copy to [store] (own messages are not pushed
      * back): it becomes the chat's last message and moves the chat up the list; unread stays.
+     * A server draft of [chatId] in [store] is cleared and discarded on the server afterwards
+     * (once; a failed `DRAFT_DISCARD` goes to [onBackgroundError], the send still succeeds).
      */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun sendText(chatId: Long, text: String, replyTo: Long? = null, elements: List<Map<String, Any?>> = emptyList()): MaxMessage {
+    suspend fun sendText(chatId: Long, text: String, replyTo: Long? = null, elements: List<Map<String, Any?>> = emptyList()): MaxMessage =
+        sendTextImpl(chatId, text, replyTo, elements, discardDraft = true)
+
+    private suspend fun sendTextImpl(chatId: Long, text: String, replyTo: Long?, elements: List<Map<String, Any?>>, discardDraft: Boolean): MaxMessage {
         val t = ticket()
         val message = api.messages.sendMessage(chatId, text, replyTo, elements = elements)
-        commit(t) { store.putSentMessage(chatId, message) }
+        val draft = commit(t) {
+            store.putSentMessage(chatId, message)
+            if (discardDraft) store.takeDraft(chatId) else null
+        }
+        draft?.let { discardSentDraft(t, it) }
         return message
+    }
+
+    /**
+     * After a successful send into a chat with a stored draft (MAX web client: the draft is sent,
+     * then discarded on the server): the draft was already taken out of [store] atomically
+     * ([MaxStore.takeDraft], so of two sends only one gets it); here `DRAFT_DISCARD` 177 goes out
+     * with its time, in the background. A failure goes to [onBackgroundError], never to the
+     * sender: the server then keeps the draft until it is replaced or discarded elsewhere.
+     */
+    private fun discardSentDraft(t: Ticket, draft: MaxDraft) {
+        val state = store.state.value
+        val address = Drafts.address(draft.chatId, state.chats[draft.chatId], state.me)
+        scope.launch {
+            try {
+                if (t.gen != lifecycle.withLock { accountGen }) return@launch
+                api.drafts.discardDraft(address, draft.updateTime)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                runCatching { onBackgroundError?.invoke("DRAFT_DISCARD after send to ${draft.chatId} failed", e) }
+            }
+        }
     }
 
     /**
@@ -1167,8 +1342,9 @@ class MaxClient @Throws(Exception::class) constructor(
     /**
      * Forwards the selected messages of [fromChatId] to [toChatId], one `MSG_SEND` with a
      * `FORWARD` link per message (the protocol has no batch form). Messages known to [store] are
-     * sent oldest first (by `time`), the rest keep their place after them in the given order. An
-     * optional [comment] is sent first as a plain text message. The first failure stops the rest
+     * sent oldest first (by `time`, equal times by id), the rest keep their place after them in
+     * the given order. An optional [comment] is sent first as a plain text message, trimmed (a
+     * blank one is skipped); it leaves the target's draft alone. The first failure stops the rest
      * ([ForwardBatch.failedIndex]); the messages sent so far go into [store] either way.
      */
     @Throws(CancellationException::class, Exception::class)
@@ -1182,9 +1358,10 @@ class MaxClient @Throws(Exception::class) constructor(
         require(messageIds.isNotEmpty()) { "messageIds must not be empty" }
         val times = store.state.value.messagesOf(fromChatId).associate { it.id to it.time }
         val ordered = messageIds.distinct().withIndex()
-            .sortedWith(compareBy({ times[it.value] == null }, { times[it.value] ?: 0L }, { it.index }))
+            .sortedWith(compareBy({ times[it.value] == null }, { times[it.value] ?: 0L }, { if (times[it.value] == null) 0L else it.value }, { it.index }))
             .map { it.value }
-        if (!comment.isNullOrBlank()) sendText(toChatId, comment)
+        val note = comment?.trim().orEmpty()
+        if (note.isNotEmpty()) sendTextImpl(toChatId, note, null, emptyList(), discardDraft = false)
         val t = ticket()
         val batch = api.messages.forwardMessages(toChatId, fromChatId, ordered, notify)
         commit(t) { batch.sent.forEach { store.putSentMessage(toChatId, it) } }
@@ -1244,7 +1421,8 @@ class MaxClient @Throws(Exception::class) constructor(
      * Sends ready [attachments] (`MSG_SEND` 64 `attaches`) with an optional caption, and adds the
      * server's copy to [store] like [sendText]. While the server still processes an upload
      * (`attachment.not.ready`) the frame is sent again once a second, up to
-     * [ATTACHMENT_SEND_ATTEMPTS] times.
+     * [ATTACHMENT_SEND_ATTEMPTS] times. Clears the chat's draft like [sendText] ([sendContact] and
+     * [sendSticker] leave it).
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun sendAttachments(
@@ -1252,6 +1430,14 @@ class MaxClient @Throws(Exception::class) constructor(
         attachments: List<OutgoingAttachment>,
         text: String? = null,
         replyTo: Long? = null,
+    ): MaxMessage = sendAttachmentsImpl(chatId, attachments, text, replyTo, discardDraft = true)
+
+    private suspend fun sendAttachmentsImpl(
+        chatId: Long,
+        attachments: List<OutgoingAttachment>,
+        text: String?,
+        replyTo: Long?,
+        discardDraft: Boolean,
     ): MaxMessage {
         val t = ticket()
         val message = media.sendMessage(
@@ -1261,19 +1447,23 @@ class MaxClient @Throws(Exception::class) constructor(
             replyTo,
             notReadyAttempts = ATTACHMENT_SEND_ATTEMPTS,
         )
-        commit(t) { store.putSentMessage(chatId, message) }
+        val draft = commit(t) {
+            store.putSentMessage(chatId, message)
+            if (discardDraft) store.takeDraft(chatId) else null
+        }
+        draft?.let { discardSentDraft(t, it) }
         return message
     }
 
     /** Sends the card of MAX user [contactId] (`{_type: CONTACT, contactId}`), see [sendAttachments]. */
     @Throws(CancellationException::class, Exception::class)
     suspend fun sendContact(chatId: Long, contactId: Long, replyTo: Long? = null): MaxMessage =
-        sendAttachments(chatId, listOf(OutgoingAttachment.Contact(contactId)), null, replyTo)
+        sendAttachmentsImpl(chatId, listOf(OutgoingAttachment.Contact(contactId)), null, replyTo, discardDraft = false)
 
     /** Sends sticker [stickerId] of the server catalog (`{_type: STICKER, stickerId}`), see [sendAttachments]. */
     @Throws(CancellationException::class, Exception::class)
     suspend fun sendSticker(chatId: Long, stickerId: Long, replyTo: Long? = null): MaxMessage =
-        sendAttachments(chatId, listOf(OutgoingAttachment.Sticker(stickerId)), null, replyTo)
+        sendAttachmentsImpl(chatId, listOf(OutgoingAttachment.Sticker(stickerId)), null, replyTo, discardDraft = false)
 
     // ---- Stickers -------------------------------------------------------------------------------
 
@@ -1463,6 +1653,7 @@ class MaxClient @Throws(Exception::class) constructor(
                 running
             }
             gap?.cancelAndJoin()
+            presenceJob?.cancel()
             router.stop()
             session.disconnect()
             loggedInFlag.value = false
@@ -1501,6 +1692,9 @@ private fun Any?.asMarker(): Long? = when (this) {
  * `attachment.not.ready`, a second apart (Komet waits up to 30 s for a video).
  */
 const val ATTACHMENT_SEND_ATTEMPTS: Int = 30
+
+/** Events [MaxClient.appliedEvents] buffers for a slow collector before the handler stage waits. */
+const val APPLIED_EVENTS_BUFFER: Int = 1024
 
 /** Users per `CONTACT_INFO` request when [MaxClient.loadMessageReaders] names the readers. */
 private const val READER_USERS_PAGE = 100
