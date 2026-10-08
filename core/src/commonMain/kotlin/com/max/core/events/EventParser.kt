@@ -143,6 +143,23 @@ object EventParser {
             val result = com.max.core.api.Transcription.from(map)
             if (result?.messageId == null) null else MaxEvent.TranscriptionReady(result, opcode, raw)
         }
+        Opcode.NOTIF_MSG_DELAYED.value -> {
+            val chatId = map["chatId"].long()
+            val message = com.max.core.api.MaxMessage.from(map["message"], chatId)
+            val ids = (map["messageIds"] as? List<*>)?.mapNotNull { it.long() }.orEmpty()
+            val id = chatId?.takeIf { it != 0L } ?: message?.chatId
+            if (id == null && ids.isEmpty()) null
+            else MaxEvent.DelayedUpdated(
+                chatId = id ?: 0L,
+                userId = map["userId"].long()?.takeIf { it != 0L },
+                updateType = com.max.core.api.DelayedUpdate.from(map["updateTypeId"]),
+                message = message,
+                messageIds = ids,
+                lastDelayedUpdateTime = map["lastDelayedUpdateTime"].long(),
+                opcode = opcode,
+                raw = raw,
+            )
+        }
         else -> null
     }
 

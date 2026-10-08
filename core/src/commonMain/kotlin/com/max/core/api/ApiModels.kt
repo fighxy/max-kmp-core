@@ -55,6 +55,17 @@ data class MaxMessage(
      */
     val textElements: List<TextElement> get() = TextElement.parseAll(elements, text.length)
 
+    /**
+     * When a scheduled message should be posted (`delayedAttributes.timeToFire`, epoch ms).
+     * Missing, or the app's default `-1`, is `null`.
+     */
+    val fireAt: Long?
+        get() = (raw["delayedAttributes"] as? Map<*, *>)?.get("timeToFire").asLong()?.takeIf { it >= 0 }
+
+    /** `delayedAttributes.notifySender`. `null` when the message has no delayed attributes. */
+    val notifySenderOnFire: Boolean?
+        get() = ((raw["delayedAttributes"] as? Map<*, *>)?.get("notifySender") as? Boolean)
+
     companion object {
         /** Parses [value]; `null` if it is not a map or lacks `id` / `time` / `type`. */
         fun from(value: Any?, fallbackChatId: Long? = null): MaxMessage? {

@@ -61,3 +61,25 @@ data class CommentsInfo(val postId: Long, val totalCount: Int?, val raw: Map<*, 
 data class DelayedSend(val timeToFire: Long, val notifySender: Boolean = true) {
     fun toPayload(): Map<String, Any?> = linkedMapOf("timeToFire" to timeToFire, "notifySender" to notifySender)
 }
+
+/**
+ * One poll from `GET_POLL_UPDATES` 306. The reply item has no `_type`; keys are the app's
+ * `pollId`, `title`, `answers` (`text`, `answerId`), `settings`, `version`, `state`.
+ */
+internal fun pollUpdate(value: Any?): com.max.core.media.Attachment.Poll? {
+    val m = value as? Map<*, *> ?: return null
+    val id = m["pollId"].asLong() ?: return null
+    val answers = (m["answers"] as? List<*>).orEmpty().mapNotNull { a ->
+        val am = a as? Map<*, *> ?: return@mapNotNull null
+        PollAnswer(am["text"] as? String ?: return@mapNotNull null, am["answerId"].asLong())
+    }
+    return com.max.core.media.Attachment.Poll(
+        pollId = id,
+        version = m["version"].asLong()?.toInt(),
+        title = m["title"] as? String,
+        answers = answers,
+        flags = PollFlag.of(m["settings"].asLong()?.toInt() ?: 0),
+        state = PollState.from(m["state"]),
+        raw = m,
+    )
+}

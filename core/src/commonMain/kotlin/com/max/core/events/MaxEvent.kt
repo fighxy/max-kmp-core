@@ -279,6 +279,22 @@ sealed interface MaxEvent {
     ) : MaxEvent
 
     /**
+     * A scheduled message was created, edited, deleted or posted (`NOTIF_MSG_DELAYED` 154):
+     * `{chatId, userId, updateTypeId, message?, messageIds, lastDelayedUpdateTime}`.
+     * [updateType] is null when the byte is missing or not 0..3. The store does not apply this.
+     */
+    data class DelayedUpdated(
+        val chatId: Long,
+        val userId: Long?,
+        val updateType: com.max.core.api.DelayedUpdate?,
+        val message: com.max.core.api.MaxMessage?,
+        val messageIds: List<Long>,
+        val lastDelayedUpdateTime: Long?,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent
+
+    /**
      * Any other push: opcodes without a typed event yet, payloads that do not fit the model, and
      * packets with `cmd != 0` (PyMax only maps `cmd == REQUEST (0)` frames). PyMax's "raw" events.
      */

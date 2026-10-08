@@ -412,6 +412,56 @@ class MessagesApi(
         return PollState.from(map["state"]) ?: throw MalformedReplyException(Opcode.SEND_VOTE, "no poll state", map)
     }
 
+    /**
+     * Current polls (`GET_POLL_UPDATES` 306): `{chatId, polls: [{messageId, pollId}]}`.
+     * The app refuses an empty list. There is no poll push; the app asks again on a timer.
+     * Reply `{polls}` in the same order the server sends. An item without `pollId` is skipped.
+     */
+    suspend fun pollUpdates(chatId: Long, polls: List<PollRef>): List<com.max.core.media.Attachment.Poll> {
+        require(polls.isNotEmpty()) { "polls must not be empty" }
+        val items = polls.map { linkedMapOf("messageId" to it.messageId, "pollId" to it.pollId) }
+        val map = replyMap(sink.request(Opcode.GET_POLL_UPDATES, linkedMapOf("chatId" to chatId, "polls" to items)), Opcode.GET_POLL_UPDATES)
+        val list = map["polls"] ?: return emptyList()
+        val raw = list as? List<*> ?: throw MalformedReplyException(Opcode.GET_POLL_UPDATES, "polls is not a list", map)
+        return raw.mapNotNull { pollUpdate(it) }
+    }
+
+    /** Scheduled messages of a chat (`CHAT_HISTORY` 49, `itemType = DELAYED`). Not written to the store. */
+    suspend fun scheduledMessages(chatId: Long, from: Long? = null, backward: Int = 40): ChatHistory =
+        getChatHistory(chatId, from = from, backward = backward, itemType = HistoryItemType.DELAYED)
+
+    /**
+     * Edits a scheduled message (`MSG_EDIT` 67). The app sends `chatId`, `messageId`, `text` when
+     * set, `elements` when set, and `delayedAttributes` `{timeToFire, notifySender}` when set.
+     * Attachments are left out, so this does not clear them.
+     */
+    suspend fun editScheduledMessage(
+        chatId: Long,
+        messageId: Long,
+        text: String,
+        sendAt: Long,
+        notifySender: Boolean = true,
+        elements: List<Map<String, Any?>> = emptyList(),
+    ): MaxMessage {
+        require(text.isNotEmpty()) { "text must not be empty" }
+        val payload = linkedMapOf<String, Any?>(
+            "chatId" to chatId,
+            "messageId" to messageId,
+            "text" to text,
+            "delayedAttributes" to DelayedSend(sendAt, notifySender).toPayload(),
+        )
+        if (elements.isNotEmpty()) payload["elements"] = elements
+        val map = replyMap(sink.request(Opcode.MSG_EDIT, payload), Opcode.MSG_EDIT)
+        return MaxMessage.from(map["message"], chatId) ?: throw MalformedReplyException(Opcode.MSG_EDIT, "no valid message", map)
+    }
+
+    /**
+     * Cancels scheduled messages (`MSG_DELETE` 66, `itemType = DELAYED`, `forMe = false`),
+     * as the app deletes a delayed message.
+     */
+    suspend fun cancelScheduledMessages(chatId: Long, messageIds: List<Long>): DeleteResult =
+        deleteMessages(chatId, messageIds, forMe = false, itemType = HistoryItemType.DELAYED)
+
     // ---- comments on channel posts (PyMax *_comment*) ------------------------------------------
 
     /** Comments on post [postId] (`MSG_SEND` + `postId`, PyMax `SendCommentPayload`). */

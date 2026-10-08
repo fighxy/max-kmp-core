@@ -33,6 +33,9 @@ import com.max.core.api.MessageReader
 import com.max.core.api.MessageReaders
 import com.max.core.api.PhoneContact
 import com.max.core.api.PinAction
+import com.max.core.api.PollRef
+import com.max.core.api.PollState
+import com.max.core.media.Attachment
 import com.max.core.api.PinnedMessageState
 import com.max.core.api.GhostMode
 import com.max.core.api.LocalRead
@@ -1068,6 +1071,47 @@ class MaxClient @Throws(Exception::class) constructor(
         forMe: Boolean = false,
         notify: Boolean = true,
     ): PinnedMessageState = api.messages.updatePinnedMessages(chatId, action, messageIds, forMe, notify)
+
+    /** Scheduled messages (`CHAT_HISTORY` 49, `itemType = DELAYED`). Not written to the store. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun scheduledMessages(chatId: Long, from: Long? = null, backward: Int = 40): ChatHistory =
+        api.messages.scheduledMessages(chatId, from, backward)
+
+    /** Schedules [text] for [sendAt] (`MSG_SEND` 64, `delayedAttributes.timeToFire`). */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun scheduleMessage(chatId: Long, text: String, sendAt: Long, notify: Boolean = true): MaxMessage =
+        api.messages.scheduleMessage(chatId, text, sendAt, notify)
+
+    /**
+     * Edits a scheduled message (`MSG_EDIT` 67 with `delayedAttributes`). Attachments are not sent.
+     * Does not write the store; push 154 is [com.max.core.events.MaxEvent.DelayedUpdated].
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun editScheduledMessage(
+        chatId: Long,
+        messageId: Long,
+        text: String,
+        sendAt: Long,
+        notifySender: Boolean = true,
+    ): MaxMessage = api.messages.editScheduledMessage(chatId, messageId, text, sendAt, notifySender)
+
+    /** Cancels scheduled messages (`MSG_DELETE` 66, `itemType = DELAYED`). */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun cancelScheduledMessages(chatId: Long, messageIds: List<Long>): DeleteResult =
+        api.messages.cancelScheduledMessages(chatId, messageIds)
+
+    /**
+     * Refreshes polls (`GET_POLL_UPDATES` 306). Not stored. There is no poll push; call this
+     * again to see new counts. [votePoll] returns the state of the vote itself.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun pollUpdates(chatId: Long, polls: List<PollRef>): List<Attachment.Poll> =
+        api.messages.pollUpdates(chatId, polls)
+
+    /** Votes (`SEND_VOTE` 304). Reply is the new [PollState]. Not stored. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun votePoll(chatId: Long, messageId: Long, pollId: Long, answerIds: List<Long>): PollState =
+        api.messages.votePoll(chatId, messageId, pollId, answerIds)
 
     /**
      * Whether the app is in the foreground ([setInteractive]); starts as

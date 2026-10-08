@@ -11,6 +11,11 @@ import com.max.core.api.ChatMemberEntry
 import com.max.core.api.ContactNames
 import com.max.core.api.PhoneContact
 import com.max.core.api.PinAction
+import com.max.core.api.DelayedUpdate
+import com.max.core.api.PollFlag
+import com.max.core.api.PollRef
+import com.max.core.api.PollState
+import com.max.core.media.Attachment
 import com.max.core.api.PinnedMessageState
 import com.max.core.api.PresenceInfo
 import com.max.core.api.PrivacyConfig
@@ -1756,19 +1761,33 @@ class MaxIosClient internal constructor(
         }
     }
 
-    /** Schedules [text] for [sendAt] (epoch milliseconds). */
-    fun scheduleMessage(chatId: String, text: String, sendAt: Long, onResult: (String?, String?) -> Unit) {
-        runUnit(onResult) { c -> c.api.messages.scheduleMessage(parseId(chatId), text.trim(), sendAt) }
+    /**
+     * Schedules [text] for [sendAt] (epoch milliseconds). [IosScheduledMessage.sendAt] is
+     * `timeToFire` when the reply has it, otherwise [sendAt].
+     */
+    fun scheduleMessage(chatId: String, text: String, sendAt: Long, onResult: (IosScheduledMessage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            c.scheduleMessage(parseId(chatId), text.trim(), sendAt).toScheduled(chatId, sendAt)
+        }
     }
 
-    /** Messages waiting to be sent (`CHAT_HISTORY`, `itemType = DELAYED`). */
-    fun scheduledMessages(chatId: String, onResult: (List<IosFoundMessage>, String?, String?) -> Unit) {
-        perform(onResult, { emptyList() }) { c ->
-            val page = c.api.messages.getChatHistory(parseId(chatId), itemType = com.max.core.api.HistoryItemType.DELAYED)
-            page.messages.map { message ->
-                IosFoundMessage(chatId, message.id.toString(), message.text.trim(), message.time, message.sender?.toString().orEmpty())
-            }
+    /** Messages waiting to be sent (`CHAT_HISTORY`, `itemType = DELAYED`). [IosScheduledMessage.sendAt] is `timeToFire`, or `0` when absent. */
+    fun scheduledMessages(chatId: String, onResult: (List<IosScheduledMessage>?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            c.scheduledMessages(parseId(chatId)).messages.map { it.toScheduled(chatId, 0L) }
         }
+    }
+
+    /** Edits a scheduled message (`MSG_EDIT` 67, `delayedAttributes`). Attachments are not sent. */
+    fun editScheduled(chatId: String, messageId: String, text: String, sendAt: Long, onResult: (IosScheduledMessage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            c.editScheduledMessage(parseId(chatId), parseId(messageId), text.trim(), sendAt).toScheduled(chatId, sendAt)
+        }
+    }
+
+    /** Cancels scheduled messages (`MSG_DELETE` 66, `itemType = DELAYED`). */
+    fun cancelScheduled(chatId: String, messageIds: List<String>, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c -> c.cancelScheduledMessages(parseId(chatId), messageIds.map { parseId(it) }) }
     }
 
     /** Sends a poll. Fewer than two answers is an error. */
@@ -1786,10 +1805,27 @@ class MaxIosClient internal constructor(
         }
     }
 
-    /** One vote (`SEND_VOTE` 304). */
-    fun votePoll(chatId: String, messageId: String, pollId: String, answerId: String, onResult: (String?, String?) -> Unit) {
-        runUnit(onResult) { c ->
-            c.api.messages.votePoll(parseId(chatId), parseId(messageId), parseId(pollId), listOf(parseId(answerId)))
+    /** One vote (`SEND_VOTE` 304). The result is the new counts; it is not stored. */
+    fun votePoll(chatId: String, messageId: String, pollId: String, answerId: String, onResult: (IosPollState?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            c.votePoll(parseId(chatId), parseId(messageId), parseId(pollId), listOf(parseId(answerId))).toIos()
+        }
+    }
+
+    /** Several answers of one poll (`SEND_VOTE` 304, `answersIds`). */
+    fun castPollVotes(chatId: String, messageId: String, pollId: String, answerIds: List<String>, onResult: (IosPollState?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            c.votePoll(parseId(chatId), parseId(messageId), parseId(pollId), answerIds.map { parseId(it) }).toIos()
+        }
+    }
+
+    /**
+     * Current polls (`GET_POLL_UPDATES` 306). There is no poll push; call this again for new counts.
+     * The reply has no message id: match on [IosPoll.pollId].
+     */
+    fun pollUpdates(chatId: String, polls: List<IosPollRef>, onResult: (List<IosPoll>?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            c.pollUpdates(parseId(chatId), polls.map { PollRef(parseId(it.messageId), parseId(it.pollId)) }).map { it.toIos() }
         }
     }
 
@@ -3356,6 +3392,66 @@ private fun PinnedMessageState.toIos(): IosPinnedState = IosPinnedState(
     lastPinnedMessageId = lastPinnedMessageId?.toString().orEmpty(),
 )
 
+class IosScheduledMessage(
+    val chatId: String,
+    val messageId: String,
+    val text: String,
+    val sendAt: Long,
+    val senderId: String,
+)
+
+private fun MaxMessage.toScheduled(chatId: String, fallbackSendAt: Long): IosScheduledMessage = IosScheduledMessage(
+    chatId = this.chatId?.toString() ?: chatId,
+    messageId = id.toString(),
+    text = text,
+    sendAt = fireAt ?: fallbackSendAt,
+    senderId = sender?.toString().orEmpty(),
+)
+
+/** A poll to refresh. Ids are decimal strings. */
+class IosPollRef(val messageId: String, val pollId: String)
+
+class IosPollAnswer(val answerId: String, val text: String, val votes: Int)
+
+/**
+ * A poll from `GET_POLL_UPDATES` 306. [version] is `-1` when the server omitted it.
+ * [votes] on an answer is `0` when that answer is missing from `state.result`.
+ */
+class IosPoll(
+    val pollId: String,
+    val title: String,
+    val total: Int,
+    val version: Int,
+    val anonymous: Boolean,
+    val multiple: Boolean,
+    val revote: Boolean,
+    val closed: Boolean,
+    val answers: List<IosPollAnswer>,
+)
+
+/** Counts from `SEND_VOTE` 304 (`state`). Answers without a numeric id are left out. */
+class IosPollState(val total: Int, val answers: List<IosPollAnswer>)
+
+private fun PollState.toIos(): IosPollState = IosPollState(
+    total = total,
+    answers = results.map { IosPollAnswer(it.answerId.toString(), "", it.voteCount) },
+)
+
+private fun Attachment.Poll.toIos(): IosPoll {
+    val counts = state?.results?.associate { it.answerId to it.voteCount }.orEmpty()
+    return IosPoll(
+        pollId = pollId.toString(),
+        title = title.orEmpty(),
+        total = state?.total ?: 0,
+        version = version ?: -1,
+        anonymous = PollFlag.ANONYMOUS in flags,
+        multiple = PollFlag.MULTISELECT in flags,
+        revote = PollFlag.REVOTE in flags,
+        closed = PollFlag.CLOSED in flags,
+        answers = answers.map { IosPollAnswer(it.answerId?.toString().orEmpty(), it.text, it.answerId?.let { id -> counts[id] } ?: 0) },
+    )
+}
+
 private fun pinAction(action: String): PinAction = when (action) {
     "pin" -> PinAction.PIN
     "unpin" -> PinAction.UNPIN
@@ -3925,6 +4021,19 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
     )
     is MaxEvent.TranscriptionReady -> transcriptionEvent(event.transcription)
     is MaxEvent.AttachmentFailed -> listOf(iosEvent(kind = "attachError", text = event.error))
+    is MaxEvent.DelayedUpdated -> {
+        val action = when (event.updateType) {
+            DelayedUpdate.CREATED -> "created"
+            DelayedUpdate.EDITED -> "edited"
+            DelayedUpdate.DELETED -> "deleted"
+            DelayedUpdate.FIRE_SUCCESS -> "fired"
+            null -> ""
+        }
+        val time = event.lastDelayedUpdateTime ?: event.message?.fireAt ?: 0L
+        val ids = event.messageIds.ifEmpty { listOfNotNull(event.message?.id) }
+        if (ids.isEmpty()) listOf(iosEvent(kind = "scheduled", chatId = event.chatId.toString(), text = action, timeMs = time))
+        else ids.map { id -> iosEvent(kind = "scheduled", chatId = event.chatId.toString(), messageId = id.toString(), text = action, timeMs = time) }
+    }
     is MaxEvent.Unknown -> emptyList()
     else -> emptyList()
 }
