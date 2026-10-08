@@ -83,8 +83,9 @@ class ReadersApi(private val chats: ChatsApi, private val messages: MessagesApi)
                 seen += user
                 member.readMark?.let { out[user] = it }
             }
-            if (page.members.isEmpty() || seen.size >= chat.participantsCount || page.marker == 0L || page.marker == marker) return out
-            marker = page.marker
+            val next = page.marker
+            if (page.members.isEmpty() || seen.size >= chat.participantsCount || next == null || next == 0L || next == marker) return out
+            marker = next
         }
         return out
     }

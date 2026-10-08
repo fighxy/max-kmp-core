@@ -213,8 +213,12 @@ data class ChatMember(
         get() = presence?.let { PresenceInfo(it["seen"].asLong(), it["status"].asLong()?.toInt()) }
 }
 
-/** `CHAT_MEMBERS` page: `members` and the `marker` for the next page (`0` when absent, as in PyMax). */
-data class ChatMembersPage(val members: List<ChatMember>, val marker: Long, val raw: Map<*, *>)
+/**
+ * `CHAT_MEMBERS` page: `members` and the `marker` for the next page. A reply without `marker` is
+ * the last page (as the MAX web client reads it): [marker] is `null` then, never `0`, so a
+ * caller does not start over from the first page.
+ */
+data class ChatMembersPage(val members: List<ChatMember>, val marker: Long?, val raw: Map<*, *>)
 
 /** One entry of a user's `names` (PyMax `Name`: `name`, `firstName`, `lastName`, `type`, all optional). */
 data class UserName(val name: String?, val firstName: String?, val lastName: String?, val type: String?)

@@ -389,7 +389,8 @@ class MaxApiTest {
         a.chats.deleteChat(100)
         assertEquals(Opcode.CHAT_DELETE, sink.sent[4].first)
         assertEquals(pymax["deleteChat"], bytes(sink.sent[4].second))
-        assertEquals(0L, a.chats.getChatMembers(100, marker = 123, count = 10).marker)
+        // no marker in the reply: the last page
+        assertEquals(null, a.chats.getChatMembers(100, marker = 123, count = 10).marker)
         assertEquals(mapOf("type" to "MEMBER", "chatId" to 100L, "marker" to 123L, "count" to 10), sink.sent[5].second)
     }
 

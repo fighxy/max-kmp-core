@@ -1,14 +1,23 @@
 package com.max.core.api
 
+/** `type` of a `CHAT_MEMBERS` 59 request: which list of the chat is asked. */
+object MemberListType {
+    const val MEMBER = "MEMBER"
+    const val ADMIN = "ADMIN"
+    const val BLOCKED_MEMBER = "BLOCKED_MEMBER"
+    const val JOIN_REQUEST = "JOIN_REQUEST"
+    const val COMMENTS_BLACKLIST = "COMMENTS_BLACKLIST"
+}
+
 /** Role of a member in a group or channel ([ChatRoles.roleOf]). */
 enum class ChatMemberRole { OWNER, ADMIN, MEMBER }
 
 /**
  * An admin of a chat: an entry of the chat's `adminParticipants` (`{<userId>: {permissions,
- * alias}}`) or an id of its `admins` list. [permissions] are the [ChatPermission] bits, `null`
+ * alias, inviterId}}`) or an id of its `admins` list. [permissions] are the [ChatPermission] bits, `null`
  * when the chat object does not carry them; [alias] is the admin's title ("должность").
  */
-data class ChatAdmin(val userId: Long, val permissions: Int?, val alias: String?) {
+data class ChatAdmin(val userId: Long, val permissions: Int?, val alias: String?, val inviterId: Long? = null) {
     /** Whether [permissions] has the bit of [permission]; `false` while the bits are unknown. */
     fun can(permission: ChatPermission): Boolean = permissions?.let { it and permission.bit != 0 } ?: false
 }
@@ -49,6 +58,7 @@ data class ChatRoles(val owner: Long?, val admins: Map<Long, ChatAdmin>) {
                     userId = id,
                     permissions = entry?.get("permissions").asLong()?.toInt(),
                     alias = (entry?.get("alias") as? String)?.trim()?.takeIf { it.isNotEmpty() },
+                    inviterId = entry?.get("inviterId").asLong(),
                 )
             }
             return ChatRoles(raw["owner"].asLong(), admins)
@@ -84,7 +94,7 @@ data class ChatMembersResult(val members: List<ChatMemberEntry>, val nextMarker:
     companion object {
         fun of(page: ChatMembersPage, requestedMarker: Long, roles: ChatRoles): ChatMembersResult = ChatMembersResult(
             members = page.members.map { ChatMemberEntry.of(it, roles) },
-            nextMarker = page.marker.takeIf { it != 0L && it != requestedMarker && page.members.isNotEmpty() },
+            nextMarker = page.marker?.takeIf { it != 0L && it != requestedMarker && page.members.isNotEmpty() },
         )
     }
 }

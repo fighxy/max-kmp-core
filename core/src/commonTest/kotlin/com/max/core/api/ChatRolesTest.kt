@@ -69,4 +69,29 @@ class ChatRolesTest {
         assertNull(ChatMembersResult.of(api.getChatMembers(-70, marker = 7), 7, roles).nextMarker)
         assertEquals(List(3) { Opcode.CHAT_MEMBERS }, sink.opcodes)
     }
+
+    @Test
+    fun aPageWithoutMarkerIsTheEndAndSearchSendsTheQuery() = runTest {
+        val member = mapOf("contact" to mapOf("id" to 9L), "readMark" to 5L)
+        val sink = ScriptSink(
+            mapOf("members" to listOf(member), "marker" to 40L),
+            mapOf("members" to listOf(member)),
+            mapOf("members" to listOf(member), "marker" to 0L),
+            mapOf("members" to listOf(member)),
+        )
+        val api = ChatsApi(sink)
+        assertEquals(40L, api.getChatMembers(-70).marker)
+        val last = api.getChatMembers(-70, marker = 40)
+        assertNull(last.marker)
+        assertNull(ChatMembersResult.of(last, 40, ChatRoles.NONE).nextMarker)
+        // an explicit 0 would restart the list: also the end
+        assertNull(ChatMembersResult.of(api.getChatMembers(-70, marker = 40, type = MemberListType.ADMIN), 40, ChatRoles.NONE).nextMarker)
+        assertEquals("ADMIN", (sink.sent[2].second as Map<*, *>)["type"])
+
+        val found = api.searchChatMembers(-70, " Ann ")
+        assertEquals(listOf(9L), found.map { it.userId })
+        assertEquals(mapOf("chatId" to -70L, "type" to "MEMBER", "query" to "Ann"), sink.sent[3].second)
+        kotlin.test.assertFailsWith<IllegalArgumentException> { api.searchChatMembers(-70, " ") }
+        assertEquals(7L, ChatRoles.of(mapOf("adminParticipants" to mapOf("3" to mapOf("permissions" to 1, "inviterId" to 7L)))).admins.getValue(3).inviterId)
+    }
 }

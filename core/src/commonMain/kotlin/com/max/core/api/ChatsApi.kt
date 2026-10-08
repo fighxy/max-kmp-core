@@ -57,12 +57,24 @@ class ChatsApi(
      * Members of a group/channel (`CHAT_MEMBERS`, 59; PyMax `get_chat_members`,
      * `GetChatMembersPayload`): `{type: "MEMBER", chatId, marker, count}` (marker `0` for the
      * first page, count `50`). Reply: `members` and the next `marker`. Each member may carry its
-     * `readMark` ([ChatMember.readMark]).
+     * `readMark` ([ChatMember.readMark]). A reply without `marker` is the last page
+     * ([ChatMembersPage.marker] `null`). [type] selects the list ([MemberListType]).
      */
-    suspend fun getChatMembers(chatId: Long, marker: Long = 0, count: Int = 50): ChatMembersPage {
-        val payload = linkedMapOf<String, Any?>("type" to "MEMBER", "chatId" to chatId, "marker" to marker, "count" to count)
+    suspend fun getChatMembers(chatId: Long, marker: Long = 0, count: Int = 50, type: String = MemberListType.MEMBER): ChatMembersPage {
+        val payload = linkedMapOf<String, Any?>("type" to type, "chatId" to chatId, "marker" to marker, "count" to count)
         val map = replyMap(sink.request(Opcode.CHAT_MEMBERS, payload), Opcode.CHAT_MEMBERS)
-        return ChatMembersPage(members(map), map["marker"].asLong() ?: 0, map)
+        return ChatMembersPage(members(map), map["marker"].asLong(), map)
+    }
+
+    /**
+     * Searches the members of [chatId] on the server (`CHAT_MEMBERS` 59 `{chatId, type, query}`,
+     * no marker or count, as the MAX web client asks when its local list is incomplete).
+     */
+    suspend fun searchChatMembers(chatId: Long, query: String, type: String = MemberListType.MEMBER): List<ChatMember> {
+        val q = query.trim()
+        require(q.isNotEmpty()) { "query must not be blank" }
+        val payload = linkedMapOf<String, Any?>("chatId" to chatId, "type" to type, "query" to q)
+        return members(replyMap(sink.request(Opcode.CHAT_MEMBERS, payload), Opcode.CHAT_MEMBERS))
     }
 
     /** Leaves a group or channel (`CHAT_LEAVE`, 58; PyMax `leave_group`, `LeaveChatPayload`): `{chatId}`. Reply raw. */
@@ -239,7 +251,10 @@ data class CreatedGroup(val chat: Chat, val message: MaxMessage)
 
 /** Admin permission bits (PyMax `ChannelPermissions`). */
 enum class ChatPermission(val bit: Int) {
-    ADD_REMOVE_MEMBER(2), ADD_ADMIN(4), CHANGE_CHAT_INFO(8), PIN_MESSAGE(16), POST_MESSAGE(256), EDIT_MESSAGE(512), DELETE_MESSAGE(1024)
+    ADD_REMOVE_MEMBER(2), ADD_ADMIN(4), CHANGE_CHAT_INFO(8), PIN_MESSAGE(16), POST_MESSAGE(256), EDIT_MESSAGE(512), DELETE_MESSAGE(1024),
+
+    /** Bits the MAX web client also knows (`adminParticipants.permissions`). */
+    EDIT_DELETE(1), READ_ALL(32), CALL(64), EDIT_LINK(128), VIEW_STATS(2048),
 }
 
 /**
