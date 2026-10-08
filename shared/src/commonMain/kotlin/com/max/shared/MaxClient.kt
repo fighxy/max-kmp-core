@@ -35,6 +35,8 @@ import com.max.core.api.PhoneContact
 import com.max.core.api.PinAction
 import com.max.core.api.PollRef
 import com.max.core.api.PollState
+import com.max.core.calls.CallHangupReason
+import com.max.core.calls.CallHistoryPage
 import com.max.core.media.Attachment
 import com.max.core.api.PinnedMessageState
 import com.max.core.api.GhostMode
@@ -1112,6 +1114,25 @@ class MaxClient @Throws(Exception::class) constructor(
     @Throws(CancellationException::class, Exception::class)
     suspend fun votePoll(chatId: Long, messageId: Long, pollId: Long, answerIds: List<Long>): PollState =
         api.messages.votePoll(chatId, messageId, pollId, answerIds)
+
+    /**
+     * Rejects an incoming call (`VIDEO_CHAT_HANGUP` 167, reason [CallHangupReason.REJECTED] unless set).
+     * Sends an empty `internalParams`. Returns the reply `error`, or null when there is none.
+     * Does not open media. Opcode 79 [com.max.core.calls.CallsApi.history] is unchanged.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun rejectIncomingCall(
+        conversationId: String,
+        peerId: String? = null,
+        reason: CallHangupReason = CallHangupReason.REJECTED,
+    ): String? = api.calls.rejectIncomingCall(conversationId, peerId, reason)
+
+    /**
+     * Call log sync (`CALL_HISTORY` 163). [sync] `0` is the first page of the cursor, not opcode 79.
+     * Not written to the store. Push 165 is [com.max.core.events.MaxEvent.CallHistoryChanged].
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun callHistory(sync: Long = 0): CallHistoryPage = api.calls.callHistory(sync)
 
     /**
      * Whether the app is in the foreground ([setInteractive]); starts as

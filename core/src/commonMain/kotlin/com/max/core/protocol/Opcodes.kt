@@ -134,6 +134,9 @@ enum class Opcode(val value: Int) {
     CHAT_MEMBERS_UPDATE(77),
     VIDEO_CHAT_START_ACTIVE(78),
     VIDEO_CHAT_HISTORY(79),
+    CALL_HISTORY(163), // {callHistorySync} -> {callHistoryItems, callHistorySync, reset}
+    NOTIF_CALL_HISTORY(165), // push {callHistorySync, prevCallHistorySync, action, callHistoryItems, historyIds}
+    VIDEO_CHAT_HANGUP(167), // {conversationId, reason, peerId?, internalParams:""} -> {error?}
     VIDEO_CHAT_CREATE_JOIN_LINK(84),
     GET_INBOUND_CALLS(103), // TODO: payload unknown (no call site in kolibri, PyMax or Komet, see docs/opcodes.md)
     VIDEO_CHAT_DELETE_HISTORY(164), // kolibri only (absent in PyMax)

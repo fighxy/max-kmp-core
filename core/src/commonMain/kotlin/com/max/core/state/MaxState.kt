@@ -309,7 +309,7 @@ object StateReducer {
         is MaxEvent.FoldersChanged -> state.copy(
             chatFolders = (state.chatFolders ?: ChatFolders(emptyList())).merge(event.folders, event.foldersOrder, event.folderSync),
         )
-        is MaxEvent.AttachmentReady, is MaxEvent.AttachmentFailed, is MaxEvent.CallStart, is MaxEvent.StoriesUpdated, is MaxEvent.ConfigUpdated, is MaxEvent.PinsChanged, is MaxEvent.YouReacted, is MaxEvent.ProfileUpdated, is MaxEvent.TranscriptionReady, is MaxEvent.DelayedUpdated, is MaxEvent.Unknown -> state
+        is MaxEvent.AttachmentReady, is MaxEvent.AttachmentFailed, is MaxEvent.CallStart, is MaxEvent.StoriesUpdated, is MaxEvent.ConfigUpdated, is MaxEvent.PinsChanged, is MaxEvent.YouReacted, is MaxEvent.ProfileUpdated, is MaxEvent.TranscriptionReady, is MaxEvent.DelayedUpdated, is MaxEvent.CallHistoryChanged, is MaxEvent.Unknown -> state
     }
 
     /**

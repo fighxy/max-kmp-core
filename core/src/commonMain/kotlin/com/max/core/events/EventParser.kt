@@ -143,6 +143,21 @@ object EventParser {
             val result = com.max.core.api.Transcription.from(map)
             if (result?.messageId == null) null else MaxEvent.TranscriptionReady(result, opcode, raw)
         }
+        Opcode.NOTIF_CALL_HISTORY.value -> {
+            val items = (map["callHistoryItems"] as? List<*>)?.mapNotNull(com.max.core.calls.CallHistoryItem::from).orEmpty()
+            val ids = (map["historyIds"] as? List<*>)?.mapNotNull { it.long() }.orEmpty()
+            val action = com.max.core.calls.CallHistoryAction.from(map["action"] as? String)
+            if (action == null && items.isEmpty() && ids.isEmpty() && map["callHistorySync"] == null) null
+            else MaxEvent.CallHistoryChanged(
+                sync = map["callHistorySync"].long() ?: 0L,
+                prevSync = map["prevCallHistorySync"].long() ?: 0L,
+                action = action,
+                items = items,
+                historyIds = ids,
+                opcode = opcode,
+                raw = raw,
+            )
+        }
         Opcode.NOTIF_MSG_DELAYED.value -> {
             val chatId = map["chatId"].long()
             val message = com.max.core.api.MaxMessage.from(map["message"], chatId)

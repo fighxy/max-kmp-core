@@ -44,7 +44,12 @@ import com.max.core.media.UploadProgress
 import com.max.core.media.fileUploadSource
 import com.max.core.media.messageContentJson
 import com.max.core.media.reactionsJson
+import com.max.core.calls.CallHangupReason
+import com.max.core.calls.CallHistoryAction
+import com.max.core.calls.CallHistoryItem
 import com.max.core.calls.CallLink
+import com.max.core.calls.CallMedia
+import com.max.core.calls.GroupCallKind
 import com.max.core.calls.CallLogEntry
 import com.max.core.calls.CallSignaling
 import com.max.core.calls.ConversationParams
@@ -343,6 +348,31 @@ class MaxIosClient internal constructor(
      * The call log (`VIDEO_CHAT_HISTORY` 79), newest first as the server sends it. Unknown peers
      * are looked up with `CONTACT_INFO` once; a call whose peer stays unknown is a group call.
      */
+    /**
+     * Rejects an incoming call (`VIDEO_CHAT_HANGUP` 167). [reason] is a [CallHangupReason] name,
+     * or empty for `REJECTED`. An empty [peerId] is left out. A reply `error` is the failure text.
+     */
+    fun rejectIncomingCall(conversationId: String, peerId: String, reason: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c ->
+            val why = if (reason.isBlank()) CallHangupReason.REJECTED
+            else CallHangupReason.from(reason.trim()) ?: throw IllegalArgumentException("unknown call reason")
+            val error = c.rejectIncomingCall(conversationId.trim(), peerId.trim().ifEmpty { null }, why)
+            if (!error.isNullOrEmpty()) throw IllegalStateException(error)
+        }
+    }
+
+    /**
+     * Call log sync (`CALL_HISTORY` 163). [sync] is the previous cursor, empty or `0` the first time.
+     * This is not [loadCallHistory] (opcode 79).
+     */
+    fun callHistory(sync: String, onResult: (IosCallHistory?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val cursor = sync.trim().let { raw -> if (raw.isEmpty()) 0L else raw.toLongOrNull() ?: throw IllegalArgumentException("sync is not a number") }
+            val page = c.callHistory(cursor)
+            IosCallHistory(page.sync.toString(), page.reset, page.items.map { it.toIos() })
+        }
+    }
+
     fun loadCallHistory(onResult: (List<IosCall>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
             flights.share("calls") {
@@ -2864,6 +2894,42 @@ class IosContact(
  * server value (`HUNGUP`, `CANCELED`, `REJECTED`, `MISSED`, ...), [duration] its raw length
  * (0 when nobody answered). [chatId] is empty when the server did not send it.
  */
+class IosCallRecord(
+    val historyId: String,
+    val callId: String,
+    val callName: String,
+    val callerId: String,
+    val messageId: String,
+    val chatId: String,
+    val callType: String,
+    val hangupType: String,
+    val joinLink: String,
+    val timeMs: Long,
+    val durationMs: Long,
+    val groupCallType: String,
+)
+
+class IosCallHistory(val sync: String, val reset: Boolean, val items: List<IosCallRecord>)
+
+private fun CallHistoryItem.toIos(): IosCallRecord = IosCallRecord(
+    historyId = historyId.toString(),
+    callId = callId,
+    callName = callName.orEmpty(),
+    callerId = if (callerId == 0L) "" else callerId.toString(),
+    messageId = messageId?.toString().orEmpty(),
+    chatId = if (chatId == 0L) "" else chatId.toString(),
+    callType = if (callType == CallMedia.VIDEO) "VIDEO" else "AUDIO",
+    hangupType = hangupType?.name.orEmpty(),
+    joinLink = joinLink.orEmpty(),
+    timeMs = time,
+    durationMs = durationMs ?: -1L,
+    groupCallType = when (groupCallType) {
+        GroupCallKind.LINK -> "LINK"
+        GroupCallKind.CHAT -> "CHAT"
+        null -> ""
+    },
+)
+
 class IosCall(
     val id: String,
     val chatId: String,
@@ -4021,6 +4087,30 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
     )
     is MaxEvent.TranscriptionReady -> transcriptionEvent(event.transcription)
     is MaxEvent.AttachmentFailed -> listOf(iosEvent(kind = "attachError", text = event.error))
+    is MaxEvent.CallHistoryChanged -> {
+        val action = when (event.action) {
+            CallHistoryAction.ADD -> "add"
+            CallHistoryAction.REMOVE -> "remove"
+            null -> ""
+        }
+        when {
+            event.action == CallHistoryAction.REMOVE && event.historyIds.isNotEmpty() ->
+                event.historyIds.map { id -> iosEvent(kind = "callLog", messageId = id.toString(), text = action, timeMs = event.sync) }
+            event.items.isNotEmpty() -> event.items.map { item ->
+                iosEvent(
+                    kind = "callLog",
+                    chatId = if (item.chatId == 0L) "" else item.chatId.toString(),
+                    messageId = item.historyId.toString(),
+                    authorId = if (item.callerId == 0L) "" else item.callerId.toString(),
+                    title = item.callName.orEmpty(),
+                    text = action,
+                    timeMs = item.time,
+                    unread = if (item.callType == CallMedia.VIDEO) 1 else 0,
+                )
+            }
+            else -> listOf(iosEvent(kind = "callLog", text = action, timeMs = event.sync))
+        }
+    }
     is MaxEvent.DelayedUpdated -> {
         val action = when (event.updateType) {
             DelayedUpdate.CREATED -> "created"

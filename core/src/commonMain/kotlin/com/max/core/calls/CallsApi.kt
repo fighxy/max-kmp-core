@@ -80,6 +80,44 @@ class CallsApi(
     }
 
     /**
+     * Synced call log (`CALL_HISTORY` 163): `{callHistorySync}` → `{callHistoryItems, callHistorySync, reset}`.
+     * [sync] is the cursor from the previous reply, `0` the first time. This does not replace [history] (opcode 79).
+     * An item without `callId` or with a `callType` other than `AUDIO` / `VIDEO` is skipped.
+     */
+    suspend fun callHistory(sync: Long = 0): CallHistoryPage {
+        val map = replyMap(sink.request(Opcode.CALL_HISTORY, linkedMapOf("callHistorySync" to sync)), Opcode.CALL_HISTORY)
+        val items = map["callHistoryItems"]
+        val list = when (items) {
+            null -> emptyList()
+            is List<*> -> items.mapNotNull(CallHistoryItem::from)
+            else -> throw MalformedReplyException(Opcode.CALL_HISTORY, "callHistoryItems is not a list", map)
+        }
+        return CallHistoryPage(list, map["callHistorySync"].asLong() ?: 0L, map["reset"] as? Boolean ?: false)
+    }
+
+    /**
+     * Rejects or otherwise ends a call (`VIDEO_CHAT_HANGUP` 167).
+     * The app sends `conversationId`, `reason` (enum name), `peerId` only when set, and
+     * `internalParams` as an empty string. This method always sends that empty string and
+     * never a media parameter. Reply `{error?}`: the error string, or null when the app treats it as done.
+     */
+    suspend fun rejectIncomingCall(
+        conversationId: String,
+        peerId: String? = null,
+        reason: CallHangupReason = CallHangupReason.REJECTED,
+    ): String? {
+        require(conversationId.isNotEmpty()) { "conversationId must not be empty" }
+        val payload = linkedMapOf<String, Any?>(
+            "conversationId" to conversationId,
+            "reason" to reason.name,
+            "internalParams" to "",
+        )
+        if (!peerId.isNullOrEmpty()) payload["peerId"] = peerId
+        val map = replyMap(sink.request(Opcode.VIDEO_CHAT_HANGUP, payload), Opcode.VIDEO_CHAT_HANGUP)
+        return (map["error"] as? String)?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
      * Starts a 1:1 call (`VIDEO_CHAT_START_ACTIVE` 78, Komet `initiateCall`):
      * `{conversationId, calleeIds: [calleeId], internalParams, isVideo}`.
      * The endpoint is read from the JSON string `internalCallerParams`.

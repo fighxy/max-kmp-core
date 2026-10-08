@@ -295,6 +295,22 @@ sealed interface MaxEvent {
     ) : MaxEvent
 
     /**
+     * The call log changed (`NOTIF_CALL_HISTORY` 165):
+     * `{callHistorySync, prevCallHistorySync, action, callHistoryItems, historyIds}`.
+     * [action] is null when the string is not `ADD` or `REMOVE`. The store does not apply this.
+     * Opcode 79 is a different log and is unchanged.
+     */
+    data class CallHistoryChanged(
+        val sync: Long,
+        val prevSync: Long,
+        val action: com.max.core.calls.CallHistoryAction?,
+        val items: List<com.max.core.calls.CallHistoryItem>,
+        val historyIds: List<Long>,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent
+
+    /**
      * Any other push: opcodes without a typed event yet, payloads that do not fit the model, and
      * packets with `cmd != 0` (PyMax only maps `cmd == REQUEST (0)` frames). PyMax's "raw" events.
      */
