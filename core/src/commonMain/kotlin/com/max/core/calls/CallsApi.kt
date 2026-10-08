@@ -33,6 +33,10 @@ import kotlinx.serialization.json.longOrNull
  * `CallsModule` (feature/FullStack). [internalParams] is the JSON string that module sends.
  * The reply carries a signaling endpoint inside a JSON string; this class does not open a
  * socket. Live media is ws2 (see [ConversationParams.ws2Url]); WebRTC stays on the host.
+ *
+ * `GET_INBOUND_CALLS` 103 and `VIDEO_CHAT_MEMBERS` 195 have no method on purpose: kolibri, PyMax
+ * and Komet only declare the codes and never build a request or read a reply, so neither shape
+ * is known (`docs/opcodes.md`). Add them only with a captured request and reply.
  */
 class CallsApi(
     private val sink: RequestSink,

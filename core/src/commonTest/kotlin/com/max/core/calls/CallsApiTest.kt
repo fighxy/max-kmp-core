@@ -220,6 +220,16 @@ class CallsApiTest {
     }
 
     @Test
+    fun inboundCallsAndCallMembersKeepTheirReferenceCodes() {
+        // 103 and 195 have no CallsApi method: no reference builds them (docs/opcodes.md).
+        // The codes and names still match kolibri and PyMax, so logs show the right name.
+        assertEquals(Opcode.GET_INBOUND_CALLS, Opcode.fromValue(103))
+        assertEquals(Opcode.VIDEO_CHAT_MEMBERS, Opcode.fromValue(195))
+        assertEquals("GET_INBOUND_CALLS", Opcode.nameOf(103))
+        assertEquals("VIDEO_CHAT_MEMBERS", Opcode.nameOf(195))
+    }
+
+    @Test
     fun callLinksNormalizeToTheToken() {
         assertEquals("abc", CallLink.token("https://max.ru/joincall/abc"))
         assertEquals("abc", CallLink.token("HTTP://web.MAX.ru/joincall/abc?x=1"))

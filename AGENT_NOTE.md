@@ -32,6 +32,7 @@
 
 - Полный список чатов: `LOGIN` отдаёт только первые чаты и `chatMarker`, остальное — страницы `CHATS_LIST {marker, count: 50}` с `marker` следующей страницы (как Komet `paginateChats`). `ChatsApi.fetchChatsPage`, `MaxClient.loadAllChats()`; `MaxIosClient.loadChats` листает всё один раз после входа, потом обновляет только первую страницу.
 - Закреплённые чаты (схема Komet, код не брали): это `favorites` папки «Все чаты» (`all.chat.folder`). Приходят в `LOGIN` (`config.chatFolders`), в ответе `FOLDERS_GET` 272 и пушем `NOTIF_FOLDERS` 277 (`MaxEvent.FoldersChanged`); лежат в `MaxState.chatFolders`, наружу — `pinnedChatIds`, закреплённые первыми в `chatList`. Закрепить, открепить и переставить — один `FOLDERS_UPDATE` 274 со всем списком (`MaxClient.setPinnedChats`; стор меняется только после ответа сервера). iOS: `MaxIosClient.setPinnedChats` / `watchPinnedChats`, первый `loadChats` после входа ещё и делает `FOLDERS_GET`. На живом сервере не проверено.
+- Звонки 103 и 195 (2026-10-08): схем нет ни в kolibri, ни в PyMax, ни в Komet, поэтому методы не добавлены. В `Opcodes.kt` у обоих `TODO: payload unknown`, в KDoc `CallsApi` сказано, почему их нет. Тест `CallsApiTest.inboundCallsAndCallMembersKeepTheirReferenceCodes` закрепляет коды и имена.
 - Контакты из ответа опкода 8 (`contactInfos` у PyMax, `contacts` у Komet) тоже попадают в `MaxState.contactIds` (`StateReducer.putContacts`).
 
 ## 3. Совместимость с чужими коммитами
@@ -64,7 +65,7 @@
   - исходящее «печатает» (65);
   - поиск по контактам (37); `60`, `68` и `73` уже в `SearchApi` (73 — вектор Komet `{chatId, query, count}`);
   - опкоды 193, 194, 301;
-  - звонки 103, 164, 195; `76`, `78`, `79`, `84`, `166` есть в `CallsApi` по вектору Komet, без WebRTC (`hexCapability` `3c02f`);
+  - звонки 103 (`GET_INBOUND_CALLS`) и 195 (`VIDEO_CHAT_MEMBERS`): 2026-10-08 проверены kolibri, все ветки PyMax и Komet `feature/FullStack`, везде только константа, ни запроса, ни ответа (подробности в `docs/opcodes.md`). Метода в `CallsApi` нет, observed-not-ref тоже не подходит. `76`, `78`, `79`, `84`, `89`, `164`, `166` есть в `CallsApi` по вектору Komet, без WebRTC (`hexCapability` `3c02f`);
   - 2FA-восстановление (101, 104, 105, 116);
   - транскрипция (202, 293);
   - истории (208–220).

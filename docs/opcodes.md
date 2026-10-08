@@ -36,8 +36,16 @@
 | code | имя | почему не в API |
 |------|-----|-----------------|
 | 77 | `CHAT_MEMBERS_UPDATE` | не calls-control в нашем смысле; метод есть в `ChatsApi` |
-| 103 | `GET_INBOUND_CALLS` | нет вектора в этом слайсе |
-| 195 | `VIDEO_CHAT_MEMBERS` | нет вектора в этом слайсе |
+| 103 | `GET_INBOUND_CALLS` | схема неизвестна: в kolibri, PyMax и Komet только константа, запроса и разбора ответа нет (проверено 2026-10-08, см. ниже) |
+| 195 | `VIDEO_CHAT_MEMBERS` | схема неизвестна: то же самое (проверено 2026-10-08, см. ниже) |
+
+Поиск схем 103 и 195 (2026-10-08):
+- kolibri (`a6cdce9`): только `kolibri-net/src/protocol/opcodes.rs` — константы `GET_INBOUND_CALLS = 103`, `VIDEO_CHAT_MEMBERS = 195` и их имена; в `kolibri-net/src/calls/` и во всех биндингах вызовов нет.
+- PyMax (все ветки `MaxApiTeam/PyMax`, в т. ч. `dev/2.5.0` и `v1`): только `protocol/enums.py` (`static/enum.py` в `v1`); call site и payload-builder нет.
+- KometTeam/Komet (`feature/FullStack` `58576bc` и остальные ветки): только `lib/core/protocol/opcode_map.dart` (`getInboundCalls`, `videoChatMembers`); `CallsModule` эти коды не шлёт. Тип `InboundCall` в `push/fkm_controller.dart` — данные пуша 137 (`vcp`, `conversationId`, `callerId`), не ответ 103.
+- Сторонние заметки (`MaxApiTeam/Node-Max`, `openmax-server/server`, `openmax-server/docs`, `PronikFire/Max-API-Guide`, `zarazaex69/m`): только имена и номера, без запроса и ответа.
+
+Пометить их **observed-not-ref**, как 158, нельзя: у 158 запрос и ответ хотя бы видели в сторонних заметках, а здесь не видел никто. Любое тело запроса было бы выдумкой, поэтому методов в `CallsApi` нет, а в `Opcodes.kt` стоит `TODO: payload unknown`. Нужен снятый трафик Android-клиента: запрос и ответ 103 и 195.
 
 ws2-сигналинг и WebRTC остаются на хосте. `ConversationParams.ws2Url` / `ws2UrlFromEndpoint` только собирают URL.
 
@@ -62,7 +70,7 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | реакции | `178`, `179` (и для комментариев, с `postId`), `180`, `181` (схема Komet), `155` (push); каталог `27` / `28` (`ANIMOJI_SET`, `ANIMOJI`, схема Komet) | `MessagesApi`, `AssetsApi` (`MaxApi.assets`), `MaxClient.setReaction` / `loadReactions` / `loadReactionUsers` / `reactionCatalog` |
 | медиа | `80`, `82`, `83`, `87`, `88` | `MediaApi` (потоковая загрузка с диска через `UploadSource`) |
 | боты | `105` (схема Komet), `118`, `160` (`queryId` / `query_id` необязателен) | `BotsApi` (`MaxApi.bots`), `EntryApp` (мини-приложения настроек) |
-| звонки | `76`, `78`, `79`, `84`, `137` (push), `158`, `166` | `MaxEvent.CallStart`, `CallsApi`. `internalParams` — JSON Komet (`hexCapability` `3c02f`). Медиа на хосте |
+| звонки | `76`, `78`, `79`, `84`, `89` (ссылка на звонок), `137` (push), `158`, `164`, `166`; `103` и `195` нет (схема неизвестна) | `MaxEvent.CallStart`, `CallsApi`. `internalParams` — JSON Komet (`hexCapability` `3c02f`). Медиа на хосте |
 | жалобы | `161`, `162` | `ComplaintsApi` (`MaxApi.complaints`). Типы с вектором: канал `2`, пользователь `6`. Тип сообщения не назван |
 | поиск в чате | `73` | `SearchApi.searchInChat`: `{chatId, query, count}` |
 | общие чаты | `198` | `ChatsApi.commonChats`: `{userIds:[id]}` → `commonChats` |
@@ -77,7 +85,7 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 - `65` `MSG_TYPING` (исходящий «печатает») — builder'а нет; входящий `129` уже разбирается
 - поиск: `37` `CONTACT_SEARCH` (`60`, `68`, `73` уже в `SearchApi`)
 - `193` `STICKER_CREATE`, `194` `STICKER_SUGGEST`, `301` `AUDIO_PLAY`
-- звонки: `103`, `164`, `195`; семантика ответа `158` (K12). `76`, `78`, `79`, `84`, `166` есть в `CallsApi` по вектору Komet, без WebRTC
+- звонки: `103`, `195` (ни в одном референсе нет запроса и ответа, см. «Calls — что уже в ядре»); семантика ответа `158` (K12). `76`, `78`, `79`, `84`, `89`, `164`, `166` есть в `CallsApi` по вектору Komet, без WebRTC
 - 2FA/пароль: `101`, `116`
 - транскрипция `202`/`293`, stories `208`–`218`, `220`
 - `LOG` (`5`) — телеметрия, намеренно не отправляется

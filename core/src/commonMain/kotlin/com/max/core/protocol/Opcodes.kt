@@ -130,11 +130,11 @@ enum class Opcode(val value: Int) {
     VIDEO_CHAT_START_ACTIVE(78),
     VIDEO_CHAT_HISTORY(79),
     VIDEO_CHAT_CREATE_JOIN_LINK(84),
-    GET_INBOUND_CALLS(103),
+    GET_INBOUND_CALLS(103), // TODO: payload unknown (no call site in kolibri, PyMax or Komet, see docs/opcodes.md)
     VIDEO_CHAT_DELETE_HISTORY(164), // kolibri only (absent in PyMax)
     // PyMax names this VIDEO_CHAT_JOIN. Komet joins with {joinLink, internalParams, isVideo}.
     VIDEO_CHAT_JOIN_BY_LINK(166),
-    VIDEO_CHAT_MEMBERS(195),
+    VIDEO_CHAT_MEMBERS(195), // TODO: payload unknown (no call site in kolibri, PyMax or Komet, see docs/opcodes.md)
 
     // ── Media / files ───────────────────────────────────────────────
     PHOTO_UPLOAD(80),
