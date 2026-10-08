@@ -46,6 +46,9 @@ object TextElementType {
  * @property type a [TextElementType] value; an unknown type from the server is kept as is.
  * @property entityId the user of a `USER_MENTION`, the animoji of an `ANIMOJI`.
  * @property attributes `attributes` as sent (`url` of a `LINK`, `animojiLottieUrl` of an `ANIMOJI`).
+ * @property extra every other key of an element of an unknown type, as received; sent back
+ *   unchanged after the known keys ([toPayload]), so an edit keeps markup of other clients
+ *   (shared Orbitle rule, `formatting/README.md`). Always empty for a known type.
  */
 data class TextElement(
     val type: String,
@@ -54,6 +57,7 @@ data class TextElement(
     val entityId: Long? = null,
     val entityName: String? = null,
     val attributes: Map<String, Any?> = emptyMap(),
+    val extra: Map<String, Any?> = emptyMap(),
 ) {
     /** End offset (exclusive). */
     val end: Int get() = from + length
@@ -75,9 +79,12 @@ data class TextElement(
         if (entityId != null) put("entityId", entityId)
         if (!entityName.isNullOrEmpty()) put("entityName", entityName)
         if (attributes.isNotEmpty()) put("attributes", attributes)
+        for ((k, v) in extra) if (k !in RESERVED_KEYS) put(k, v)
     }
 
     companion object {
+        private val RESERVED_KEYS = setOf("type", "from", "length", "entityId", "entityName", "attributes")
+
         fun strong(from: Int, length: Int) = TextElement(TextElementType.STRONG, from, length)
         fun emphasized(from: Int, length: Int) = TextElement(TextElementType.EMPHASIZED, from, length)
         fun underline(from: Int, length: Int) = TextElement(TextElementType.UNDERLINE, from, length)
@@ -98,24 +105,40 @@ data class TextElement(
             TextElement(TextElementType.ANIMOJI, from, length, entityId = animojiId, attributes = mapOf("animojiLottieUrl" to lottieUrl))
 
         /**
-         * One received element, read as the MAX web client reads it: a missing `from` is `0`, a
-         * missing `length` runs to the end of the text ([textLength]; without it such an element
-         * is dropped), a zero or negative length is dropped. `CODE` reads as [TextElementType.MONOSPACED];
-         * any other unknown type is kept as is. `null` when it is not a map or has no non-blank
-         * `type`. `from` / `length` may arrive as numbers or decimal strings.
+         * One received element, read as the MAX web client reads it and as the shared Orbitle
+         * rule (`formatting/parse-*.json`) says: a missing `from` is `0`, a missing `length` runs
+         * to the end of the text ([textLength]; without it such an element is dropped), a zero
+         * or negative length is dropped. With [textLength] an element starting at or after the
+         * end of the text is dropped and a tail past the end is cut. A known type matches in any
+         * case (`strong` is [TextElementType.STRONG]); `CODE` reads as
+         * [TextElementType.MONOSPACED]; a `LINK` without a non-empty `attributes.url` is dropped.
+         * An unknown type is kept with its spelling and every other key ([extra]). `null` when
+         * it is not a map or has no non-blank `type`. `from` / `length` may arrive as numbers or
+         * decimal strings.
          */
         fun parse(raw: Any?, textLength: Int? = null): TextElement? {
             val m = raw as? Map<*, *> ?: return null
             val sent = (m["type"] as? String)?.takeIf { it.isNotBlank() } ?: return null
-            val type = if (sent == TextElementType.CODE) TextElementType.MONOSPACED else sent
+            val known = TextElementType.all.firstOrNull { it.equals(sent, ignoreCase = true) }
+            val type = when (known) {
+                null -> sent
+                TextElementType.CODE -> TextElementType.MONOSPACED
+                else -> known
+            }
             val from = m["from"].asLong()?.toInt() ?: 0
             if (from < 0) return null
-            val length = (if (m["length"] == null && textLength != null) textLength - from else m["length"].asLong()?.toInt())
+            if (textLength != null && from >= textLength) return null
+            var length = (if (m["length"] == null && textLength != null) textLength - from else m["length"].asLong()?.toInt())
                 ?.takeIf { it > 0 } ?: return null
+            if (textLength != null && from + length > textLength) length = textLength - from
             val attributes = (m["attributes"] as? Map<*, *>)?.entries
                 ?.mapNotNull { (k, v) -> (k as? String)?.let { it to v } }
                 ?.toMap()
                 .orEmpty()
+            if (type == TextElementType.LINK && (attributes["url"] as? String).isNullOrEmpty()) return null
+            val extra = if (known != null) emptyMap() else m.entries
+                .mapNotNull { (k, v) -> (k as? String)?.takeIf { it !in RESERVED_KEYS }?.let { it to v } }
+                .toMap()
             return TextElement(
                 type = type,
                 from = from,
@@ -123,6 +146,7 @@ data class TextElement(
                 entityId = m["entityId"].asLong(),
                 entityName = (m["entityName"] as? String)?.takeIf { it.isNotEmpty() },
                 attributes = attributes,
+                extra = extra,
             )
         }
 
