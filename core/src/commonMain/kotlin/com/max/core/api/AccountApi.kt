@@ -171,9 +171,6 @@ class AccountApi(private val sink: RequestSink, private val newFolderId: () -> S
 /** Reply to [AccountApi.updateUserSettings]: the whole new `config.user` (`null` if absent) and the config `hash`. */
 data class UserSettingsUpdate(val user: Map<String, Any?>?, val hash: String?, val raw: Map<*, *>)
 
-/** Who may do something (PyMax `PrivacyAccess`). */
-enum class PrivacyAccess(val wire: String) { ALL("ALL"), CONTACTS("CONTACTS"), NOBODY("_NONE_") }
-
 /**
  * Privacy settings for [AccountApi.updatePrivacy] (PyMax `PrivacySettingsUpdate`); only non-null
  * values are sent, under the server keys `SEARCH_BY_PHONE`, `INCOMING_CALL`, `CHATS_INVITE`,

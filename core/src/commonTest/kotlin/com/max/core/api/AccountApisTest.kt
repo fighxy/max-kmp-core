@@ -103,7 +103,7 @@ class AccountApisTest {
     }
 
     @Test
-    fun privacyMatchesPyMax() = runTest {
+    fun privacyKeysMatchPyMaxWithTheWebNobody() = runTest {
         val sink = ScriptSink(mapOf("hash" to "h1"), mapOf("hash" to 42L), emptyMap<String, Any?>())
         val api = AccountApi(sink)
         assertEquals("h1", api.updatePrivacy(PrivacySettings(searchByPhone = PrivacyAccess.CONTACTS, hideOnlineStatus = true)))
@@ -117,7 +117,7 @@ class AccountApisTest {
         assertEquals(List(3) { Opcode.CONFIG }, sink.opcodes)
         assertEquals("81a873657474696e677381a47573657282af5345415243485f42595f50484f4e45a8434f4e5441435453a648494444454ec3", sink.hex(0))
         assertEquals(
-            "81a873657474696e677381a47573657286af5345415243485f42595f50484f4e45a3414c4cad494e434f4d494e475f43414c4ca65f4e4f4e455fac43484154535f494e56495445a8434f4e5441435453b450484f4e455f4e554d4245525f50524956414359a65f4e4f4e455fa648494444454ec2b4434f4e54454e545f4c4556454c5f414343455353c3",
+            "81a873657474696e677381a47573657286af5345415243485f42595f50484f4e45a3414c4cad494e434f4d494e475f43414c4ca64e4f424f4459ac43484154535f494e56495445a8434f4e5441435453b450484f4e455f4e554d4245525f50524956414359a64e4f424f4459a648494444454ec2b4434f4e54454e545f4c4556454c5f414343455353c3",
             sink.hex(1),
         )
         assertFailsWith<IllegalArgumentException> { api.updatePrivacy(PrivacySettings()) }
