@@ -62,6 +62,14 @@ data class AccountConfig(
         else -> null
     }
 
+    /**
+     * `config.server["max-readmarks"]`: the largest group (by members) that shows who read a
+     * message ([MessageReaders.isAvailable]). [DEFAULT_MAX_READMARKS] when the key is absent, not a
+     * number or not positive.
+     */
+    val maxReadmarks: Int
+        get() = server["max-readmarks"].asLong()?.takeIf { it in 1..Int.MAX_VALUE }?.toInt() ?: DEFAULT_MAX_READMARKS
+
     /** `config.server["invite-link"]` as a full URL ([normalizeLink]), `null` when absent. */
     val inviteLink: String?
         get() = normalizeLink(server["invite-link"]?.toString())
@@ -90,6 +98,9 @@ data class AccountConfig(
         copy(user = newUser ?: user, hash = newHash ?: hash)
 
     companion object {
+        /** [maxReadmarks] when the server config does not name one. */
+        const val DEFAULT_MAX_READMARKS: Int = 100
+
         /** `config` of a `LOGIN` reply ([loginReply] is the whole reply map); `null` when it has none. */
         fun fromLoginReply(loginReply: Map<*, *>): AccountConfig? {
             val config = loginReply["config"] as? Map<*, *> ?: return null

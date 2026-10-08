@@ -131,6 +131,12 @@ data class ReactionUser(val userId: Long, val reaction: String)
 /**
  * A chat (PyMax `Chat`). PyMax requires `id`, `type`, `status`, `owner`; here only `id` and `type`
  * are required so that partial chat objects still parse.
+ *
+ * @property participants `participants` of the chat object: user id → that member's read mark,
+ *   the time (ms) of the last message the member has read (not the moment of reading). Keys may
+ *   arrive as integers or decimal strings; entries without a numeric id or mark are skipped. A
+ *   chat object without the map gives an empty one. Large groups may list only some members
+ *   ([participantsCount] counts all of them).
  */
 data class Chat(
     val id: Long,
@@ -143,6 +149,7 @@ data class Chat(
     val lastEventTime: Long,
     val lastMessage: MaxMessage?,
     val raw: Map<*, *>,
+    val participants: Map<Long, Long> = emptyMap(),
 ) {
     companion object {
         fun from(value: Any?): Chat? {
@@ -159,13 +166,35 @@ data class Chat(
                 lastEventTime = m["lastEventTime"].asLong() ?: 0,
                 lastMessage = MaxMessage.from(m["lastMessage"], id),
                 raw = m,
+                participants = readMarks(m["participants"]),
             )
+        }
+
+        /** `participants` as user id → read mark; non-numeric keys or values are skipped. */
+        fun readMarks(value: Any?): Map<Long, Long> {
+            val map = value as? Map<*, *> ?: return emptyMap()
+            val out = LinkedHashMap<Long, Long>()
+            for ((k, v) in map) {
+                val user = k.asLong() ?: continue
+                out[user] = v.asLong() ?: continue
+            }
+            return out
         }
     }
 }
 
-/** A chat member (PyMax `Member`: `contact`, `presence`); [userId] is `contact.id`. */
-data class ChatMember(val userId: Long?, val contact: Map<*, *>, val presence: Map<*, *>?, val raw: Map<*, *>)
+/**
+ * A chat member (PyMax `Member`: `contact`, `presence`); [userId] is `contact.id`. [readMark] is
+ * the member's `readMark` (`CHAT_MEMBERS` 59): the time (ms) of the last message the member has
+ * read, `null` when the entry has none.
+ */
+data class ChatMember(
+    val userId: Long?,
+    val contact: Map<*, *>,
+    val presence: Map<*, *>?,
+    val raw: Map<*, *>,
+    val readMark: Long? = null,
+)
 
 /** `CHAT_MEMBERS` page: `members` and the `marker` for the next page (`0` when absent, as in PyMax). */
 data class ChatMembersPage(val members: List<ChatMember>, val marker: Long, val raw: Map<*, *>)

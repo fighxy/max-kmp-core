@@ -56,7 +56,8 @@ class ChatsApi(
     /**
      * Members of a group/channel (`CHAT_MEMBERS`, 59; PyMax `get_chat_members`,
      * `GetChatMembersPayload`): `{type: "MEMBER", chatId, marker, count}` (marker `0` for the
-     * first page, count `50`). Reply: `members` and the next `marker`.
+     * first page, count `50`). Reply: `members` and the next `marker`. Each member may carry its
+     * `readMark` ([ChatMember.readMark]).
      */
     suspend fun getChatMembers(chatId: Long, marker: Long = 0, count: Int = 50): ChatMembersPage {
         val payload = linkedMapOf<String, Any?>("type" to "MEMBER", "chatId" to chatId, "marker" to marker, "count" to count)
@@ -218,7 +219,7 @@ class ChatsApi(
         return items.map { item ->
             val m = item as? Map<*, *> ?: throw MalformedReplyException(Opcode.CHAT_MEMBERS, "member is not a map", map)
             val contact = m["contact"] as? Map<*, *> ?: throw MalformedReplyException(Opcode.CHAT_MEMBERS, "member without contact", map)
-            ChatMember(contact["id"].asLong(), contact, m["presence"] as? Map<*, *>, m)
+            ChatMember(contact["id"].asLong(), contact, m["presence"] as? Map<*, *>, m, m["readMark"].asLong())
         }
     }
 
