@@ -10,6 +10,7 @@ import com.max.core.api.TextElement
 import com.max.core.api.MaxUser
 import com.max.core.api.PhoneContact
 import com.max.core.api.TextElementType
+import com.max.core.api.TextElementsJson
 import com.max.core.calls.CallSignaling
 import com.max.core.calls.ConversationParams
 import com.max.core.events.MaxEvent
@@ -397,6 +398,16 @@ class MaxIosClientTest {
             """[{"type":"EMPHASIZED","from":0,"length":2},{"type":"LINK","from":3,"length":5,"attributes":{"url":"https://a"}}]""",
             snap.elementsJson,
         )
+        // every key of a received element reaches the app and comes back unchanged
+        val odd = MaxMessage.from(
+            mapOf(
+                "id" to 6L, "chatId" to 7L, "sender" to 20L, "time" to 1_000L, "type" to "USER", "text" to "hi there",
+                "elements" to listOf(mapOf("type" to "SPOILER", "from" to 0L, "length" to 2L, "meta" to mapOf("n" to listOf(1L, mapOf("x" to true))), "rank" to 2.5)),
+            ),
+        )!!
+        val oddJson = messageSnapshot(odd, "7", MaxState()).elementsJson
+        assertEquals("""[{"type":"SPOILER","from":0,"length":2,"meta":{"n":[1,{"x":true}]},"rank":2.5}]""", oddJson)
+        assertEquals(oddJson, TextElementsJson.write(TextElementsJson.parse(oddJson, 8)))
         val draft = draftSnapshot(MaxDraft(7, "hi", listOf(TextElement.strong(0, 2)), 5, 900))
         assertEquals(listOf("7", "hi", """[{"type":"STRONG","from":0,"length":2}]""", "5", "900"), listOf(draft.chatId, draft.text, draft.elementsJson, draft.replyTo, draft.updateTime.toString()))
         assertEquals("", draftSnapshot(MaxDraft(7, "", emptyList(), null, 1)).replyTo)

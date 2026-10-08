@@ -198,7 +198,7 @@ class SharedFixturesTest {
                     for ((k, v) in o) if (k !in known) put(k, v.plain())
                 }
             }
-            assertEquals(want, got.map { e -> e.toPayload().mapValues { (k, v) -> if (k == "entityId") (v as Long) else v } }, "$f/${c.name}")
+            assertEquals(wholeNumbers(want), got.map { wholeNumbers(it.toPayload()) }, "$f/${c.name}")
             // what goes back out on an edit is the element as it came (unknown keys included)
             assertEquals(got, TextElementsJson.parse(TextElementsJson.write(got), text.length), "$f/${c.name} round trip")
         }
@@ -351,5 +351,13 @@ class SharedFixturesTest {
             val want = c["expect"]!!.jsonObject["requests"]!!.jsonArray.map { r -> r.jsonObject.mapValues { it.value.jsonPrimitive.content } }
             assertEquals(want, got, c.name)
         }
+    }
+
+    /** [v] with every integer number as `Long` (the fixture builds `Int`s, decoded JSON has `Long`s). */
+    private fun wholeNumbers(v: Any?): Any? = when (v) {
+        is Byte, is Short, is Int -> (v as Number).toLong()
+        is Map<*, *> -> v.entries.associate { (k, x) -> k to wholeNumbers(x) }
+        is List<*> -> v.map(::wholeNumbers)
+        else -> v
     }
 }

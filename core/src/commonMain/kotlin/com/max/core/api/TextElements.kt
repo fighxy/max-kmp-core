@@ -46,9 +46,11 @@ object TextElementType {
  * @property type a [TextElementType] value; an unknown type from the server is kept as is.
  * @property entityId the user of a `USER_MENTION`, the animoji of an `ANIMOJI`.
  * @property attributes `attributes` as sent (`url` of a `LINK`, `animojiLottieUrl` of an `ANIMOJI`).
- * @property extra every other key of an element of an unknown type, as received; sent back
- *   unchanged after the known keys ([toPayload]), so an edit keeps markup of other clients
- *   (shared Orbitle rule, `formatting/README.md`). Always empty for a known type.
+ * @property extra every key of a received element other than `type`, `from`, `length`,
+ *   `entityId`, `entityName` and `attributes`, for any type (nested maps, lists and numbers as
+ *   decoded; integer numbers as `Long`). Kept by [copy] and sent after the known keys
+ *   ([toPayload]), so an edit keeps markup of other clients (shared Orbitle rule,
+ *   `formatting/README.md`).
  */
 data class TextElement(
     val type: String,
@@ -59,6 +61,20 @@ data class TextElement(
     val attributes: Map<String, Any?> = emptyMap(),
     val extra: Map<String, Any?> = emptyMap(),
 ) {
+    /**
+     * The element exactly as received (every key, original spelling and value types), or empty
+     * for an element made in code. Not part of [equals]; [copy] drops it, so a changed element
+     * is written from its fields and [extra].
+     */
+    var raw: Map<String, Any?> = emptyMap()
+        private set
+
+    /**
+     * Whether [raw] says the same as the fields, so it can go out as is: parsing changed nothing
+     * (same type spelling, offsets in range) and the numbers came as numbers, not strings.
+     */
+    private var rawCurrent = false
+
     /** End offset (exclusive). */
     val end: Int get() = from + length
 
@@ -72,10 +88,13 @@ data class TextElement(
     fun fits(textLength: Int): Boolean = from >= 0 && length > 0 && end <= textLength
 
     /**
-     * Wire form, in Komet's key order: `{type, from, length}`, then `entityId`, `entityName` and
-     * `attributes` only when set.
+     * Wire form. A received element that parsing did not change goes out as received ([raw]:
+     * every key and value unchanged). Otherwise Komet's key order: `{type, from, length}`, then
+     * `entityId`, `entityName` and `attributes` only when set, then [extra].
      */
-    fun toPayload(): Map<String, Any?> = linkedMapOf<String, Any?>("type" to type, "from" to from, "length" to length).apply {
+    fun toPayload(): Map<String, Any?> = if (rawCurrent && raw.isNotEmpty()) LinkedHashMap(raw) else fieldsPayload()
+
+    private fun fieldsPayload(): Map<String, Any?> = linkedMapOf<String, Any?>("type" to type, "from" to from, "length" to length).apply {
         if (entityId != null) put("entityId", entityId)
         if (!entityName.isNullOrEmpty()) put("entityName", entityName)
         if (attributes.isNotEmpty()) put("attributes", attributes)
@@ -112,7 +131,8 @@ data class TextElement(
          * end of the text is dropped and a tail past the end is cut. A known type matches in any
          * case (`strong` is [TextElementType.STRONG]); `CODE` reads as
          * [TextElementType.MONOSPACED]; a `LINK` without a non-empty `attributes.url` is dropped.
-         * An unknown type is kept with its spelling and every other key ([extra]). `null` when
+         * An unknown type is kept with its spelling. Every other key goes to [extra] and the
+         * whole object to [raw] (sent back unchanged by [toPayload]). `null` when
          * it is not a map or has no non-blank `type`. `from` / `length` may arrive as numbers or
          * decimal strings.
          */
@@ -136,10 +156,10 @@ data class TextElement(
                 ?.toMap()
                 .orEmpty()
             if (type == TextElementType.LINK && (attributes["url"] as? String).isNullOrEmpty()) return null
-            val extra = if (known != null) emptyMap() else m.entries
-                .mapNotNull { (k, v) -> (k as? String)?.takeIf { it !in RESERVED_KEYS }?.let { it to v } }
+            val extra = m.entries
+                .mapNotNull { (k, v) -> (k as? String)?.takeIf { it !in RESERVED_KEYS }?.let { it to plainNumbers(v) } }
                 .toMap()
-            return TextElement(
+            val element = TextElement(
                 type = type,
                 from = from,
                 length = length,
@@ -148,6 +168,22 @@ data class TextElement(
                 attributes = attributes,
                 extra = extra,
             )
+            val raw = LinkedHashMap<String, Any?>().apply { for ((k, v) in m) if (k is String) put(k, v) }
+            element.raw = raw
+            element.rawCurrent = sent == type &&
+                (raw["from"] as? Number)?.toLong() == from.toLong() &&
+                (raw["length"] as? Number)?.toLong() == length.toLong() &&
+                (raw["entityId"] == null || raw["entityId"] is Number)
+            return element
+        }
+
+        /** [v] with integer numbers as `Long` and fractions as `Double`, in nested maps and lists too. */
+        private fun plainNumbers(v: Any?): Any? = when (v) {
+            is Byte, is Short, is Int -> (v as Number).toLong()
+            is Float -> v.toDouble()
+            is Map<*, *> -> LinkedHashMap<Any?, Any?>().apply { for ((k, x) in v) put(k, plainNumbers(x)) }
+            is List<*> -> v.map(::plainNumbers)
+            else -> v
         }
 
         /** Every valid element of [raw] in order ([parse]); a non-list is empty. */
