@@ -14,6 +14,8 @@ import com.max.core.api.MessageReaders
 import com.max.core.api.PhoneContact
 import com.max.core.api.PhoneNumbers
 import com.max.core.api.PresenceInfo
+import com.max.core.api.PresenceStatus
+import com.max.core.api.Presences
 import com.max.core.api.ReactionInfo
 import com.max.core.api.TypingType
 import com.max.core.api.asLong
@@ -32,7 +34,15 @@ import com.max.core.events.MaxEvent
  * @property users users / contacts by id.
  * @property contactIds ids of the account's contact list (`contacts` of the `LOGIN` reply,
  *   without the own profile). Their profiles are in [users].
- * @property presence last presence per user id.
+ * @property presence last presence per user id (`seen` as sent, Unix seconds; `status` codes in
+ *   [PresenceStatus]). A push without `seen` keeps the stored time. "Online" is not trusted
+ *   forever: [StateReducer.expirePresence] turns an online entry not refreshed within the
+ *   server's `presence-ttl` into offline, and every `LOGIN` (new session, reconnect) does that
+ *   for all online entries before the reply's own `presence` is applied. Read through
+ *   [presenceAt] to get the TTL applied between two sweeps.
+ * @property presenceTimes local clock time (ms) at which each [presence] entry last came from the
+ *   server (`LOGIN`, push 132, `CONTACT_PRESENCE` 35, `CHAT_MEMBERS`). An entry without a time
+ *   (put by older code paths) is never expired by the TTL, only by a new session.
  * @property typing per chat id: user id → local clock time (ms) of the last `NOTIF_TYPING`.
  *   The protocol has no "stopped typing" push; see [typingUsers].
  * @property readMarks per chat id: user id → last read `mark` (`NOTIF_MARK` 130). Merged with the
@@ -54,7 +64,11 @@ import com.max.core.events.MaxEvent
  *   ([StateReducer.setLocalName]).
  *   Both maps are device data: a `LOGIN` of another account keeps them, [MaxStore.clear] drops them.
  * @property drafts server drafts by chat id (`LOGIN` `drafts`, confirmed `DRAFT_SAVE` /
- *   `DRAFT_DISCARD`); a `LOGIN` of another account drops them.
+ *   `DRAFT_DISCARD`, pushes 152 / 153); a `LOGIN` of another account drops them.
+ * @property preferAddressBookNames name rule of [displayName]: `true` (default) the address book
+ *   wins over the contact name this account set, `false` the other way round
+ *   ([ContactNames.resolve]). A client setting: it survives a `LOGIN` of another account and
+ *   [MaxStore.clear].
  */
 data class MaxState(
     val me: Long? = null,
@@ -71,7 +85,25 @@ data class MaxState(
     val addressBook: Map<String, String> = emptyMap(),
     val localNames: Map<Long, String> = emptyMap(),
     val drafts: Map<Long, MaxDraft> = emptyMap(),
+    val presenceTimes: Map<Long, Long> = emptyMap(),
+    val preferAddressBookNames: Boolean = true,
 ) {
+    /**
+     * Presence of [userId] at local time [now] (ms): the stored entry, but an `ONLINE` one that has
+     * not been refreshed for more than [ttlMs] reads as offline with the last known time
+     * ([Presences.degrade]). `null` when nothing is known.
+     */
+    fun presenceAt(userId: Long, now: Long, ttlMs: Long = DEFAULT_PRESENCE_TTL_MS): PresenceInfo? {
+        val p = presence[userId] ?: return null
+        if (p.status != PresenceStatus.ONLINE) return p
+        val at = presenceTimes[userId] ?: return p
+        return if (now - at > ttlMs) Presences.degrade(p, at) else p
+    }
+
+    /** [PresenceStatus.of] the [presenceAt] of [userId]: `-1` unknown, else `0`..`3`. */
+    fun presenceStatus(userId: Long, now: Long, ttlMs: Long = DEFAULT_PRESENCE_TTL_MS): Int =
+        PresenceStatus.of(presenceAt(userId, now, ttlMs))
+
     /** The server draft of [chatId], or `null`. */
     fun draftOf(chatId: Long): MaxDraft? = drafts[chatId]
 
@@ -85,9 +117,10 @@ data class MaxState(
     /**
      * The name to show for [userId] ([ContactNames.resolve]): address-book name > the contact
      * name this account set (`CUSTOM`) > the user's own name (`ONEME`) > the first entry of
-     * `names` > the phone. `null` when none is known; [displayLabel] adds the last fallback.
+     * `names` > the phone; with [preferAddressBookNames] `false` the first two swap. `null` when
+     * none is known; [displayLabel] adds the last fallback.
      */
-    fun displayName(userId: Long): String? = ContactNames.resolve(users[userId], addressBookName(userId))
+    fun displayName(userId: Long): String? = ContactNames.resolve(users[userId], addressBookName(userId), preferAddressBookNames)
 
     /** [displayName], or [ContactNames.FALLBACK] ("Участник") when nothing is known. */
     fun displayLabel(userId: Long): String = displayName(userId) ?: ContactNames.FALLBACK
@@ -159,6 +192,9 @@ data class MaxState(
 
     companion object {
         const val DEFAULT_TYPING_TTL_MS: Long = 8_000
+
+        /** `presence-ttl` of the server config (300 s) when the config has none. */
+        const val DEFAULT_PRESENCE_TTL_MS: Long = 300_000
         private fun activity(c: Chat): Long = maxOf(c.lastEventTime, c.lastMessage?.time ?: 0)
     }
 }
@@ -188,7 +224,14 @@ data class MaxState(
  *   everything after the mark (no hole, last message stored, oldest stored message not newer than
  *   the mark). With an incomplete cache the server's counter is kept (at least the stored count).
  *   `setAsUnread = true` makes it at least 1.
- * - [MaxEvent.Presence] — replaces the user's presence (a push without `status` clears it).
+ * - [MaxEvent.Presence] — replaces the user's presence ([Presences.merge]: a push without `seen`
+ *   keeps the stored time, a push without `status` reads as offline) and records `now` in
+ *   [MaxState.presenceTimes].
+ * - [MaxEvent.DraftSaved] (152) — the draft of its chat ([MaxEvent.DraftSaved.targetChatId]) by
+ *   [Drafts.mergeRemote] (only a later time replaces ours). An empty draft ([MaxDraft.isEmpty])
+ *   is read as a discard at its time.
+ * - [MaxEvent.DraftDiscarded] (153) — removes the chat's draft unless ours is newer than the
+ *   discard. Both are ignored for a dialog while [MaxState.me] is unknown.
  * - [MaxEvent.ReactionsChanged] — replaces counters / total of the stored message. The own
  *   `yourReaction` is taken from the push when it has one, otherwise the stored one is kept while
  *   its counter is still in the push.
@@ -210,7 +253,20 @@ object StateReducer {
             typingTypes = state.typingTypes.set2(event.chatId, event.userId, event.effectiveType),
         )
         is MaxEvent.MessageRead -> read(state, event)
-        is MaxEvent.Presence -> state.copy(presence = state.presence + (event.userId to PresenceInfo(event.seen, event.status)))
+        is MaxEvent.Presence -> putPresence(state, mapOf(event.userId to PresenceInfo(event.seen, event.status)), now)
+        is MaxEvent.DraftSaved -> {
+            val chatId = event.targetChatId(state.me)
+            val draft = chatId?.let { event.toDraft(it) }
+            when {
+                draft == null -> state
+                draft.isEmpty -> discardDraft(state, draft.chatId, draft.updateTime)
+                else -> state.copy(drafts = state.drafts + (draft.chatId to Drafts.mergeRemote(state.drafts[draft.chatId], draft)))
+            }
+        }
+        is MaxEvent.DraftDiscarded -> {
+            val chatId = event.targetChatId(state.me)
+            if (chatId == null) state else discardDraft(state, chatId, event.time)
+        }
         is MaxEvent.ReactionsChanged -> reactions(state, event)
         is MaxEvent.FoldersChanged -> state.copy(
             chatFolders = (state.chatFolders ?: ChatFolders(emptyList())).merge(event.folders, event.foldersOrder, event.folderSync),
@@ -226,14 +282,25 @@ object StateReducer {
      * [MaxState.chatFolders] when present ([ChatFolders.fromLoginConfig]); a reply without it keeps
      * the known folders.
      */
-    fun login(state: MaxState, result: LoginResult, messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT): MaxState {
-        // Another account: a fresh snapshot, but the device address book stays.
+    fun login(state: MaxState, result: LoginResult, messageLimit: Int = MaxStore.DEFAULT_MESSAGE_LIMIT): MaxState =
+        login(state, result, messageLimit, NO_TIME)
+
+    /**
+     * [login] at local time [now] (ms), used for [MaxState.presenceTimes]. A new session does not
+     * trust any stored "online": every `ONLINE` entry first becomes offline with its last known
+     * time ([invalidateOnline]); then the reply's `presence` map (`{userId: {seen, status}}`,
+     * KometTeam/Komet `PresenceFetch.primeAll`) is applied ([putPresence]). With [now] [NO_TIME]
+     * the applied entries get no refresh time and are not expired by the TTL.
+     */
+    fun login(state: MaxState, result: LoginResult, messageLimit: Int, now: Long): MaxState {
+        // Another account: a fresh snapshot, but the device address book and the name rule stay.
         val base = if (result.userId != null && state.me != null && result.userId != state.me) {
-            MaxState(addressBook = state.addressBook, localNames = state.localNames)
+            MaxState(addressBook = state.addressBook, localNames = state.localNames, preferAddressBookNames = state.preferAddressBookNames)
         } else {
             state
         }
-        var s = base.copy(me = result.userId ?: base.me)
+        var s = invalidateOnline(base.copy(me = result.userId ?: base.me))
+        Presences.parseMap(result.raw["presence"])?.let { s = putPresence(s, it, now) }
         ChatFolders.fromLoginConfig(result.raw)?.let { s = s.copy(chatFolders = it) }
         s = putChats(s, result.chats.mapNotNull(Chat::from))
         val contacts = (result.raw["contacts"] as? List<*>)?.mapNotNull(MaxUser::from)
@@ -265,6 +332,67 @@ object StateReducer {
             if (stored.updateTime <= time) drafts.remove(chatId)
         }
         return state.copy(drafts = drafts)
+    }
+
+    /** Local time meaning "unknown" for [login] / [putPresence]: no refresh time is recorded. */
+    const val NO_TIME: Long = Long.MIN_VALUE
+
+    /**
+     * Presence entries from the server (`LOGIN`, push 132, `CONTACT_PRESENCE` 35, `CHAT_MEMBERS`):
+     * each replaces the stored one ([Presences.merge], a missing `seen` keeps the stored time)
+     * and records [now] in [MaxState.presenceTimes] (not with [NO_TIME]).
+     */
+    fun putPresence(state: MaxState, entries: Map<Long, PresenceInfo>, now: Long): MaxState {
+        if (entries.isEmpty()) return state
+        val presence = LinkedHashMap(state.presence)
+        val times = LinkedHashMap(state.presenceTimes)
+        for ((id, p) in entries) {
+            presence[id] = Presences.merge(presence[id], p)
+            if (now != NO_TIME) times[id] = now else times.remove(id)
+        }
+        return state.copy(presence = presence, presenceTimes = times)
+    }
+
+    /**
+     * Turns every `ONLINE` entry not refreshed for more than [ttlMs] at [now] into offline with
+     * its last known time ([Presences.degrade]). Entries without a refresh time are kept.
+     */
+    fun expirePresence(state: MaxState, now: Long, ttlMs: Long): MaxState {
+        var changed: LinkedHashMap<Long, PresenceInfo>? = null
+        for ((id, p) in state.presence) {
+            if (p.status != PresenceStatus.ONLINE) continue
+            val at = state.presenceTimes[id] ?: continue
+            if (now - at <= ttlMs) continue
+            if (changed == null) changed = LinkedHashMap(state.presence)
+            changed[id] = Presences.degrade(p, at)
+        }
+        return if (changed == null) state else state.copy(presence = changed)
+    }
+
+    /**
+     * Every `ONLINE` entry becomes offline with its last known time ([Presences.degrade]): a new
+     * session or a reconnect, until fresh presence arrives.
+     */
+    fun invalidateOnline(state: MaxState): MaxState {
+        if (state.presence.values.none { it.status == PresenceStatus.ONLINE }) return state
+        return state.copy(
+            presence = state.presence.mapValues { (id, p) ->
+                if (p.status == PresenceStatus.ONLINE) Presences.degrade(p, state.presenceTimes[id]) else p
+            },
+        )
+    }
+
+    /** Sets [MaxState.preferAddressBookNames]. */
+    fun setPreferAddressBookNames(state: MaxState, prefer: Boolean): MaxState =
+        if (state.preferAddressBookNames == prefer) state else state.copy(preferAddressBookNames = prefer)
+
+    /**
+     * A discard of [chatId]'s draft at [time] (push 153, a `discarded` entry): applied when the
+     * stored draft is not newer than [time]; a newer stored draft stays.
+     */
+    fun discardDraft(state: MaxState, chatId: Long, time: Long): MaxState {
+        val stored = state.drafts[chatId] ?: return state
+        return if (stored.updateTime <= time) state.copy(drafts = state.drafts - chatId) else state
     }
 
     /** One draft (a confirmed `DRAFT_SAVE`) by the store rule ([Drafts.merge]). */

@@ -22,6 +22,11 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * Between logins it keeps the state PyMax persists: a refreshed [token] from the reply and the
  * [sync] markers (`time`, `config.hash`), so a re-login after reconnect asks only for changes.
+ * `presenceSync` is the exception: the reply's `presence` delta is only worth skipping once it
+ * sits in a store, so the login keeps the old marker and the owner of the store moves it with
+ * [presenceApplied] after applying the reply (`MaxClient` does). A reply that was dropped (an
+ * account switch, a late reply) thus leaves `presenceSync` where it was, and the next `LOGIN`
+ * asks for that presence again.
  * An invalid token fails the hook with [InvalidTokenException], which ends the session in
  * `Failed` (it is a `FatalSessionError`).
  *
@@ -37,10 +42,17 @@ class TokenLogin(
     val device: DeviceInfo,
     val fingerprint: ApkFingerprint? = ApkFingerprint.forVersion(device.userAgent.appVersion),
     sync: SyncState = SyncState(),
-    val interactive: Boolean = true,
+    interactive: Boolean = true,
     val chatsCount: Int? = null,
     val followLogin2: Boolean = true,
 ) {
+    /**
+     * `interactive` of the next `LOGIN` (the user is looking at the app). `MaxClient.setInteractive`
+     * keeps it in step with the PING flag, so a reconnect in the background logs in non-interactive.
+     */
+    @kotlin.concurrent.Volatile
+    var interactive: Boolean = interactive
+
     /** Current login token (replaced when a `LOGIN` reply carries a new one). */
     var token: String = token
         private set
@@ -65,6 +77,17 @@ class TokenLogin(
     /** Replaces [sync], e.g. with a new `configHash` returned by `CONFIG` (22). */
     fun updateSync(transform: (SyncState) -> SyncState) {
         sync = transform(sync)
+    }
+
+    /**
+     * Marks the `presence` of [result] (a reply of this login) as applied to a store: the next
+     * `LOGIN` sends its `time` as `presenceSync`. Does nothing for a reply without a `presence`
+     * map or without `time`.
+     */
+    fun presenceApplied(result: LoginResult) {
+        val time = result.time ?: return
+        if (result.raw["presence"] !is Map<*, *>) return
+        sync = sync.copy(presenceSync = time)
     }
 
     private val _result = MutableStateFlow<LoginResult?>(null)
@@ -92,7 +115,8 @@ class TokenLogin(
         sentSync = sync
         val r = api.login(token, sync, interactive, chatsCount, handshake)
         r.token?.let { token = it }
-        sync = sync.updatedBy(r)
+        // presenceSync moves only when the reply's presence reached a store (presenceApplied)
+        sync = sync.updatedBy(r).copy(presenceSync = sync.presenceSync)
         val flags = r.login2
         var r2: Login2Result? = null
         if (followLogin2 && flags != null && flags.enabled) {

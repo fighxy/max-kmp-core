@@ -8,15 +8,34 @@ import com.max.core.protocol.Opcode
  * (`UserService`) and `payloads.py`. PyMax's user cache is not reproduced (the caller can keep
  * results in `com.max.core.state.MaxStore.putUsers`).
  *
- * Contact search by name and presence subscription have no payload in the references and are not
- * exposed; of the contact list opcodes (35-40) only the black list page of `CONTACT_LIST` 36 is.
- * `CONTACT_UPDATE` 34 covers add, rename (`UPDATE`), remove, block and unblock.
+ * Contact search by name has no payload in the references and is not exposed; of the contact
+ * list opcodes (35-40) `CONTACT_PRESENCE` 35 ([getPresence]) and the black list page of
+ * `CONTACT_LIST` 36 are. `CONTACT_UPDATE` 34 covers add, rename (`UPDATE`), remove, block and
+ * unblock.
  */
 class UsersApi(private val sink: RequestSink) {
     /** Users by id (`CONTACT_INFO` 32, `{contactIds}`); reply `contacts`. Unknown ids are absent. */
     suspend fun getUsers(userIds: List<Long>): List<MaxUser> {
         require(userIds.isNotEmpty()) { "userIds must not be empty" }
         return userList(Opcode.CONTACT_INFO, linkedMapOf("contactIds" to userIds))
+    }
+
+    /**
+     * Presence of users (`CONTACT_PRESENCE` 35, `{contactIds}` → `{presence: {userId: {seen,
+     * status}}}`; MAX web client and KometTeam/Komet `PresenceFetch`). Ids go out in batches of
+     * at most [PRESENCE_BATCH] (Komet's limit), one request after another; duplicates are dropped.
+     * An asked id missing from the reply is [PresenceStatus.LONG_AGO] without a time, as the web
+     * client reads it ([Presences.fromContactPresence]). `seen` is Unix seconds.
+     */
+    suspend fun getPresence(userIds: List<Long>): Map<Long, PresenceInfo> {
+        val ids = userIds.distinct()
+        require(ids.isNotEmpty()) { "userIds must not be empty" }
+        val out = LinkedHashMap<Long, PresenceInfo>()
+        for (chunk in ids.chunked(PRESENCE_BATCH)) {
+            val reply = rawMap(sink.request(Opcode.CONTACT_PRESENCE, linkedMapOf("contactIds" to chunk)))
+            out.putAll(Presences.fromContactPresence(chunk, reply))
+        }
+        return out
     }
 
     /** One user via [getUsers], or `null` if the server did not return it (PyMax `get_user`). */
@@ -42,15 +61,16 @@ class UsersApi(private val sink: RequestSink) {
      * Renames a contact for this account (`CONTACT_UPDATE` 34, `{contactId, action: "UPDATE",
      * firstName, lastName}`, as the MAX web client and KometTeam/Komet `updateContact` send it);
      * reply `contact`. The new name is the user's `CUSTOM` entry of `names`, seen only by this
-     * account. Both names are trimmed; a blank [lastName] goes out as `null` (web client). A
-     * blank [firstName] or a name over [CONTACT_NAME_MAX] characters fails before sending (the
-     * server answers `error.contact.name.empty` / `error.contact.name.maxlength`). The web client
-     * adds a user who is not a contact yet (`ADD`, [addContact]) before renaming.
+     * account. Both names are trimmed; a blank [lastName] goes out as `null` (web client). An
+     * empty [firstName] is allowed and sent as `""`, as the web client does: with a last name the
+     * server shows the person's own first name, with both empty the original names come back.
+     * A name over [CONTACT_NAME_MAX] characters fails before sending (the server answers
+     * `error.contact.name.maxlength`). The web client adds a user who is not a contact yet
+     * (`ADD`, [addContact]) before renaming.
      */
     suspend fun renameContact(userId: Long, firstName: String, lastName: String? = null): MaxUser {
         val first = firstName.trim()
         val last = lastName?.trim()?.takeIf { it.isNotEmpty() }
-        require(first.isNotEmpty()) { "firstName must not be blank" }
         require(first.length <= CONTACT_NAME_MAX && (last?.length ?: 0) <= CONTACT_NAME_MAX) { "name longer than $CONTACT_NAME_MAX" }
         val payload = linkedMapOf<String, Any?>("contactId" to userId, "action" to "UPDATE", "firstName" to first, "lastName" to last)
         return contact(Opcode.CONTACT_UPDATE, sink.request(Opcode.CONTACT_UPDATE, payload).payload)
@@ -142,6 +162,9 @@ class UsersApi(private val sink: RequestSink) {
     companion object {
         /** Longest first or last name of a contact the server accepts (MAX web client form). */
         const val CONTACT_NAME_MAX = 64
+
+        /** Most ids per `CONTACT_PRESENCE` 35 request ([getPresence]; KometTeam/Komet `PresenceFetch`). */
+        const val PRESENCE_BATCH = 100
 
         /** Id of the dialog between two users (PyMax `get_chat_id`: `a xor b`). */
         fun dialogChatId(firstUserId: Long, secondUserId: Long): Long = firstUserId xor secondUserId

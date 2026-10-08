@@ -88,7 +88,11 @@ sealed interface MaxEvent {
         override val raw: Any?,
     ) : MaxEvent
 
-    /** Presence changed (`NOTIF_PRESENCE` 132 `{presence: {seen?, status?}, userId}`; PyMax `PresenceEvent`). */
+    /**
+     * Presence changed (`NOTIF_PRESENCE` 132 `{presence: {seen?, status?}, userId}`; PyMax
+     * `PresenceEvent`). [status] codes are in [com.max.core.api.PresenceStatus]; [seen] is Unix
+     * seconds. A push without `seen` keeps the stored time ([com.max.core.api.Presences.merge]).
+     */
     data class Presence(val userId: Long, val seen: Long?, val status: Int?, override val opcode: Int, override val raw: Any?) : MaxEvent
 
     /**
@@ -176,6 +180,48 @@ sealed interface MaxEvent {
 
         /** The new config hash, `null` when the push has none. */
         val hash: String? get() = update.hash
+    }
+
+    /**
+     * A draft saved on another device (`NOTIF_DRAFT` 152). The references only name the opcode
+     * and the MAX web client ignores the push, so the payload is read tolerantly in the shape of
+     * the `DRAFT_SAVE` 176 request: `{chatId | userId, draft: {text?, elements?, replyTo?,
+     * attaches?, saveTime | updateTime | time}}` (a top-level `time` is used when the draft has
+     * none). Exactly one of [chatId] / [userId] is set (a dialog is addressed by the peer, see
+     * [targetChatId]). A push without an address or a time stays [Unknown].
+     */
+    data class DraftSaved(
+        val chatId: Long?,
+        val userId: Long?,
+        val time: Long,
+        val text: String,
+        val elements: List<com.max.core.api.TextElement>,
+        val replyTo: Long?,
+        val draft: Map<*, *>,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent {
+        /** The chat the draft belongs to: [chatId], or the dialog with [userId] (`me xor userId`); `null` without [me]. */
+        fun targetChatId(me: Long?): Long? = chatId ?: userId?.let { u -> me?.let { com.max.core.api.Drafts.dialogChatId(it, u) } }
+
+        /** The draft for chat [chatId] ([com.max.core.api.MaxDraft.attaches] are read from [draft]). */
+        fun toDraft(chatId: Long): com.max.core.api.MaxDraft = com.max.core.api.MaxDraft(chatId, text, elements, replyTo, time, draft)
+    }
+
+    /**
+     * A draft discarded on another device (`NOTIF_DRAFT_DISCARD` 153), read in the shape of the
+     * `DRAFT_DISCARD` 177 request: `{chatId | userId, time}`. Unverified like [DraftSaved]; a
+     * push without an address or a time stays [Unknown].
+     */
+    data class DraftDiscarded(
+        val chatId: Long?,
+        val userId: Long?,
+        val time: Long,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent {
+        /** As [DraftSaved.targetChatId]. */
+        fun targetChatId(me: Long?): Long? = chatId ?: userId?.let { u -> me?.let { com.max.core.api.Drafts.dialogChatId(it, u) } }
     }
 
     /**

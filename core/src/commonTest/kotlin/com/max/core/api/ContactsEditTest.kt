@@ -27,7 +27,12 @@ class ContactsEditTest {
         api.renameContact(5, "Ваня", " Петров ")
         assertEquals("Петров", (sink.sent[1].second as Map<*, *>)["lastName"])
 
-        assertFailsWith<IllegalArgumentException> { UsersApi(ScriptSink()).renameContact(5, "  ") }
+        // an empty first name is allowed (web client): sent as "", the server falls back to the own name
+        val blank = ScriptSink(mapOf("contact" to renamed), mapOf("contact" to renamed))
+        UsersApi(blank).renameContact(5, "  ", "Петров")
+        assertEquals(mapOf("contactId" to 5L, "action" to "UPDATE", "firstName" to "", "lastName" to "Петров"), blank.sent[0].second)
+        UsersApi(blank).renameContact(5, "", "")
+        assertEquals(mapOf("contactId" to 5L, "action" to "UPDATE", "firstName" to "", "lastName" to null), blank.sent[1].second)
         assertFailsWith<IllegalArgumentException> { UsersApi(ScriptSink()).renameContact(5, "a".repeat(65)) }
         assertFailsWith<IllegalArgumentException> { UsersApi(ScriptSink()).renameContact(5, "a", "b".repeat(65)) }
         UsersApi(ScriptSink(mapOf("contact" to renamed))).renameContact(5, "a".repeat(64))

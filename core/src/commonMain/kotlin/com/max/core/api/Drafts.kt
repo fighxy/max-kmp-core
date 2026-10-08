@@ -7,7 +7,8 @@ import com.max.core.protocol.Opcode
  * A server draft of one chat (MAX web client: `{saveTime, text, elements, replyTo?, attaches?}`).
  * [chatId] is the chat it belongs to (for a dialog `me xor peer`, see [Drafts.dialogChatId]);
  * [updateTime] is the server's save time (`saveTime`, the `time` of the `DRAFT_SAVE` reply).
- * Attachments are kept only in [raw]: no client sends them.
+ * Attachments of an incoming draft (`LOGIN`, push 152) are read into [attaches] from [raw]; the
+ * core never sends them. A draft with empty text but a [replyTo] is a valid draft.
  */
 data class MaxDraft(
     val chatId: Long,
@@ -16,7 +17,16 @@ data class MaxDraft(
     val replyTo: Long?,
     val updateTime: Long,
     val raw: Map<*, *> = emptyMap<Any?, Any?>(),
-)
+) {
+    /** `attaches` of the draft as the server sent them (maps); empty when none. Read only, never sent. */
+    val attaches: List<Map<*, *>> get() = (raw["attaches"] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>()
+
+    /**
+     * No draft at all: blank text (after trimming) and no [replyTo] (shared Orbitle rule, fixtures
+     * `test-fixtures/drafts/merge.json`; a reply alone is a draft, attachments do not count).
+     */
+    val isEmpty: Boolean get() = text.isBlank() && replyTo == null
+}
 
 /**
  * Drafts of the `LOGIN` 19 reply: `drafts: {chats: {saved: {chatId: draft}, discarded: {chatId:
@@ -48,9 +58,12 @@ object Drafts {
     /**
      * The address of [chat]'s draft: a `DIALOG` (also bots and Saved Messages) is addressed by
      * the other participant's id (the own id for Saved Messages), anything else by `chatId`. A
-     * chat not known ([chat] `null`) is addressed by [chatId].
+     * chat not known ([chat] `null`) is judged by its id as the MAX web client does: `0` (Saved
+     * Messages) is the own id, a positive id is a dialog with `chatId xor me`, a negative one a
+     * group or channel (`chatId`). Without [me] everything goes by `chatId`.
      */
     fun address(chatId: Long, chat: Chat?, me: Long?): DraftAddress {
+        if (chat == null && me != null && chatId >= 0) return DraftAddress(null, if (chatId == 0L) me else chatId xor me)
         if (chat == null || chat.type != "DIALOG" || me == null) return DraftAddress(chatId, null)
         val ids = (chat.raw["participants"] as? Map<*, *>).orEmpty().keys.mapNotNull { it.asLong() }.distinct()
         val peer = ids.firstOrNull { it != me } ?: me.takeIf { ids.contains(me) } ?: (chatId xor me)
@@ -74,7 +87,7 @@ object Drafts {
             val map = section as? Map<*, *> ?: return
             (map["saved"] as? Map<*, *>).orEmpty().forEach { (k, v) ->
                 val id = k.asLong()?.let(chatIdOf) ?: return@forEach
-                parse(id, v)?.let { d -> if ((saved[id]?.updateTime ?: Long.MIN_VALUE) < d.updateTime) saved[id] = d }
+                parse(id, v)?.takeUnless { it.isEmpty }?.let { d -> if ((saved[id]?.updateTime ?: Long.MIN_VALUE) < d.updateTime) saved[id] = d }
             }
             (map["discarded"] as? Map<*, *>).orEmpty().forEach { (k, v) ->
                 val id = k.asLong()?.let(chatIdOf) ?: return@forEach
@@ -93,12 +106,20 @@ object Drafts {
      */
     fun merge(stored: MaxDraft?, incoming: MaxDraft): MaxDraft =
         if (stored != null && stored.updateTime > incoming.updateTime) stored else incoming
+
+    /**
+     * Rule for a draft saved on another device (push 152): only a strictly later [incoming]
+     * replaces [stored]; on an equal time ours stays (shared Orbitle rule, fixture
+     * `drafts/merge.json` `equal-keeps-local`).
+     */
+    fun mergeRemote(stored: MaxDraft?, incoming: MaxDraft): MaxDraft =
+        if (stored != null && stored.updateTime >= incoming.updateTime) stored else incoming
 }
 
 /**
  * Server drafts: `DRAFT_SAVE` 176 and `DRAFT_DISCARD` 177, as the MAX web client sends them.
- * Pushes `NOTIF_DRAFT` 152 / `NOTIF_DRAFT_DISCARD` 153 are not read (the web client ignores them
- * and their payload is unverified); they stay `MaxEvent.Unknown`.
+ * The pushes `NOTIF_DRAFT` 152 / `NOTIF_DRAFT_DISCARD` 153 (ignored by the web client, payload
+ * unverified) are read tolerantly as `MaxEvent.DraftSaved` / `MaxEvent.DraftDiscarded`.
  */
 class DraftsApi(private val sink: RequestSink) {
     /**

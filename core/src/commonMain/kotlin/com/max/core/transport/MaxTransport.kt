@@ -53,8 +53,9 @@ import kotlin.time.Duration
  *   connection so a blocked socket cannot hold the caller or later writers, and so does a timeout
  *   during which not a byte came from the server (a dead socket, as after iOS suspended the app).
  *   The connect (TCP + proxy + TLS) times out after [TransportConfig.connectTimeout];
- * - PING (opcode 1, `{"interactive": true}`) every [TransportConfig.pingInterval], first one after
- *   one interval, fire-and-forget (the reply is dropped);
+ * - PING (opcode 1, `{"interactive": <pingInteractive>}`) every [TransportConfig.pingInterval],
+ *   first one after one interval, fire-and-forget (the reply is dropped); the flag starts as
+ *   [TransportConfig.pingInteractive] and [setPingInteractive] switches it on a live connection;
  * - on a drop every pending request fails with [ConnectionClosedException]; with
  *   [TransportConfig.autoReconnect] the transport reconnects after [reconnectDelay] (2, 4, 8,
  *   15, 15 s ...), resetting the attempt counter after each successful connection.
@@ -137,6 +138,14 @@ class MaxTransport(
     private var inboundChunks = 0L
     private var readerJob: Job? = null
     private var pingJob: Job? = null
+
+    /**
+     * The `interactive` flag of every PING: `true` while the user is looking at the app (the MAX web
+     * client sends "not idle"), `false` in the background. Starts as [TransportConfig.pingInteractive].
+     */
+    @kotlin.concurrent.Volatile
+    var pingInteractive: Boolean = config.pingInteractive
+        private set
     private var supervisorJob: Job? = null
 
     override fun receive(): Flow<ByteArray> = rawChunks.asSharedFlow()
@@ -240,6 +249,26 @@ class MaxTransport(
         return seqValue
     }
 
+    /**
+     * Switches the PING `interactive` flag (kolibri `set_ping_interactive`): every later PING carries
+     * [interactive], and when the flag changed and a connection is up one PING with it goes out at
+     * once (fire-and-forget), so the server learns about it without waiting for the next tick.
+     * Returns `true` when that PING was written. Never throws for a send error.
+     */
+    suspend fun setPingInteractive(interactive: Boolean): Boolean {
+        val changed = pingInteractive != interactive
+        pingInteractive = interactive
+        if (!changed) return false
+        return try {
+            sendRequest(Opcode.PING.value, mapOf("interactive" to interactive))
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            false
+        }
+    }
+
     override suspend fun close() {
         lifecycleLock.withLock {
             val supervisor = supervisorJob
@@ -284,7 +313,7 @@ class MaxTransport(
         }
         stateLock.withLock {
             if (connection === conn && reader.isActive) {
-                pingJob = scope.launch { pingLoop(cfg.pingInterval, cfg.pingInteractive) }
+                pingJob = scope.launch { pingLoop(cfg.pingInterval) }
             }
         }
         if (reader.isActive) _state.value = ConnectionState.Connected
@@ -385,12 +414,12 @@ class MaxTransport(
         }
     }
 
-    private suspend fun pingLoop(interval: Duration, interactive: Boolean) {
+    private suspend fun pingLoop(interval: Duration) {
         if (interval == Duration.INFINITE || !interval.isPositive()) return
         while (true) {
             delay(interval)
             try {
-                sendRequest(Opcode.PING.value, mapOf("interactive" to interactive))
+                sendRequest(Opcode.PING.value, mapOf("interactive" to pingInteractive))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {

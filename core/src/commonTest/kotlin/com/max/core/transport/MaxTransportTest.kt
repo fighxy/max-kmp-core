@@ -271,6 +271,31 @@ class MaxTransportTest {
     }
 
     @Test
+    fun pingInteractiveSwitchesAndSendsAtOnce() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val t = transport(factory, quiet.copy(pingInterval = 30.seconds))
+        // not connected: only remembered
+        assertFalse(t.setPingInteractive(false))
+        t.connect()
+        val conn = factory.lastConnection!!
+        // unchanged: nothing goes out
+        assertFalse(t.setPingInteractive(false))
+        assertNull(conn.written.tryReceive().getOrNull())
+        advanceTimeBy(30_001)
+        runCurrent()
+        assertEquals(mapOf("interactive" to false), decode(conn.written.tryReceive().getOrNull()!!).second)
+        // back to the foreground: one PING at once, the ticks follow the flag
+        assertTrue(t.setPingInteractive(true))
+        val (h, payload) = decode(conn.written.tryReceive().getOrNull()!!)
+        assertEquals(Opcode.PING.value, h.opcodeValue)
+        assertEquals(mapOf("interactive" to true), payload)
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(mapOf("interactive" to true), decode(conn.written.tryReceive().getOrNull()!!).second)
+        t.close()
+    }
+
+    @Test
     fun pingGoesOutEveryIntervalStartingAfterOneInterval() = runTest {
         val factory = ScriptedConnectionFactory()
         val t = transport(factory, quiet.copy(pingInterval = 30.seconds))

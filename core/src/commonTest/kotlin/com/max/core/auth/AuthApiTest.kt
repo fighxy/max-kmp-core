@@ -354,6 +354,43 @@ class AuthApiTest {
         assertIs<SessionState.Failed>(m.state.value)
     }
 
+    @Test
+    fun presenceSyncMovesOnlyWhenTheReplyPresenceWasApplied() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val login = TokenLogin("stored-token", device, sync = SyncState(presenceSync = 5), interactive = false)
+        val m = SessionMachine(SessionConfig(quiet.copy(autoReconnect = true), device), factory, scope = backgroundScope, afterHandshake = login.hook)
+        val connecting = async { m.connect() }
+        runCurrent()
+        factory.lastConnection!!.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to 1))
+        runCurrent()
+        val sent = factory.lastConnection!!.answer(Opcode.LOGIN, mapOf("time" to 1000, "presence" to mapOf("7" to mapOf("seen" to 1, "status" to 1)))) as Map<*, *>
+        connecting.await()
+        assertEquals(5L, (sent["presenceSync"] as Number).toLong())
+        assertEquals(false, sent["interactive"])
+        // the reply is in, but nobody applied its presence yet (e.g. the client dropped it)
+        assertEquals(1000L, login.sync.chatsSync)
+        assertEquals(5L, login.sync.presenceSync)
+
+        // reconnect: still asks from 5, and the interactive flag follows the setter
+        login.interactive = true
+        factory.lastConnection!!.close()
+        advanceTimeBy(2_001)
+        runCurrent()
+        factory.lastConnection!!.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to 2))
+        runCurrent()
+        val again = factory.lastConnection!!.answer(Opcode.LOGIN, mapOf("time" to 2000, "presence" to emptyMap<String, Any?>())) as Map<*, *>
+        runCurrent()
+        assertEquals(5L, (again["presenceSync"] as Number).toLong())
+        assertEquals(true, again["interactive"])
+        login.presenceApplied(login.result.value!!)
+        assertEquals(2000L, login.sync.presenceSync)
+        // a reply without `presence` (or without `time`) moves nothing
+        login.presenceApplied(LoginResult.from(mapOf("time" to 3000)))
+        login.presenceApplied(LoginResult.from(mapOf("presence" to emptyMap<String, Any?>())))
+        assertEquals(2000L, login.sync.presenceSync)
+        m.disconnect()
+    }
+
     // --- QR login approval (290) ---
 
     private val qrLink = "https://max.ru/:auth/qr?t=abc123"

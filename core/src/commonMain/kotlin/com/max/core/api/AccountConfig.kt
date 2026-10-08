@@ -136,6 +136,14 @@ data class AccountConfig(
     val maxReadmarks: Int
         get() = server["max-readmarks"].asLong()?.takeIf { it in 1..Int.MAX_VALUE }?.toInt() ?: DEFAULT_MAX_READMARKS
 
+    /**
+     * `config.server["presence-ttl"]` in seconds: how long a presence (above all "online") is
+     * trusted without a refresh (MAX web client: its presence cache TTL). [DEFAULT_PRESENCE_TTL_S]
+     * (300) when the key is absent, not a number or not positive.
+     */
+    val presenceTtlSeconds: Long
+        get() = server["presence-ttl"].asLong()?.takeIf { it > 0 } ?: DEFAULT_PRESENCE_TTL_S
+
     /** `config.server["invite-link"]` as a full URL ([normalizeLink]), `null` when absent. */
     val inviteLink: String?
         get() = normalizeLink(server["invite-link"]?.toString())
@@ -180,6 +188,9 @@ data class AccountConfig(
 
         /** [maxReadmarks] when the server config does not name one. */
         const val DEFAULT_MAX_READMARKS: Int = 100
+
+        /** `presence-ttl` of the MAX web client's server config defaults, in seconds. */
+        const val DEFAULT_PRESENCE_TTL_S: Long = 300
 
         /**
          * `config` of a `LOGIN` reply ([loginReply] is the whole reply map) as a config of its own

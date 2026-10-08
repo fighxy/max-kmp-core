@@ -32,7 +32,7 @@ import kotlinx.coroutines.flow.update
  * session. Nothing is persisted.
  *
  * @param messageLimit messages kept per chat (oldest dropped first); `0` keeps everything.
- * @param clock local wall clock in ms, used for typing timestamps.
+ * @param clock local wall clock in ms, used for typing timestamps and presence refresh times.
  */
 class MaxStore(
     val messageLimit: Int = DEFAULT_MESSAGE_LIMIT,
@@ -59,11 +59,51 @@ class MaxStore(
     /** Presence of one user (`null` until known). */
     fun presence(userId: Long): Flow<PresenceInfo?> = state.map { it.presence[userId] }.distinctUntilChanged()
 
+    /** [MaxState.presenceAt] at [clock]: an "online" older than [ttlMs] reads as offline. */
+    fun presenceAt(userId: Long, ttlMs: Long): PresenceInfo? = _state.value.presenceAt(userId, clock(), ttlMs)
+
+    /** Presence entries from the server (`CONTACT_PRESENCE` 35, `CHAT_MEMBERS`) at [clock] ([StateReducer.putPresence]). */
+    fun putPresence(entries: Map<Long, PresenceInfo>) = _state.update { StateReducer.putPresence(it, entries, clock()) }
+
+    /**
+     * Degrades `ONLINE` entries not refreshed for more than [ttlMs] at [clock]
+     * ([StateReducer.expirePresence]). Returns the users that changed.
+     */
+    fun expirePresence(ttlMs: Long): List<Long> {
+        val now = clock()
+        var changed: List<Long> = emptyList()
+        _state.update { s ->
+            val next = StateReducer.expirePresence(s, now, ttlMs)
+            changed = if (next === s) emptyList() else next.presence.filter { (id, p) -> s.presence[id] != p }.keys.toList()
+            next
+        }
+        return changed
+    }
+
+    /** Sets the name rule ([MaxState.preferAddressBookNames]). */
+    fun setPreferAddressBookNames(prefer: Boolean) = _state.update { StateReducer.setPreferAddressBookNames(it, prefer) }
+
+    /**
+     * Removes and returns the draft of [chatId] in one atomic step (`null` when there is none), so
+     * of two concurrent callers only one gets it.
+     */
+    fun takeDraft(chatId: Long): MaxDraft? {
+        var taken: MaxDraft? = null
+        _state.update { s ->
+            taken = s.drafts[chatId]
+            if (taken == null) s else StateReducer.removeDraft(s, chatId)
+        }
+        return taken
+    }
+
     /** Applies one push ([StateReducer.reduce]). */
     fun apply(event: MaxEvent) = _state.update { StateReducer.reduce(it, event, clock(), messageLimit) }
 
-    /** Seeds from a `LOGIN` reply ([StateReducer.login]). */
-    fun applyLogin(result: LoginResult) = _state.update { StateReducer.login(it, result, messageLimit) }
+    /** Seeds from a `LOGIN` reply ([StateReducer.login], presence refresh times at [clock]). */
+    fun applyLogin(result: LoginResult) {
+        val now = clock()
+        _state.update { StateReducer.login(it, result, messageLimit, now) }
+    }
 
     fun putChats(chats: List<Chat>) = _state.update { StateReducer.putChats(it, chats) }
 
@@ -132,9 +172,9 @@ class MaxStore(
     fun putReactions(chatId: Long, messageId: Long, info: ReactionInfo?) =
         _state.update { StateReducer.putReactions(it, chatId, messageId, info) }
 
-    /** Drops everything (e.g. on logout). */
+    /** Drops everything (e.g. on logout) except the name rule ([MaxState.preferAddressBookNames]). */
     fun clear() {
-        _state.value = MaxState()
+        _state.update { MaxState(preferAddressBookNames = it.preferAddressBookNames) }
     }
 
     companion object {

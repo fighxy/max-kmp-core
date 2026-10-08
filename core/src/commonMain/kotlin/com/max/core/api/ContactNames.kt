@@ -9,13 +9,16 @@ package com.max.core.api
  * 2. the contact name this account set on the server: the `CUSTOM` entry of `names`
  *    (`CONTACT_UPDATE` 34 `ADD` / `UPDATE`);
  * 3. the person's own name: the `ONEME` entry;
- * 4. the first entry of `names`;
- * 5. the phone number (`+79131234567`);
+ * 4. the first entry of `names` that has a name;
+ * 5. the phone number (`+79131234567`; a number the rules do not normalize is shown as is);
  * 6. [FALLBACK], "Участник" ([label] only; [resolve] gives `null`).
  *
  * Inside an entry `firstName lastName` wins over `name` for `CUSTOM` (the rename form fills
  * them); for `ONEME` and the first entry `name` wins, as [MaxUser.displayName] reads it.
  * Mentions keep inserting the person's own name, never one of these.
+ *
+ * With `preferAddressBook = false` (`MaxState.preferAddressBookNames`, a client setting) steps 1
+ * and 2 swap: the own `CUSTOM` name wins over the address book. The default stays the order above.
  */
 object ContactNames {
     const val CUSTOM = "CUSTOM"
@@ -34,20 +37,39 @@ object ContactNames {
     /** The name this account gave [user] (its `CUSTOM` entry), or `null`. */
     fun customName(user: MaxUser): String? = user.names.firstOrNull { it.type == CUSTOM }?.let(::entryName)
 
-    /** The user's own name: the `ONEME` entry, else the first entry of `names`. */
+    /** The user's own name: the `ONEME` entry, else the first entry of `names` with a name. */
     fun profileName(user: MaxUser): String? =
         user.names.firstOrNull { it.type == ONEME }?.let(::ownName)
-            ?: user.names.firstOrNull()?.let(::ownName)
+            ?: user.names.firstNotNullOfOrNull(::ownName)
+
+    /** Step 5: the phone normalized ([PhoneNumbers.normalize]), else its digits as they are. */
+    fun phoneName(user: MaxUser): String? {
+        val phone = user.phone?.takeIf { it > 0 } ?: return null
+        return PhoneNumbers.normalize(phone) ?: phone.toString()
+    }
 
     /** Steps 1-5 of the rule; `null` when none applies. [user] may be `null` (not loaded yet). */
-    fun resolve(user: MaxUser?, addressBookName: String?): String? =
-        addressBookName?.trim()?.takeIf { it.isNotEmpty() }
-            ?: user?.let(::customName)
+    fun resolve(user: MaxUser?, addressBookName: String?): String? = resolve(user, addressBookName, true)
+
+    /**
+     * Steps 1-5 of the rule; [preferAddressBook] `false` puts the own `CUSTOM` name before the
+     * address-book name. `null` when none applies.
+     */
+    fun resolve(user: MaxUser?, addressBookName: String?, preferAddressBook: Boolean): String? {
+        val book = addressBookName?.trim()?.takeIf { it.isNotEmpty() }
+        val custom = user?.let(::customName)
+        val first = if (preferAddressBook) book ?: custom else custom ?: book
+        return first
             ?: user?.let(::profileName)
-            ?: user?.phone?.let(PhoneNumbers::normalize)
+            ?: user?.let(::phoneName)
+    }
 
     /** [resolve], or [FALLBACK]. */
     fun label(user: MaxUser?, addressBookName: String?): String = resolve(user, addressBookName) ?: FALLBACK
+
+    /** [resolve] with [preferAddressBook], or [FALLBACK]. */
+    fun label(user: MaxUser?, addressBookName: String?, preferAddressBook: Boolean): String =
+        resolve(user, addressBookName, preferAddressBook) ?: FALLBACK
 
     /** [user] without its `CUSTOM` name (after the contact was removed). */
     fun withoutCustom(user: MaxUser): MaxUser {

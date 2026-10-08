@@ -26,6 +26,8 @@ import com.max.core.transport.TransportPacket
  * | `NOTIF_CALL_START` 137 | [MaxEvent.CallStart] (`callerId` + `conversationId`; `vcp` decoded when present) |
  * | `NOTIF_CONFIG` 134 | [MaxEvent.ConfigUpdated] (`{config}` or `chats` / `user` / `server` / `hash` at the top; at least one of them) |
  * | `NOTIF_FOLDERS` 277 | [MaxEvent.FoldersChanged] (`folders` / `folder`, `foldersOrder`, `folderSync`; at least one of them) |
+ * | `NOTIF_DRAFT` 152 | [MaxEvent.DraftSaved] (`chatId` / `userId`, `draft` with a time; shape assumed from `DRAFT_SAVE`) |
+ * | `NOTIF_DRAFT_DISCARD` 153 | [MaxEvent.DraftDiscarded] (`chatId` / `userId`, `time`; shape assumed from `DRAFT_DISCARD`) |
  *
  * Everything else — including an empty
  * payload (PyMax passes such frames on raw), a payload missing a required field, and
@@ -116,6 +118,8 @@ object EventParser {
             }
         }
         Opcode.NOTIF_FOLDERS.value -> folders(opcode, map, raw)
+        Opcode.NOTIF_DRAFT.value -> draftSaved(opcode, map, raw)
+        Opcode.NOTIF_DRAFT_DISCARD.value -> draftDiscarded(opcode, map, raw)
         Opcode.NOTIF_CONFIG.value -> com.max.core.api.AccountConfigUpdate.fromPush(map)?.let { MaxEvent.ConfigUpdated(it, opcode, raw) }
         Opcode.NOTIF_STORIES_UPDATE.value ->
             com.max.core.api.StoryPreview.from(map["storiesPreview"])?.let { MaxEvent.StoriesUpdated(it, opcode, raw) }
@@ -131,6 +135,34 @@ object EventParser {
         if (list == null && single == null && order == null && sync == null) return null
         val folders = list.orEmpty().mapNotNull { Folder.from(it) } + listOfNotNull(Folder.from(single))
         return MaxEvent.FoldersChanged(folders, order, sync, opcode, raw)
+    }
+
+    /** `chatId` xor `userId` of a draft push (both: `chatId` wins); `null` when neither is an id. */
+    private fun draftAddress(map: Map<*, *>): Pair<Long?, Long?>? {
+        val chatId = map["chatId"].long()
+        val userId = map["userId"].long()
+        return when {
+            chatId != null -> chatId to null
+            userId != null -> null to userId
+            else -> null
+        }
+    }
+
+    /** `NOTIF_DRAFT` 152; `null` (→ unknown) without an address, a `draft` map or a time. */
+    private fun draftSaved(opcode: Int, map: Map<*, *>, raw: Any?): MaxEvent? {
+        val (chatId, userId) = draftAddress(map) ?: return null
+        val draft = map["draft"] as? Map<*, *> ?: return null
+        val time = (draft["saveTime"] ?: draft["updateTime"] ?: draft["time"] ?: map["time"]).long() ?: return null
+        val text = draft["text"] as? String ?: ""
+        val elements = runCatching { com.max.core.api.TextElement.parseAll(draft["elements"], text.length) }.getOrDefault(emptyList())
+        return MaxEvent.DraftSaved(chatId, userId, time, text, elements, draft["replyTo"].long(), draft, opcode, raw)
+    }
+
+    /** `NOTIF_DRAFT_DISCARD` 153; `null` (→ unknown) without an address or a time. */
+    private fun draftDiscarded(opcode: Int, map: Map<*, *>, raw: Any?): MaxEvent? {
+        val (chatId, userId) = draftAddress(map) ?: return null
+        val time = (map["time"] ?: (map["draft"] as? Map<*, *>)?.get("time")).long() ?: return null
+        return MaxEvent.DraftDiscarded(chatId, userId, time, opcode, raw)
     }
 
     /** PyMax `resolve_message`: EDITED → edit, REMOVED → delete (`MessageDeleteEvent` from the envelope), else new. */
