@@ -259,8 +259,10 @@ class PresenceDraftsClientTest {
     }
 
     @Test
-    fun discardMarksReachTheClient() = runTest {
+    fun discardMarksReachTheClientAndDraftPushesAreLogged() = runTest {
         val t = loggedIn(mapOf("drafts" to mapOf("chats" to mapOf("discarded" to mapOf("-70" to 1_500L)))))
+        val lines = ArrayList<String>()
+        t.c.onDiagnostic = { lines += it }
         assertEquals(1_500L, t.c.draftDiscardedAt(-70))
         assertEquals(mapOf(-70L to 1_500L), t.c.draftDiscards)
         // the app's own draft from before the discard is cleared (fixture discard-newer-clears)
@@ -275,6 +277,17 @@ class PresenceDraftsClientTest {
         runCurrent()
         assertEquals("секретный текст", t.c.drafts[-70L]?.text)
         assertNull(t.c.draftDiscardedAt(-70))
+        // an unparsable 152 is logged too
+        t.conn.feed(push(Opcode.NOTIF_DRAFT.value, mapOf("odd" to "value")))
+        runCurrent()
+        assertEquals(
+            listOf(
+                "push 152 -> DraftSaved | {\"chatId\":-70,\"draft\":{\"text\":\"се…(len=15)\",\"time\":1500}}",
+                "push 152 -> DraftSaved | {\"chatId\":-70,\"draft\":{\"text\":\"се…(len=15)\",\"time\":1501}}",
+                "push 152 -> Unknown | {\"odd\":\"<str len=5>\"}",
+            ),
+            lines,
+        )
         // an own discard sets the mark at the time sent
         val d = async { t.c.discardDraft(-70) }
         runCurrent()
@@ -288,7 +301,8 @@ class PresenceDraftsClientTest {
         sv.await()
         assertNull(t.c.draftDiscardedAt(-70))
         assertEquals("снова", t.c.drafts[-70L]?.text)
-        // a later discard
+        // a throwing hook does not break the event flow
+        t.c.onDiagnostic = { error("boom") }
         t.conn.feed(push(Opcode.NOTIF_DRAFT_DISCARD.value, mapOf("chatId" to -70, "time" to 2_000L)))
         runCurrent()
         assertEquals(2_000L, t.c.draftDiscardedAt(-70))

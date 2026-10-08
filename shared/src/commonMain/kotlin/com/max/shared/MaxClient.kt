@@ -46,6 +46,7 @@ import com.max.core.auth.QrApproval
 import com.max.core.auth.SyncState
 import com.max.core.auth.TokenLogin
 import com.max.core.auth.VerifyResult
+import com.max.core.events.DiagnosticLog
 import com.max.core.events.EventRouter
 import com.max.core.events.MaxEvent
 import com.max.core.events.MaxEvents
@@ -338,10 +339,25 @@ class MaxClient @Throws(Exception::class) constructor(
     @kotlin.concurrent.Volatile
     var onBackgroundError: ((String, Throwable) -> Unit)? = null
 
+    /**
+     * Diagnostics lines for the app's log, today one per push `NOTIF_DRAFT` 152 /
+     * `NOTIF_DRAFT_DISCARD` 153 (parsed or not), with the raw payload redacted by
+     * [com.max.core.events.DiagnosticLog.draftPush]: keys, ids, times and types stay, a draft
+     * `text` keeps only its length and first 2 characters, a line is at most
+     * [com.max.core.events.DiagnosticLog.MAX_ENTRY_CHARS] characters. Called on the event
+     * handler stage after [store] applied the push; must not throw (an exception is dropped).
+     */
+    @kotlin.concurrent.Volatile
+    var onDiagnostic: ((String) -> Unit)? = null
+
     init {
         // registered before any caller's handler, so those already see the merged config
         router.on<MaxEvent.ConfigUpdated> { applyConfigPush(it) }
         // after the config merge and the store (stage 1): the "applied" stream
+        router.on<MaxEvent> { e ->
+            val log = onDiagnostic
+            if (log != null && DiagnosticLog.isDraftPush(e)) runCatching { log(DiagnosticLog.draftPush(e)) }
+        }
         router.on<MaxEvent> { _appliedEvents.emit(it) }
         router.start(this.scope)
         if (config.presenceSweepIntervalMs > 0) {

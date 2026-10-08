@@ -17,6 +17,12 @@ import kotlin.native.setUnhandledExceptionHook
  *
  * [installErrorLogger] passes a one-line description of every failure a [MaxIosClient] call reports
  * (error kind, exception and its causes) to the app log: the callback itself carries only the kind.
+ *
+ * [installDiagnosticLogger] gets diagnostics lines that are not failures, today one per push
+ * `NOTIF_DRAFT` 152 / `NOTIF_DRAFT_DISCARD` 153 with its raw payload redacted
+ * ([com.max.core.events.DiagnosticLog]: keys, ids, times and types kept, a draft `text` reduced
+ * to its length and first 2 characters, at most 2000 characters per line), prefixed `DIAG `.
+ * Without it these lines go to the error logger, if one is installed.
  */
 object IosDiagnostics {
     private val installed = AtomicInt(0)
@@ -24,6 +30,21 @@ object IosDiagnostics {
 
     fun installErrorLogger(onError: (String) -> Unit) {
         errorLogger.value = onError
+    }
+
+    private val diagnosticLogger = AtomicReference<((String) -> Unit)?>(null)
+
+    fun installDiagnosticLogger(onLine: (String) -> Unit) {
+        diagnosticLogger.value = onLine
+    }
+
+    internal fun reportDiagnostic(line: String) {
+        val logger = diagnosticLogger.value ?: errorLogger.value ?: return
+        try {
+            logger("DIAG $line")
+        } catch (e: Throwable) {
+            // logging is best effort
+        }
     }
 
     internal fun reportFailure(kind: String, t: Throwable) {

@@ -127,6 +127,7 @@ class MaxIosClient internal constructor(
             created = it
             // e.g. the automatic DRAFT_DISCARD after a send: no caller to tell, so it is logged
             it.onBackgroundError = { _, t -> IosDiagnostics.reportFailure(classifyKind(t), t) }
+            it.onDiagnostic = { line -> IosDiagnostics.reportDiagnostic(line) }
         }
     }
 

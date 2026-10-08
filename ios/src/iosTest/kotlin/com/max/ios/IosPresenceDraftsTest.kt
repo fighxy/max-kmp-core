@@ -124,6 +124,8 @@ class IosPresenceDraftsTest {
         val c = MaxIosClient(CoroutineScope(SupervisorJob() + Dispatchers.Default)) { s ->
             MaxClient(MaxClientConfig(host = "api.test", transport = quiet), kv, factory, noHttp, s)
         }
+        val diagnostics = Channel<String>(Channel.UNLIMITED)
+        IosDiagnostics.installDiagnosticLogger { diagnostics.trySend(it) }
         val events = Channel<IosEvent>(Channel.UNLIMITED)
         val watch = c.watchEvents { events.trySend(it) }
         delay(200)
@@ -165,6 +167,8 @@ class IosPresenceDraftsTest {
         assertEquals("-70", draft.chatId)
         assertEquals("с телефона", assertNotNull(draft.draft).text)
         assertEquals(1, c.drafts().size)
+        val logged = withTimeout(5.seconds) { diagnostics.receive() }
+        assertEquals("DIAG push 152 -> DraftSaved | {\"chatId\":-70,\"draft\":{\"text\":\"с …(len=10)\",\"time\":5000}}", logged)
         // a local draft older than the server's loses, an equal one stays
         assertEquals("с телефона", c.reconcileDraft("-70", "мой", "", "", 4_000L)?.text)
         assertEquals("мой", c.reconcileDraft("-70", "мой", "", "", 5_000L)?.text)
@@ -174,9 +178,11 @@ class IosPresenceDraftsTest {
         assertEquals(5_000L, discarded.timeMs)
         assertEquals(5_000L, c.draftDiscardedAt("-70"))
         assertEquals(0L, c.draftDiscardedAt("-71"))
+        assertEquals("DIAG push 153 -> DraftDiscarded | {\"chatId\":-70,\"time\":5000}", withTimeout(5.seconds) { diagnostics.receive() })
         // the discard clears a local draft not newer than it (fixture discard-newer-clears)
         assertNull(c.reconcileDraft("-70", "мой", "", "", 4_000L))
         assertEquals("мой", c.reconcileDraft("-70", "мой", "", "", 5_001L)?.text)
+        IosDiagnostics.installDiagnosticLogger { }
 
         // loadPresence
         val loaded = CompletableDeferred<List<IosPresence>?>()
