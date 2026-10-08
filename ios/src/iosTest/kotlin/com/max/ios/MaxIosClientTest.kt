@@ -1,5 +1,6 @@
 package com.max.ios
 
+import com.max.core.api.MaxMessage
 import com.max.core.calls.CallSignaling
 import com.max.core.calls.ConversationParams
 import com.max.core.events.MaxEvent
@@ -166,6 +167,26 @@ class MaxIosClientTest {
         assertEquals("Ann", named.name)
         assertNull(named.reaction)
         assertEquals(1_700_000_000_000L, named.readMark)
+    }
+
+    @Test
+    fun messagesAndEditEventsCarryTheEditTime() {
+        fun message(updateTime: Any?) = MaxMessage.from(
+            mapOf("id" to 5L, "chatId" to 7L, "sender" to 20L, "time" to 1_000L, "type" to "USER", "text" to "hi", "updateTime" to updateTime),
+        )!!
+        val edited = messageSnapshot(message(1_500L), "7", MaxState())
+        assertEquals(1_500L, edited.updateTime)
+        assertEquals(1_000L, edited.timeMs)
+        assertEquals(0L, messageSnapshot(message(null), "7", MaxState()).updateTime)
+        assertEquals(0L, messageSnapshot(message(0L), "7", MaxState()).updateTime)
+        // the Swift initializer is unchanged and starts unedited
+        assertEquals(0L, IosMessage("5", "7", "20", "hi", 1_000).updateTime)
+
+        val event = messageEvent("edited", message(1_500L), MaxState(), withReactions = false)
+        assertEquals("edited", event.kind)
+        assertEquals(1_500L, event.updateTime)
+        assertEquals(0L, messageEvent("message", message(null), MaxState(), withReactions = true).updateTime)
+        assertEquals(0L, typingEvent(MaxEvent.Typing(10, 20, 129, null)).updateTime)
     }
 
     @Test

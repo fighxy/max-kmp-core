@@ -2111,6 +2111,9 @@ class IosCommentCount(
  * "yourReaction"}` ([reactionsJson]); `{"counters":[]…}` means none. It is empty when the
  * source may leave reactions out (an edit reply), so the app keeps what it has.
  * [authorName] and [authorAvatarUrl] stay empty when that user is not in the store.
+ * [updateTime] is the time of the last edit in ms (`updateTime`), `0` for a message that was
+ * never edited. It is a read-only property outside the initializer, so the Swift initializer
+ * stays the same.
  */
 class IosMessage(
     val id: String,
@@ -2122,7 +2125,10 @@ class IosMessage(
     val authorName: String = "",
     val authorAvatarUrl: String = "",
     val reactionsJson: String = "",
-)
+) {
+    var updateTime: Long = 0L
+        internal set
+}
 
 /** Reactions of one message ([MaxIosClient.loadReactions]); [json] as [IosMessage.reactionsJson]. */
 class IosReactions(val messageId: String, val json: String)
@@ -2309,6 +2315,8 @@ object IosTypingType {
  * [reactionsJson] as in [IosMessage]: set for `message` and `reactions`, empty for `edited` (an
  * edit keeps the reactions). For `reactions` it has no `yourReaction` key when the own reaction
  * is unknown (`NOTIF_MSG_REACTIONS_CHANGED` 155 carries only counters).
+ * [updateTime] is the edit time (ms) of the message of a `message` or `edited` event, as in
+ * [IosMessage.updateTime]; `0` when the message was never edited or the event carries none.
  * Presence and unknown pushes are not forwarded; incoming calls come from `watchIncomingCalls`.
  */
 class IosEvent(
@@ -2325,7 +2333,10 @@ class IosEvent(
     val authorName: String = "",
     val authorAvatarUrl: String = "",
     val reactionsJson: String = "",
-)
+) {
+    var updateTime: Long = 0L
+        internal set
+}
 
 private fun phaseOf(state: ClientState): String = when (state) {
     ClientState.Idle -> "idle"
@@ -2637,7 +2648,7 @@ private fun callSnapshot(entry: CallLogEntry, me: Long?, state: MaxState): IosCa
     )
 }
 
-private fun messageSnapshot(message: MaxMessage, fallbackChatId: String, state: MaxState, withReactions: Boolean = true): IosMessage {
+internal fun messageSnapshot(message: MaxMessage, fallbackChatId: String, state: MaxState, withReactions: Boolean = true): IosMessage {
     val user = message.sender?.let { state.users[it] }
     return IosMessage(
         id = message.id.toString(),
@@ -2649,7 +2660,7 @@ private fun messageSnapshot(message: MaxMessage, fallbackChatId: String, state: 
         authorName = user?.displayName.orEmpty(),
         authorAvatarUrl = user?.baseUrl.orEmpty(),
         reactionsJson = if (withReactions) historyReactions(message, message.chatId ?: fallbackChatId.toLongOrNull(), state) else "",
-    )
+    ).apply { updateTime = message.updateTime ?: 0L }
 }
 
 /**
@@ -2744,7 +2755,7 @@ private fun reactionsEvent(event: MaxEvent.ReactionsChanged, state: MaxState): I
     )
 }
 
-private fun messageEvent(kind: String, message: MaxMessage, state: MaxState, withReactions: Boolean): IosEvent {
+internal fun messageEvent(kind: String, message: MaxMessage, state: MaxState, withReactions: Boolean): IosEvent {
     val user = message.sender?.let { state.users[it] }
     return iosEvent(
         kind = kind,
@@ -2757,7 +2768,7 @@ private fun messageEvent(kind: String, message: MaxMessage, state: MaxState, wit
         authorName = user?.displayName.orEmpty(),
         authorAvatarUrl = user?.baseUrl.orEmpty(),
         reactionsJson = if (withReactions) historyReactions(message, message.chatId, state) else "",
-    )
+    ).apply { updateTime = message.updateTime ?: 0L }
 }
 
 private fun chatEvent(chat: Chat, state: MaxState): IosEvent {
