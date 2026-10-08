@@ -10,7 +10,7 @@
 | [KometTeam/kolibri](https://github.com/KometTeam/kolibri) (`kolibri-net`) | `a6cdce9` (`a6cdce9e0e75d33aa0c398988d3b45e25c8908ab`) | MIT OR Apache-2.0 |
 | [MaxApiTeam/PyMax](https://github.com/MaxApiTeam/PyMax) | ветка `origin/dev/2.5.0`, HEAD `190e391152150a0971cae13a573218dc41f1b80b`; версия пакета `2.4.1` (`pyproject.toml`) | MIT |
 
-Дата сборки документа: **2026-09-28**.
+Дата сборки документа: **2026-09-28**. Надёжность соединения (§C.3–C.4, §C.6, §D.5, K7/K8/K14, «Roadmap») обновлена **2026-10-09** по поведению релизного Android-клиента Max (статическое чтение декомпилированного кода; к серверам не подключались, ключи и сертификаты не извлекались).
 
 Префикс цитат: `kolibri:` — путь относительно корня репозитория kolibri; `PyMax:` — относительно корня PyMax. Если факт в коде не найден — «не найдено».
 
@@ -230,11 +230,46 @@ Payload строится в `build_handshake_payload` (`kolibri:kolibri-net/src/
 
 **PyMax:** `_ping_loop` запускается в `App` (`PyMax:src/pymax/app.py:113`): бесконечный цикл `invoke(Opcode.PING, {"interactive": self.config.interactive})`, затем `asyncio.sleep(30)` (`PyMax:src/pymax/app.py:317-330`). Отличие от kolibri: PyMax ждёт ответа (request с timeout), первый ping — сразу, при ошибке ping соединение помечается failed (`:330`); kolibri шлёт fire-and-forget и первый ping через интервал.
 
+**Android-клиент Max и max-kmp-core.**
+
+- Клиентский `PING`: в Android-клиенте интервал **29 s**, цикл сначала шлёт `PING`, потом ждёт. Первый `PING` уходит сразу после входа. Ядро делает так же: `TransportConfig.pingInterval` = 29 s, первый `PING` — сразу после `onConnected` (handshake 6 и `LOGIN` сохранённым токеном), дальше раз в интервал. Ответ не ждём (fire-and-forget, как kolibri). `Duration.INFINITE` выключает цикл.
+- `interactive` = `appActive && !ghostMode` (`MaxClient.setInteractive` / мост `setAppActive`, режим призрака — opcodes.md). Фоновые `PING` в Android-клиенте по умолчанию выключены; ядро пингует, пока соединение открыто, с `interactive=false` в фоне.
+- Звонки: во время активного звонка Android-клиент не переводит `PING` в неинтерактивный режим. В ядре этого правила нет: приложение со звонком держит `setInteractive(true)` / `setAppActive(true)`, пока звонок идёт, даже если экран ушёл в фон.
+- **Серверный `PING`.** Сервер сам шлёт `PING` (`cmd=0`, opcode 1) и ждёт ответа. Android-клиент отвечает кадром `cmd=1` (OK) с тем же `seq` и opcode 1 и пустым телом. Ядро отвечает так же (`MaxTransport`): ответ пишется сразу из reader-а, в `pushes` такой кадр не попадает. Ответ идёт мимо `OutboundGuard`: это подтверждение транспорта, а не присутствие, и режим призрака его не трогает (иначе guard дописал бы `interactive=false` в тело, а сервер ждёт пустое). Наши собственные `PING` (`cmd=0`) по-прежнему проходят через guard.
+
 ### C.4 Reconnect backoff (kolibri)
 
 Формула `(2 * 2^min(attempt,3)).clamp(2, 15)` → **2, 4, 8, 15, 15, …** секунд (`kolibri:kolibri-net/src/session/manager.rs:304-308`, тест `:405-412`).
 
 PyMax: `ExtraConfig.reconnect: bool = True`, `reconnect_delay: float = 1.0` (фиксированная пауза, не экспонента) (`PyMax:src/pymax/config.py:253-254`).
+
+**Android-клиент Max:** экспонента с базой 3 s и потолком 96 s, задержка `min(96, 3·2^n) · (1 + random(−0.1, 0.1))`. Счётчик сбрасывается после успешного соединения, при смене сети и при возврате в foreground. Первое переподключение после обрыва *рабочего* соединения — сразу, без паузы. Таймаут connect — 15 s.
+
+**max-kmp-core** (`reconnectDelay(attempt, random)`, `ReconnectPolicy.kt`): **3, 6, 12, 24, 48, 96, 96, … s ±10 %**, счётчик сбрасывается после успешного соединения. Отличия от Android-клиента:
+
+- после обрыва рабочего соединения ядро тоже ждёт ~3 s, а не переподключается сразу (защита от шторма переподключений);
+- сброса при смене сети и при возврате в foreground нет: ядро не знает о сети и жизненном цикле приложения (возможное продолжение — `reconnectNow()` для приложений);
+- серверный `RECONNECT` (opcode 3, §C.6) переподключает сразу, без backoff.
+
+### C.6 RECONNECT (opcode 3)
+
+Push `cmd=0`, opcode 3, тело `{redirectHost: String, tls: Boolean}`; `redirectHost` — `host` или `host:port`, `tls` по умолчанию `true`.
+
+**Android-клиент:** пустой `redirectHost` — просто перезапуск сессии на том же хосте. Непустой — хост, порт и `tls` сохраняются в настройках, затем сессия перезапускается. Проверки домена нет. Использует ли релизная сборка сохранённый хост, по декомпилированному коду подтвердить не удалось (адрес по умолчанию там зашит).
+
+**max-kmp-core** (`MaxTransport`, `ServerRedirect.evaluate`):
+
+| Тело | Действие |
+|------|----------|
+| `redirectHost` пустой или нет поля | переподключение сразу на текущий хост |
+| `host:port`, `host` в `TransportConfig.redirectDomains` (по умолчанию `oneme.ru` и поддомены), `tls` не `false`, порт 1..65535 | переподключение сразу на `host:port` |
+| хост вне домена, IP-адрес, нет или неверный порт, некорректное имя, `tls: false` | игнорируется, соединение остаётся |
+| `TransportConfig.autoReconnect = false` | игнорируется (кто-то другой управляет переподключением) |
+
+- Переход живёт до конца жизни транспорта; после перезапуска процесса — снова `TransportConfig.host`.
+- Итог виден в `MaxTransport.lastRedirect: StateFlow<ServerRedirect?>` и в `MaxClient.onDiagnostic`: `push 3 -> Reconnect | followed to host:port`, `... | restart on the current host` или `... | ignored (reason): redirectHost="…", tls=…`.
+- Push 3 не попадает в `pushes`. Ожидающие запросы падают с `ConnectionClosedException("server asked to reconnect")`, как при обрыве.
+- `api2.oneme.ru` требует Минцифры CA (K14), поэтому переход туда работает, только если `trustMincifryCa = true` (по умолчанию).
 
 ### C.5 Auth fingerprint
 
@@ -291,6 +326,18 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 
 `VersionCatalog.RECOMMENDED_APP_VERSION = "26.25.0"`, remote `https://hashes.pymax.org/versions.json` (`PyMax:src/pymax/versions/catalog.py:24-25`). Модель `ApkBuildFingerprint`: certificate/dex/so meta SHA-256, `build_number` (`PyMax:src/pymax/fingerprint/models.py`).
 
+### D.5 Ошибки входа (`LOGIN` 19)
+
+Ошибка — кадр `cmd=3` с телом `{error, message, localizedMessage?, title?, description?}`. Android-клиент принудительно выходит из аккаунта при `error` = `login.token`, `login.blocked` или `login.flood`: код ошибки запоминается для экрана входа, аккаунт и токен удаляются. `login.flood` отдельно не обрабатывается. Для текста берётся `title`, иначе `localizedMessage`.
+
+**max-kmp-core:**
+
+- `LoginRejection.of(e)`: `login.token` → `TOKEN`, `login.blocked` → `BLOCKED`, `login.flood` → `FLOOD`. Старые признаки `FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL` в `error` или `message` остаются запасным вариантом и дают `TOKEN`.
+- Отказ — `InvalidTokenException(reason)`, `FatalSessionError`: автопереподключение останавливается, тот же токен не повторяется.
+- `MaxClient.state` → `ClientState.TokenRejected` с полями `reason`, `errorKey`, `title`, `localizedMessage`, `description`, `serverText` (`title ?: localizedMessage`) и `tokenCleared`. В мосте iOS — `MaxIosClient.loginRejection()` → `IosLoginRejection` (`reason`: `token` / `blocked` / `flood`).
+- Токен: при `TOKEN` и `BLOCKED` сохранённый токен удаляется. При `FLOOD` — **остаётся** (`tokenCleared = false`): ограничение частоты временное, позже `start()` может повторить вход. Это отличие от Android-клиента; решение за владельцем.
+- Тексты сервера есть и у любой ошибки: `ServerErrorException.localizedText` / `title` / `description` / `displayText`, `MaxError.title` / `localizedMessage` / `description` / `serverText`. Все три отказа в `MaxError` — `SESSION_EXPIRED`.
+
 ---
 
 ## E. Опкоды
@@ -302,9 +349,9 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
-| 1 | `PING` | `PING` | `{interactive}`; `MaxClient.setInteractive` / мост `setAppActive` меняют флаг, при смене сразу уходит один `PING` (opcodes.md, «Присутствие»); в режиме призрака всегда `false` |
+| 1 | `PING` | `PING` | `{interactive}`; раз в 29 s, первый — сразу после входа (§C.3); `MaxClient.setInteractive` / мост `setAppActive` меняют флаг, при смене сразу уходит один `PING` (opcodes.md, «Присутствие»); в режиме призрака всегда `false`. Серверный `PING` (`cmd=0`) — ответ `cmd=1` с тем же `seq` и пустым телом |
 | 2 | `DEBUG` | `DEBUG` |  |
-| 3 | `RECONNECT` | `RECONNECT` |  |
+| 3 | `RECONNECT` | `RECONNECT` | push `{redirectHost, tls}`: переподключение сразу, на другой хост — только в `oneme.ru` с TLS (§C.6) |
 | 5 | `LOG` | `LOG` |  |
 | 6 | `SESSION_INIT` | `SESSION_INIT` |  |
 | 8 | `CONTACTS_GET` | `LOGIN2` | разные имена: kolibri `CONTACTS_GET` / PyMax `LOGIN2` |
@@ -1017,16 +1064,28 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
 | K4 | Какие форматы сжатия реально приходят (Zstd/LZ4-frame/LZ4-block) и при каком flag? | kolibri sniff magic, PyMax — по flag | Wiretap: гистограмма (flag, первые 4 байта) по входящим |
 | K5 | Какие поля handshake обязательны (`mt_instanceid`, `clientSessionId`, `arch`, `buildNumber`, `pushDeviceType`, `isPwa`)? | kolibri опускает пустые; PyMax всегда шлёт `clientSessionId` | Матрица handshake с поочерёдным удалением поля; наблюдать OK/ERROR и наличие `callsSeed` |
 | K6 | Допустимо ли `clientSessionId` вне 1..70 (PyMax) / 1..2^31 (kolibri call_bot)? | §C.2, §D.1 | Handshake с разными значениями |
-| K7 | Как сервер реагирует на частые reconnect (fixed 1 s PyMax vs 2/4/8/15 kolibri)? | §C.4 | Серия разрывов и переподключений с разной паузой; следить за rate-limit ошибками |
-| K8 | Нужен ли ответ на PING / допустим ли fire-and-forget? Есть ли таймаут простоя < 30 s? | kolibri не ждёт ответа, PyMax ждёт | Отправить PING и проверить наличие ответа `cmd=1`; держать сессию без ping и засечь разрыв |
+| K7 | Как сервер реагирует на частые reconnect (fixed 1 s PyMax vs 2/4/8/15 kolibri)? | §C.4 | **Частично снят:** ядро повторяет backoff Android-клиента (3 s → 96 s, ±10 %). Реакция сервера на частые переподключения (rate-limit, `login.flood`) не проверена |
+| K8 | Нужен ли ответ на PING / допустим ли fire-and-forget? Есть ли таймаут простоя < 30 s? | kolibri не ждёт ответа, PyMax ждёт | **Снят по Android-клиенту:** свой `PING` — fire-and-forget раз в 29 s, первый сразу; сервер шлёт свой `PING`, на него отвечаем `cmd=1` с тем же `seq` (§C.3). Точный таймаут простоя сервера не измерен |
 | K9 | Обязателен ли `userAgent` и `configHash` в `LOGIN` 19? | kolibri call_bot не шлёт, PyMax шлёт | LOGIN с/без этих полей |
 | K10 | Какое значение `exp.chatsCountGroups` корректно: `0a32` или `0b32`? | §D.1 | Два LOGIN с разными значениями; сравнить ответ/число чатов |
 | K11 | Opcode 8 — `CONTACTS_GET` или `LOGIN2`? | §E.3 | Отправить `Login2Payload`-форму и форму «контакты» после LOGIN; сравнить ответы |
 | K12 | Семантика 158 (`OK_TOKEN` vs `CALLS_TOKEN`), payload запроса/ответа | нет call sites в обоих | После LOGIN вызвать 158 с пустой map; изучить поля ответа (токен OK.ru? звонковый токен?) |
 | K13 | Opcode 166: join по ссылке или общий join? Возвращает ли `vcp`/endpoint? | комментарий kolibri `calls/mod.rs:2`, имя PyMax | Создать ссылку `VIDEO_CHAT_CREATE_JOIN_LINK` (84), вызвать 166, сравнить ответ |
-| K14 | Нужен ли Минцифры CA для `api.oneme.ru`, или только для `api2.oneme.ru`? Хватает ли Root без Sub (PyMax)? | §B.6 | TLS handshake к обоим хостам с (a) Mozilla, (b) +Root, (c) +Root+Sub |
+| K14 | Нужен ли Минцифры CA для `api.oneme.ru`, или только для `api2.oneme.ru`? Хватает ли Root без Sub (PyMax)? | §B.6 | **Снят:** `api.oneme.ru` работает без российского CA; `api2.oneme.ru` — CNAME-алиас, которому нужен CA Минцифры. Ядро остаётся на `api.oneme.ru` (`DEFAULT_HOST`). Хватает ли Root без Sub — не проверяли |
 | K15 | Отличается ли `Content-Range` без `bytes ` (PyMax file) от варианта с `bytes ` (kolibri)? | §G.2 | Загрузить файл двумя вариантами заголовка |
 | K16 | Поддерживает ли CDN параллельную/возобновляемую загрузку для photo/file (не только video)? | kolibri — только video | GET к file-URL и попытка range-POST |
+
+---
+
+## Roadmap
+
+Порядок работ по ядру (план от 2026-10-09):
+
+1. **Надёжность соединения** — сделано: ответ на серверный `PING`, `RECONNECT` (3), ошибки входа `login.token` / `login.blocked` / `login.flood`, `PING` раз в 29 s с первым сразу, backoff 3 s → 96 s (§C.3–C.6, §D.5).
+2. `PHOTO_URL_REFRESH` (203) и лестница размеров картинок с выбором подходящего размера.
+3. Закреплённые сообщения (240–243) и push-и, которые ядро сейчас пропускает.
+4. Отложенные сообщения и опросы.
+5. По желанию: отклонение звонка (167) и журнал звонков (163/165).
 
 ---
 
@@ -1037,8 +1096,8 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
 3. **Opcode 8:** kolibri `CONTACTS_GET` vs PyMax `LOGIN2`.
 4. **Opcode 158:** kolibri `OK_TOKEN` vs PyMax `CALLS_TOKEN`.
 5. **Opcode 166:** `VIDEO_CHAT_JOIN_BY_LINK` vs `VIDEO_CHAT_JOIN`.
-6. **Backoff:** kolibri 2/4/8/15 s; PyMax fixed `reconnect_delay=1.0`.
+6. **Backoff:** kolibri 2/4/8/15 s; PyMax fixed `reconnect_delay=1.0`; Android-клиент и max-kmp-core — 3 s → 96 s, ±10 % (§C.4).
 7. **Handshake:** kolibri условно опускает пустые/нулевые поля; PyMax mobile всегда шлёт `clientSessionId` (1..70).
 8. **Вход после SMS:** kolibri — `LOGIN` 19 только в `call_bot` примерах (без `userAgent`, `exp` = `0b32`); PyMax — `SyncPayload` с `userAgent`, `configHash`, `exp` = `0a32`, затем опционально `LOGIN2` (8).
-9. **PING:** оба 30 s; kolibri fire-and-forget после первого интервала, PyMax — request сразу.
+9. **PING:** оба 30 s; kolibri fire-and-forget после первого интервала, PyMax — request сразу; Android-клиент и max-kmp-core — 29 s, первый сразу, fire-and-forget, плюс ответ на серверный `PING` (§C.3).
 10. **Минцифры:** kolibri opt-in Root+Sub; PyMax Root всегда.

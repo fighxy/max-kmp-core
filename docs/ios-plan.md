@@ -69,7 +69,7 @@ actor MaxAuth {                                       // над AuthService
 | Регистрация APNs, получение device token | P1 | стандарт iOS |
 | **Передача токена серверу Max** | P1 | **не найдено** в обоих репо: опкода/payload регистрации push-токена нет. Есть только `userAgent.pushDeviceType` в handshake; во всех примерах значение `"GCM"` (protocol.md §C.2). Какое значение для iOS (`APNS`?), и каким опкодом отдать токен — **неизвестно**, нужен эксперимент/анализ официального клиента |
 | Notification Service Extension (расшифровка/обогащение, mutable-content) | P2 | формат push-payload от сервера — **неизвестно** |
-| Foreground-обновления без APNs | **P0** | держать сессию: PING 30 s с `interactive` (§C.3); при уходе в фон — `interactive=false` / разрыв, при возврате — reconnect + `LOGIN` |
+| Foreground-обновления без APNs | **P0** | держать сессию: PING 29 s с `interactive` (§C.3); при уходе в фон — `interactive=false` / разрыв, при возврате — reconnect + `LOGIN` |
 | Background refresh | P2 | зависит от push-регистрации |
 
 ## 6. Stories — EXPERIMENTAL (P2)
@@ -78,7 +78,7 @@ actor MaxAuth {                                       // над AuthService
 
 ## 7. Сводка приоритетов
 
-- **P0:** XCFramework export; `MaxSession`/`MaxAuth` (async/await, `AsyncStream`); SMS-вход + 2FA пароль; Keychain token/identity; список чатов, история, отправка текста, входящие 128; foreground-сессия (PING, reconnect 2/4/8/15).
+- **P0:** XCFramework export; `MaxSession`/`MaxAuth` (async/await, `AsyncStream`); SMS-вход + 2FA пароль; Keychain token/identity; список чатов, история, отправка текста, входящие 128; foreground-сессия (PING, reconnect 3 s → 96 s).
 - **P1:** QR-вход, регистрация, прочитано/typing, фото/файлы, реакции/правка/удаление, APNs + регистрация токена (после выяснения опкода), proxy, Минцифры CA opt-in, кэш.
 - **P2:** Notification Service Extension, звонки (CallSignaling + WebRTC), stories (EXPERIMENTAL), видео parallel upload, cinterop `maxc.def` при внешней C-библиотеке.
 

@@ -52,8 +52,8 @@ flowchart LR
 | | `MincifryCa` (embedded PEM) | P0 | Root+Sub CA Минцифры; `trustMincifryCa=true` по умолчанию (§B.6) |
 | `com.max.core.session` | `SessionMachine.kt`: `SessionMachine`, `SessionState`; `SessionConfig.kt`: `SessionConfig`, `DeviceInfo`, `UserAgentInfo`; `HandshakePayload.kt`: `HandshakePayload`, `HandshakeInfo` | P0 | handshake `SESSION_INIT` (6) поверх `MaxTransport` (hook `onConnected`, повторяется после каждого reconnect); `StateFlow` состояний `Disconnected → Connecting → Handshaking → Online`, `Reconnecting`, `Closed`, `Failed(cause)`; hook `afterHandshake` (token-login через `auth.TokenLogin`), сам auth — вне session; `FatalSessionError` из hook останавливает reconnect (§C.1–C.2) |
 | | `HandshakeConfig.kt` / `UserAgent` (новый) | P0 | поля `userAgent` (§C.2) |
-| | `PingScheduler.kt` (новый) | P0 | PING 1, 30 s, `interactive` (§C.3) |
-| | `ReconnectPolicy.kt` (новый) | P0 | backoff 2/4/8/15 s (§C.4) |
+| | `PingScheduler.kt` (новый) | P0 | PING 1, 29 s, первый сразу после входа, `interactive`; ответ на серверный PING (§C.3) |
+| | `ReconnectPolicy.kt` (новый) | P0 | backoff 3 s → 96 s, ±10 % (§C.4); `RECONNECT` 3 — `ServerRedirect` (§C.6) |
 | `com.max.core.events` | `MaxEvent.kt`: sealed `MaxEvent`; `EventParser.kt`: `EventParser`; `MaxEvents.kt`: `MaxEvents` (`Flow<MaxEvent>` поверх `SessionMachine.pushes` / `MaxTransport.pushes`) | P0 | маппинг как в PyMax `dispatch/mapping.py`: 128/67 → `NewMessage` / `MessageEdited` / `MessagesDeleted` (по `status`), 142 → `MessagesDeleted`, 135 → `ChatUpdated`, 129 → `Typing`, 130 → `MessageRead`, 132 → `Presence`, 155 → `ReactionsChanged`, 136 → `AttachmentReady` (`fileId` / `videoId` / `audioId`, как PyMax `resolve_attach`); остальное (`cmd != 0`, 136 без известного id) → `Unknown`; ack не отправляется (в references его нет) (§E) |
 | `com.max.core.auth` | `Auth.kt`: `AuthApi`, `RequestSink`, `CodeRequest`, `VerifyResult`, `SyncState`, `LoginResult`, `InvalidTokenException`; `TokenLogin.kt`; `Fingerprint.kt`: `ApkFingerprint`; `Sha256.kt` | P0 | `AUTH_REQUEST` (17) → `AUTH` (18) → `LOGIN` (19) по PyMax/kolibri; `TokenLogin.hook` логинится после каждого handshake; fingerprint = 3×SHA-256(digest‖callsSeed(int64 BE)‖deviceId); 2FA-пароль (115, `AuthApi.checkPassword`) и регистрация (23, `AuthApi.confirmRegistration`) завершают вход; `PasswordRequired` и `RegistrationRequired` — промежуточные результаты `AUTH` 18 (§C.5, §D.1–D.2) |
 | | `Auth.kt`: `AuthApi.approveQrLogin`, `QrApproval` | P0 | подтверждение web-входа по QR с залогиненного Android-устройства: `AUTH_QR_APPROVE` (290) `{qrLink}` (PyMax `ApproveQrLoginPayload`); сам вход по QR (288/289/291) в references есть только у web-клиента PyMax — не реализован (§D.3) |
@@ -140,7 +140,7 @@ max-kmp-core/
 │       │   │   ├── SessionMachine.kt            # состояния, handshake 6, re-handshake    P0
 │       │   │   ├── SessionConfig.kt             # TransportConfig + device/userAgent      P0
 │       │   │   └── HandshakePayload.kt          # payload opcode 6, HandshakeInfo         P0
-│       │   │       (PING каждые 30 с и backoff 2/4/8/15 с — в transport/MaxTransport.kt)
+│       │   │       (PING каждые 29 с и backoff 3–96 с — в transport/MaxTransport.kt)
 │       │   ├── auth/
 │       │   │   ├── Auth.kt                      # AuthApi: SMS 17→18, LOGIN 19            P0
 │       │   │   ├── TokenLogin.kt                # LOGIN 19 как afterHandshake hook        P0
