@@ -525,6 +525,10 @@ object StateReducer {
     }
 
     private fun read(state: MaxState, e: MaxEvent.MessageRead): MaxState {
+        // A read mark only moves forward: a late, older push must not roll it back. Only an
+        // explicit "mark as unread" (setAsUnread) may move the own mark back.
+        val known = state.readMarks[e.chatId]?.get(e.userId)
+        if (known != null && e.mark < known && !e.setAsUnread) return state
         var s = state.copy(readMarks = state.readMarks.put2(e.chatId, e.userId, e.mark))
         val chat = s.chats[e.chatId]
         if (chat != null && e.userId == s.me) {
