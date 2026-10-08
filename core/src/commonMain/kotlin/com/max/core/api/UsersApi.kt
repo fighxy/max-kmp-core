@@ -10,6 +10,7 @@ import com.max.core.protocol.Opcode
  *
  * Contact search by name and presence subscription have no payload in the references and are not
  * exposed; of the contact list opcodes (35-40) only the black list page of `CONTACT_LIST` 36 is.
+ * `CONTACT_UPDATE` 34 covers add, rename (`UPDATE`), remove, block and unblock.
  */
 class UsersApi(private val sink: RequestSink) {
     /** Users by id (`CONTACT_INFO` 32, `{contactIds}`); reply `contacts`. Unknown ids are absent. */
@@ -37,6 +38,19 @@ class UsersApi(private val sink: RequestSink) {
         return contact(Opcode.CONTACT_UPDATE, sink.request(Opcode.CONTACT_UPDATE, payload).payload)
     }
 
+    /**
+     * Renames a contact for this account (`CONTACT_UPDATE` 34, `{contactId, action: "UPDATE",
+     * firstName, lastName}`, KometTeam/Komet `ContactsModule.updateContact`); reply `contact`.
+     * The new name is the user's `CUSTOM` entry of `names`, seen only by this account. An empty
+     * [lastName] is sent as `""`, as Komet does.
+     */
+    suspend fun renameContact(userId: Long, firstName: String, lastName: String = ""): MaxUser {
+        val first = firstName.trim()
+        require(first.isNotEmpty()) { "firstName must not be blank" }
+        val payload = linkedMapOf<String, Any?>("contactId" to userId, "action" to "UPDATE", "firstName" to first, "lastName" to lastName.trim())
+        return contact(Opcode.CONTACT_UPDATE, sink.request(Opcode.CONTACT_UPDATE, payload).payload)
+    }
+
     /** Removes a contact (`CONTACT_UPDATE` 34, `{contactId, action: "REMOVE"}`). */
     suspend fun removeContact(userId: Long) {
         replyMap(sink.request(Opcode.CONTACT_UPDATE, contactAction(userId, "REMOVE")), Opcode.CONTACT_UPDATE)
@@ -47,10 +61,36 @@ class UsersApi(private val sink: RequestSink) {
      * `{contactList: {<phone>: {firstName}}}`; PyMax sends only the first name). Reply `contacts`:
      * the entries that are Max users.
      */
-    suspend fun importContacts(contacts: List<PhoneContact>): List<MaxUser> {
+    suspend fun importContacts(contacts: List<PhoneContact>): List<MaxUser> = userList(Opcode.SYNC, importPayload(contacts))
+
+    /**
+     * Imports phone-book entries like [importContacts] (`SYNC` 21, `{contactList: {<phone>:
+     * {firstName}}}`) and maps each requested phone to the Max user it belongs to
+     * ([PhoneBookImport.byPhone]). The reply's `contacts` are the entries that are Max users; an
+     * invalid entry is skipped instead of failing the whole import. A user is matched by its
+     * `phone`; when the reply also carries `phones` (requested phone → the server's form of it,
+     * noted only in a PyMax comment: `{contacts, phones}`), that form is used for the match.
+     * Entries without a match are not Max users (or hide their number).
+     *
+     * Only `firstName` goes on the wire, as in PyMax and Komet; [PhoneContact.lastName] stays local.
+     */
+    suspend fun importPhoneBook(contacts: List<PhoneContact>): PhoneBookImport {
+        require(contacts.isNotEmpty()) { "contacts must not be empty" }
+        val map = replyMap(sink.request(Opcode.SYNC, importPayload(contacts)), Opcode.SYNC)
+        val users = (map["contacts"] as? List<*>).orEmpty().mapNotNull { MaxUser.from(it) }
+        val phones = LinkedHashMap<String, Long>()
+        (map["phones"] as? Map<*, *>).orEmpty().forEach { (k, v) ->
+            val key = k?.toString() ?: return@forEach
+            PhoneNumbers.digits(v)?.let { phones[key] = it }
+        }
+        return PhoneBookImport(users, phones, PhoneBookImport.match(contacts, users, phones), map)
+    }
+
+    /** `SYNC` 21 body (PyMax `ImportContactsPayload`): `{contactList: {<phone>: {firstName}}}`, phones as given. */
+    fun importPayload(contacts: List<PhoneContact>): Map<String, Any?> {
         val list = LinkedHashMap<String, Any?>()
         for (c in contacts) list[c.phone] = linkedMapOf("firstName" to c.firstName)
-        return userList(Opcode.SYNC, linkedMapOf("contactList" to list))
+        return linkedMapOf("contactList" to list)
     }
 
     /**
@@ -106,8 +146,52 @@ class UsersApi(private val sink: RequestSink) {
     }
 }
 
-/** A phone-book entry for [UsersApi.importContacts] (PyMax `ContactInfo`; `lastName` is not sent). */
-data class PhoneContact(val phone: String, val firstName: String)
+/**
+ * A phone-book entry for [UsersApi.importContacts] / [UsersApi.importPhoneBook] (PyMax
+ * `ContactInfo`). [lastName] is not sent (PyMax drops it too); it only completes the local
+ * address-book name ([fullName]).
+ */
+data class PhoneContact(val phone: String, val firstName: String, val lastName: String? = null) {
+    /** `firstName lastName`, trimmed; `null` when both are blank. */
+    val fullName: String?
+        get() = listOfNotNull(firstName.trim(), lastName?.trim()).filter { it.isNotEmpty() }.joinToString(" ").takeIf { it.isNotEmpty() }
+}
+
+/**
+ * Result of [UsersApi.importPhoneBook].
+ *
+ * @property users the reply's `contacts`: the imported entries that are Max users.
+ * @property phones the reply's `phones` (requested phone → server phone digits), empty when absent.
+ * @property byPhone requested phone (as given) → its Max user.
+ */
+data class PhoneBookImport(val users: List<MaxUser>, val phones: Map<String, Long>, val byPhone: Map<String, MaxUser>, val raw: Map<*, *>) {
+    companion object {
+        /**
+         * Requested phone → user: the server form from [phones] when present, else the digits of
+         * the requested phone, compared with the user's `phone`. Numbers are not rewritten
+         * otherwise (no country-code guessing).
+         */
+        fun match(contacts: List<PhoneContact>, users: List<MaxUser>, phones: Map<String, Long>): Map<String, MaxUser> {
+            val byNumber = users.filter { (it.phone ?: 0L) > 0L }.associateBy { it.phone!! }
+            val out = LinkedHashMap<String, MaxUser>()
+            for (c in contacts) {
+                val number = phones[c.phone] ?: PhoneNumbers.digits(c.phone) ?: continue
+                byNumber[number]?.let { out[c.phone] = it }
+            }
+            return out
+        }
+    }
+}
+
+/** Phone numbers as the server keeps them in `phone`: digits only, as a number. */
+object PhoneNumbers {
+    /** Digits of [value] (a number or a string such as `+7 (999) 000-11-22`) as a positive number; `null` otherwise. */
+    fun digits(value: Any?): Long? = when (value) {
+        is Number -> value.toLong().takeIf { it > 0 }
+        is String -> value.filter { it in '0'..'9' }.takeIf { it.isNotEmpty() && it.length <= 18 }?.toLongOrNull()?.takeIf { it > 0 }
+        else -> null
+    }
+}
 
 /**
  * An active session of the account (PyMax `Session`, every field optional). The server Komet talks
