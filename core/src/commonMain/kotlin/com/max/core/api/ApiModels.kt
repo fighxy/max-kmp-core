@@ -201,7 +201,11 @@ data class ChatMember(
     val presence: Map<*, *>?,
     val raw: Map<*, *>,
     val readMark: Long? = null,
-)
+) {
+    /** [presence] as `{seen, status}` (`seen` as sent, usually Unix seconds); `null` without one. */
+    val presenceInfo: PresenceInfo?
+        get() = presence?.let { PresenceInfo(it["seen"].asLong(), it["status"].asLong()?.toInt()) }
+}
 
 /** `CHAT_MEMBERS` page: `members` and the `marker` for the next page (`0` when absent, as in PyMax). */
 data class ChatMembersPage(val members: List<ChatMember>, val marker: Long, val raw: Map<*, *>)
