@@ -146,6 +146,20 @@ class MaxTransport(
     @kotlin.concurrent.Volatile
     var pingInteractive: Boolean = config.pingInteractive
         private set
+
+    /**
+     * Checks every outgoing request right before it is encoded ([OutboundGuard]); `null` sends
+     * everything as is. A blocked request throws [OutboundBlockedException] without writing.
+     */
+    @kotlin.concurrent.Volatile
+    var outboundGuard: OutboundGuard? = null
+
+    /** [payload] after [outboundGuard]; throws [OutboundBlockedException] for a blocked request. */
+    private fun guarded(opcode: Int, payload: Any?): Any? = when (val d = outboundGuard?.check(opcode, payload) ?: OutboundDecision.Pass) {
+        OutboundDecision.Pass -> payload
+        is OutboundDecision.Rewrite -> d.payload
+        is OutboundDecision.Block -> throw OutboundBlockedException(opcode, d.reason)
+    }
     private var supervisorJob: Job? = null
 
     override fun receive(): Flow<ByteArray> = rawChunks.asSharedFlow()
@@ -187,11 +201,11 @@ class MaxTransport(
 
     /**
      * Like [request], but returns the reply for any `cmd` (OK, NOT_FOUND or ERROR) instead of
-     * mapping ERROR / NOT_FOUND to exceptions (kolibri `request_raw`). Only a lost connection or a
-     * timeout throws.
+     * mapping ERROR / NOT_FOUND to exceptions (kolibri `request_raw`). Only a lost connection, a
+     * timeout or [outboundGuard] ([OutboundBlockedException], nothing written) throws.
      */
     suspend fun requestRaw(opcode: Int, payload: Any?): TransportPacket {
-        val body = encodeBody(payload)
+        val body = encodeBody(guarded(opcode, payload))
         val (conn, seqValue, waiter) = stateLock.withLock {
             val conn = connection ?: throw ConnectionClosedException("not connected")
             val s = seq.next()
@@ -237,16 +251,24 @@ class MaxTransport(
 
     /**
      * Fire-and-forget request (typing, ping): sends [opcode] with the next `seq` and does not wait
-     * for the reply. Returns the `seq`.
+     * for the reply. Returns the `seq`. Like [requestRaw] it passes [outboundGuard] first.
      */
     suspend fun sendRequest(opcode: Int, payload: Any?): Int {
-        val body = encodeBody(payload)
+        val body = encodeBody(guarded(opcode, payload))
         val (conn, seqValue) = stateLock.withLock {
             val conn = connection ?: throw ConnectionClosedException("not connected")
             conn to seq.next()
         }
         writeWithin(conn, encodeRequest(seqValue, opcode, body), opcode, seqValue)
         return seqValue
+    }
+
+    /**
+     * Sets [pingInteractive] without sending anything: the value the next PINGs carry. For a
+     * client that knows its state before the first connection (e.g. a saved ghost mode).
+     */
+    fun presetPingInteractive(interactive: Boolean) {
+        pingInteractive = interactive
     }
 
     /**
@@ -422,6 +444,8 @@ class MaxTransport(
                 sendRequest(Opcode.PING.value, mapOf("interactive" to pingInteractive))
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: OutboundBlockedException) {
+                // a guard may hold a tick back; the loop goes on
             } catch (e: Throwable) {
                 return
             }
