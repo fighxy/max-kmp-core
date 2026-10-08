@@ -396,7 +396,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
 | 64 | `MSG_SEND` | `MSG_SEND` |  |
-| 65 | `MSG_TYPING` | `MSG_TYPING` |  |
+| 65 | `MSG_TYPING` | `MSG_TYPING` | `{chatId, type, postId?}`, без ожидания ответа; `type`: `TEXT`, `AUDIO`, `VIDEO_MSG`, `PHOTO`, `VIDEO`, `FILE`, `STICKER` (opcodes.md, «Печатает: 65 и 129») |
 | 66 | `MSG_DELETE` | `MSG_DELETE` |  |
 | 67 | `MSG_EDIT` | `MSG_EDIT` |  |
 | 68 | `CHAT_SEARCH` | `CHAT_SEARCH` |  |
@@ -499,7 +499,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | code | kolibri | PyMax | note |
 |------|---------|-------|------|
 | 128 | `NOTIF_MESSAGE` | `NOTIF_MESSAGE` |  |
-| 129 | `NOTIF_TYPING` | `NOTIF_TYPING` |  |
+| 129 | `NOTIF_TYPING` | `NOTIF_TYPING` | `{chatId, userId, type?}` → `MaxEvent.Typing`; нет `type` — `TEXT` |
 | 130 | `NOTIF_MARK` | `NOTIF_MARK` |  |
 | 131 | `NOTIF_CONTACT` | `NOTIF_CONTACT` |  |
 | 132 | `NOTIF_PRESENCE` | `NOTIF_PRESENCE` |  |

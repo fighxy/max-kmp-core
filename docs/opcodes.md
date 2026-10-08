@@ -75,6 +75,29 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | поиск в чате | `73` | `SearchApi.searchInChat`: `{chatId, query, count}` |
 | общие чаты | `198` | `ChatsApi.commonChats`: `{userIds:[id]}` → `commonChats` |
 | push | `128`, `129`, `130`, `132`, `135`, `136`, `137`, `142`, `155`, `277` и др. | `EventParser` → `MaxEvents` → `EventRouter` → `MaxStore` |
+| «печатает» | `65` (исходящий, без ожидания ответа), `129` (push, с `type`) | `MessagesApi.sendTyping`, `MaxClient.sendTyping`, `TypingType`; `MaxEvent.Typing.type` / `effectiveType`, `MaxState.typingUsersWithType` / `typingType`; мост iOS `sendTyping`, `IosTypingType`, `text` у события `typing`. См. «Печатает: 65 и 129» |
+
+## Печатает: 65 и 129
+
+Схема `65` и `129` — по Komet (`feature/FullStack`), PyMax и kolibri; набор значений `type` сверен с поведением официального веб-клиента MAX на проводе. Код ни откуда не брали.
+
+- `65` `MSG_TYPING`, клиент → сервер: `{chatId: Long, type: String}`, в комментариях к посту ещё `postId: Long`. Отправка fire-and-forget: ответ не ждём, ошибки отправки игнорируем (`MaxTransport.sendRequest` через `SessionMachine.sendWithoutReply` / `RequestSink.sendWithoutReply`). Поздний ответ сервера транспорт отбрасывает. `MessagesApi.sendTyping` возвращает `true`, если кадр записан в сокет, и `false`, если отправить не удалось (нет соединения и т. п.); исключение пробрасывается только при отмене корутины.
+- `129` `NOTIF_TYPING`, сервер → клиент: `{chatId, userId, type}`. `chatId` и `userId` обязательны (без них событие `Unknown`). `MaxEvent.Typing.type` — сырое значение (`null`, если поля нет или оно не строка); `MaxEvent.Typing.effectiveType` — нормализованное (`TypingType.effective`).
+- Значения `type` (константы `TypingType`, в мосте iOS `IosTypingType`):
+
+  | значение | что делает пользователь |
+  |----------|-------------------------|
+  | `TEXT` | набирает текст |
+  | `AUDIO` | записывает голосовое |
+  | `VIDEO_MSG` | записывает видеосообщение (кружок) |
+  | `PHOTO` | отправляет фото |
+  | `VIDEO` | отправляет видео |
+  | `FILE` | отправляет файл |
+  | `STICKER` | выбирает стикер |
+
+  Нет `type`, пустая строка или незнакомое значение означают `TEXT`. При отправке строка уходит как есть.
+- Сигнала «перестал печатать» в протоколе нет. `MaxState.typingUsers` по-прежнему отдаёт `Set<Long>` с TTL `MaxState.DEFAULT_TYPING_TTL_MS` = 8 000 мс (эвристика клиента, с запасом над интервалом повтора 6 с). Эффективный `type` последнего пуша на пользователя в чате лежит рядом, в `MaxState.typingTypes`; читать через `typingUsersWithType(chatId, now, ttlMs)` (`Map<userId, type>`) и `typingType(chatId, userId, now, ttlMs)` (`null`, если пользователь уже не печатает) с тем же TTL. Новое сообщение отправителя и удаление чата убирают и метку времени, и `type`.
+- Троттлинга в ядре нет: каждый вызов `sendTyping` (ядро, `MaxClient`, мост iOS) шлёт кадр. Клиенты повторяют `65`, пока пользователь занят, не чаще раза в 6 с на чат; собеседник гасит индикатор сам.
 
 ## Блокеры: нужен снятый трафик
 
@@ -82,7 +105,6 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 запроса/ответа реального Android-клиента (Pixel 8 профиль):
 
 - `81` `STICKER_UPLOAD` / отправка стикера — схема вложения-стикера в `MSG_SEND` не подтверждена
-- `65` `MSG_TYPING` (исходящий «печатает») — builder'а нет; входящий `129` уже разбирается
 - поиск: `37` `CONTACT_SEARCH` (`60`, `68`, `73` уже в `SearchApi`)
 - `193` `STICKER_CREATE`, `194` `STICKER_SUGGEST`, `301` `AUDIO_PLAY`
 - звонки: `103`, `195` (ни в одном референсе нет запроса и ответа, см. «Calls — что уже в ядре»); семантика ответа `158` (K12). `76`, `78`, `79`, `84`, `89`, `164`, `166` есть в `CallsApi` по вектору Komet, без WebRTC
