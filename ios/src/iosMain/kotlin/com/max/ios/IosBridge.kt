@@ -628,6 +628,42 @@ class MaxIosClient internal constructor(
         runUnit(onResult) { it.api.messages.markRead(parseId(chatId), parseId(messageId)) }
     }
 
+    /**
+     * Marks [chatId] read up to [messageId] (`CHAT_MARK` 50) with [mark], the server time of that
+     * message in ms, as the read boundary. The device clock may lag behind the server: a boundary
+     * taken from it would leave the newest messages unread on the server and for their sender.
+     * For `0` or less the time is looked up in the store, and only an unknown message falls back
+     * to the core's clock, as [markRead] does.
+     *
+     * The reply goes into the store at once (own read mark and unread counter), unless the store
+     * already holds a newer own mark: replies to two marks in a row may arrive out of order. The
+     * store also feeds chat events, so a stale counter there would bring the badge back. The
+     * server's count replaces the store's only when it is lower and no message arrived since.
+     * [onResult] gets the server's unread count and the mark it kept.
+     */
+    fun markReadAt(chatId: String, messageId: String, mark: Long, onResult: (IosReadMark, String?, String?) -> Unit) {
+        perform(onResult, { IosReadMark(0, 0) }) { c ->
+            val id = parseId(chatId)
+            val message = parseId(messageId)
+            val before = c.store.state.value
+            val lastBefore = before.chats[id]?.lastMessage?.id
+            val time = mark.takeIf { it > 0 }
+                ?: before.messagesOf(id).firstOrNull { it.id == message }?.time
+                ?: before.chats[id]?.lastMessage?.takeIf { it.id == message }?.time
+            val reply = c.api.messages.markRead(id, message, time)
+            val state = c.store.state.value
+            val me = state.me
+            if (me != null && reply.mark >= (state.readMarks[id]?.get(me) ?: 0L)) {
+                c.store.apply(MaxEvent.MessageRead(id, me, reply.mark, false, Opcode.CHAT_MARK.value, null))
+                val after = c.store.state.value.chats[id]
+                if (after != null && after.lastMessage?.id == lastBefore && reply.unread in 0 until after.newMessages) {
+                    c.store.putChats(listOf(after.copy(newMessages = reply.unread)))
+                }
+            }
+            IosReadMark(reply.unread, reply.mark)
+        }
+    }
+
     /** Marks the chat unread from [mark] (message time, ms). [onResult] gets the server unread count. */
     fun markUnread(chatId: String, mark: Long, onResult: (Int, String?, String?) -> Unit) {
         perform(onResult, { 0 }) { it.markUnread(parseId(chatId), mark) }
@@ -1914,6 +1950,9 @@ class IosChat(
      * them and answers their history with a refusal.
      */
     val active: Int = 1,
+    /** Server time of the last message (ms), `0` without one. Unlike [updatedAtMs] (the chat's
+     *  last event, moved by edits and reactions too), it is what read marks compare with. */
+    val lastTimeMs: Long = 0,
 )
 
 /**
@@ -2148,6 +2187,9 @@ class IosPublishedStory(val preview: IosStoryPreview?, val stories: List<IosStor
 /** [MaxIosClient.transcribeVoice]: [status] `1` ready, `0` in progress, `-1` failed. */
 class IosTranscription(val status: Int, val text: String)
 
+/** Reply to [MaxIosClient.markReadAt]: the server's unread count and the read mark it kept (ms). */
+class IosReadMark(val unread: Int, val mark: Long)
+
 /** One entry of [MaxIosClient.loadReactionUsers]; [name] and [avatarUrl] are empty for an unknown user. */
 class IosReactionUser(val userId: String, val name: String, val avatarUrl: String, val reaction: String)
 
@@ -2244,6 +2286,7 @@ private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = n
         lastForwarded = if (forwarded != null) 1 else 0,
         peerReadMs = peerReadMark(chat, me),
         active = if (isActive(chat)) 1 else 0,
+        lastTimeMs = last?.time ?: 0L,
     )
 }
 

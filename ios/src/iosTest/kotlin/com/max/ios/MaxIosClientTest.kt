@@ -88,6 +88,10 @@ class MaxIosClientTest {
         assertEquals(0 to "UNKNOWN", aroundMessage)
         val read = callback<String?> { d -> c.markRead("1", "2") { k, _ -> d.complete(k) } }
         assertEquals("NETWORK", read)
+        val readAt = callback<Pair<Long, String?>> { d -> c.markReadAt("1", "2", 1_700_000_000_000) { r, k, _ -> d.complete(r.mark to k) } }
+        assertEquals(0L to "NETWORK", readAt)
+        val badReadAt = callback<String?> { d -> c.markReadAt("x", "2", 0) { _, k, _ -> d.complete(k) } }
+        assertEquals("UNKNOWN", badReadAt)
         val code = callback<String?> { d -> c.requestCode("+79990000000", false) { _, k, _ -> d.complete(k) } }
         assertEquals("NETWORK", code)
         val badPin = callback<Pair<Int, String?>> { d -> c.setPinnedChats(listOf("1", "x")) { list, k, _ -> d.complete(list.size to k) } }
