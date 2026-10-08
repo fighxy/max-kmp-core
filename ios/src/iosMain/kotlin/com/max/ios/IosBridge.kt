@@ -14,6 +14,7 @@ import com.max.core.api.PresenceInfo
 import com.max.core.api.PresenceStatus
 import com.max.core.api.Presences
 import com.max.core.api.MaxDraft
+import com.max.core.api.MemberSearch
 import com.max.core.api.TextElement
 import com.max.core.api.TextElementsJson
 import com.max.core.api.TextElementType
@@ -813,6 +814,17 @@ class MaxIosClient internal constructor(
         val local = MaxDraft(id, text, TextElementsJson.parse(elementsJson, text.length), reply, updateTime)
         client().reconcileDraft(id, local)?.let(::draftSnapshot)
     }
+
+    /**
+     * The members of [members] matching [query], in their order (shared rule, fixture
+     * `members/search.json`): a case-insensitive substring of [IosGroupMember.name] or
+     * [IosGroupMember.mentionName], `ё` = `е`, the query trimmed, an empty query matches all;
+     * a query starting with `@` searches only [IosGroupMember.mentionName]. Local, no request:
+     * for a group whose members are not all loaded, also call [searchChatMembers] with the query
+     * without its `@`.
+     */
+    fun filterMembers(members: List<IosGroupMember>, query: String): List<IosGroupMember> =
+        MemberSearch.filter(members, query, { it.name }, { it.mentionName })
 
     /** Sends sticker [stickerId] of the catalog; a non-empty [replyTo] makes it a reply. */
     fun sendSticker(chatId: String, stickerId: String, replyTo: String, onResult: (IosMessage?, String?, String?) -> Unit) {
@@ -2077,7 +2089,10 @@ class MaxIosClient internal constructor(
             official = "OFFICIAL" in user.options,
             commands = bot?.commands.orEmpty().map { IosBotCommand(it.name, it.description.orEmpty()) },
             hasWebApp = isBot && hasWebApp(user.options + card.options),
-        ).apply { this.presence = PresenceStatus.of(seen) }
+        ).apply {
+            this.presence = PresenceStatus.of(seen)
+            this.mentionName = card.mentionName.orEmpty()
+        }
     }
 
     /** Loads profiles of [ids] missing from the store. Best effort: names are cosmetic here. */
@@ -2285,7 +2300,10 @@ internal fun groupMemberSnapshot(
         permissions = entry.admin?.permissions ?: -1,
         lastSeenMs = Presences.seenMs(seen?.seen),
         online = seen?.status == PresenceStatus.ONLINE,
-    ).apply { this.presence = PresenceStatus.of(seen) }
+    ).apply {
+        this.presence = PresenceStatus.of(seen)
+        this.mentionName = user?.mentionName.orEmpty()
+    }
 }
 
 private fun foundFromSearch(fallbackChatId: Long, result: Any?): List<IosFoundMessage> {
@@ -2525,6 +2543,14 @@ class IosProfile(
     /** A user's presence code ([IosPresence.status]); `-1` unknown or not a user. */
     var presence: Int = -1
         internal set
+
+    /**
+     * The `@` name without `@` (empty when none), derived from [link] as the MAX web client does
+     * ([com.max.core.api.MentionNames]): the URL path of a user's or bot's link, of a group's or
+     * channel's link unless it is an invite link (`/join/…`).
+     */
+    var mentionName: String = ""
+        internal set
 }
 
 /** [MaxIosClient.loadChatList]: the chats and whether they are the account's whole list. */
@@ -2567,6 +2593,14 @@ class IosContact(
      * recently, `3` long ago); [online] is `presence == 1`, the TTL applied.
      */
     var presence: Int = -1
+        internal set
+
+    /**
+     * The name for `@` mentions and member search, without `@` (empty when none): the path of
+     * the contact's `link` URL, as the MAX web client derives it
+     * ([com.max.core.api.MentionNames]). Read-only outside the initializer.
+     */
+    var mentionName: String = ""
         internal set
 }
 
@@ -2705,6 +2739,14 @@ class IosGroupMember(
      * recently, `3` long ago); [online] is `presence == 1`. Read-only outside the initializer.
      */
     var presence: Int = -1
+        internal set
+
+    /**
+     * The name for `@` mentions and member search, without `@` (empty when none): the path of
+     * the contact's `link` URL, as the MAX web client derives it
+     * ([com.max.core.api.MentionNames]). Read-only outside the initializer.
+     */
+    var mentionName: String = ""
         internal set
 }
 
@@ -3287,7 +3329,7 @@ private fun chatProfile(chat: Chat): IosProfile {
             false -> 0
             else -> -1
         },
-    )
+    ).apply { mentionName = chat.mentionName.orEmpty() }
 }
 
 /** Contact list for the UI: a deleted account (`accountStatus != 0`) stays out, as in Komet. */
@@ -3335,6 +3377,7 @@ private fun contactSnapshot(user: MaxUser, state: MaxState, ttlMs: Long = MaxSta
     ).apply {
         displayName = nameOf(user, state).orEmpty()
         this.presence = PresenceStatus.of(seen)
+        this.mentionName = user.mentionName.orEmpty()
     }
 }
 

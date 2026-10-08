@@ -168,4 +168,13 @@ class SharedFixturesTest {
         }
     }
 
+    /** `members/search`: [MemberSearch] over the loaded members (full name and mention name). */
+    @Test
+    fun memberSearch() {
+        for (c in cases("members/search.json")) {
+            val members = c["members"]!!.jsonArray.map { it.jsonObject }
+            val found = MemberSearch.filter(members, c["query"]!!.jsonPrimitive.content, { it["name"].str() }, { it["mentionName"].str() })
+            assertEquals(c["expect"]!!.jsonArray.map { it.jsonPrimitive.content }, found.map { it["id"]!!.jsonPrimitive.content }, c.name)
+        }
+    }
 }

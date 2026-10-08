@@ -103,6 +103,24 @@ class IosPresenceDraftsTest {
         assertEquals(1, groupMemberSnapshot(entry(10, null), stale, nowMs = 1_000_000L + 1, ttlMs = 300_000L)!!.presence)
     }
 
+    @Test
+    fun membersCarryTheMentionNameAndFilterLocally() {
+        fun entry(id: Long, name: String, link: String?) =
+            ChatMemberEntry.of(ChatMember(id, mapOf("id" to id, "names" to listOf(mapOf("name" to name)), "link" to link), null, emptyMap<Any?, Any?>()), ChatRoles.NONE)
+        val state = MaxState(me = 5)
+        val members = listOf(
+            groupMemberSnapshot(entry(1, "Анна Петрова", "https://max.ru/anya_p"), state)!!,
+            groupMemberSnapshot(entry(2, "anya fan", null), state)!!,
+            groupMemberSnapshot(entry(3, "Пётр", "https://max.ru/"), state)!!,
+        )
+        assertEquals(listOf("anya_p", "", ""), members.map { it.mentionName })
+        val c = MaxIosClient(CoroutineScope(SupervisorJob() + Dispatchers.Default)) { error("not used") }
+        assertEquals(listOf("1"), c.filterMembers(members, "@anya").map { it.id })
+        assertEquals(listOf("1", "2"), c.filterMembers(members, " ANYA ").map { it.id })
+        assertEquals(listOf("3"), c.filterMembers(members, "петр").map { it.id })
+        assertEquals(listOf("1", "2", "3"), c.filterMembers(members, "@").map { it.id })
+    }
+
     private suspend fun FakeRawConnection.answer(opcode: Opcode, reply: Any?): Map<*, *>? {
         val (header, payload) = decodePayloadPacket(takeWritten()!!)
         assertEquals(opcode.value, header.opcodeValue, "expected ${opcode.name}")
@@ -142,7 +160,7 @@ class IosPresenceDraftsTest {
                 "profile" to mapOf("contact" to mapOf("id" to 5, "names" to listOf(mapOf("firstName" to "Me")))),
                 "chats" to listOf(mapOf("id" to -70, "type" to "CHAT", "status" to "ACTIVE")),
                 "contacts" to listOf(
-                    mapOf("id" to 7, "phone" to 79131234567L, "names" to listOf(mapOf("type" to "ONEME", "name" to "Анна"), mapOf("type" to "CUSTOM", "firstName" to "Аня"))),
+                    mapOf("id" to 7, "phone" to 79131234567L, "link" to "https://max.ru/anna7", "names" to listOf(mapOf("type" to "ONEME", "name" to "Анна"), mapOf("type" to "CUSTOM", "firstName" to "Аня"))),
                 ),
                 "presence" to mapOf("7" to mapOf("seen" to 1_700L, "status" to 1)),
                 "time" to 1700L,
@@ -183,6 +201,11 @@ class IosPresenceDraftsTest {
         assertNull(c.reconcileDraft("-70", "мой", "", "", 4_000L))
         assertEquals("мой", c.reconcileDraft("-70", "мой", "", "", 5_001L)?.text)
         IosDiagnostics.installDiagnosticLogger { }
+
+        // the contact's mention name comes from its link
+        val contacts = CompletableDeferred<List<IosContact>>()
+        c.loadContacts { list, _, _ -> contacts.complete(list) }
+        assertEquals("anna7", withTimeout(5.seconds) { contacts.await() }.single { it.id == "7" }.mentionName)
 
         // loadPresence
         val loaded = CompletableDeferred<List<IosPresence>?>()

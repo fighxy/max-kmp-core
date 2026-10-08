@@ -161,6 +161,13 @@ data class Chat(
     val raw: Map<*, *>,
     val participants: Map<Long, Long> = emptyMap(),
 ) {
+    /**
+     * The public name of a group or channel without `@` ([MentionNames.ofChat] of the chat's
+     * `link`; an invite link `…/join/…` gives none). For a dialog use the peer's
+     * [MaxUser.mentionName].
+     */
+    val mentionName: String? get() = MentionNames.ofChat(raw["link"] as? String)
+
     companion object {
         fun from(value: Any?): Chat? {
             val m = value as? Map<*, *> ?: return null
@@ -232,6 +239,8 @@ data class UserName(val name: String?, val firstName: String?, val lastName: Str
  *
  * @property phone PyMax types it as an integer; a decimal string is accepted too.
  * @property displayName first `names` entry: `name`, else `firstName lastName`.
+ * @property mentionName the name for `@` mentions and member search, without `@`: the path of
+ *   [link] ([MentionNames.ofUser], as the MAX web client derives it); `null` without a link.
  */
 data class MaxUser(
     val id: Long,
@@ -247,6 +256,8 @@ data class MaxUser(
     val options: List<String>,
     val raw: Map<*, *>,
 ) {
+    val mentionName: String? get() = MentionNames.ofUser(link)
+
     val displayName: String?
         get() = names.firstOrNull()?.let { n ->
             n.name?.takeIf { it.isNotBlank() }

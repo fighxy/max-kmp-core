@@ -1,0 +1,198 @@
+{
+  "kind": "search",
+  "name": "search",
+  "description": "Поиск по загруженным участникам: подстрока полного имени или имени для упоминаний (mentionName) без учёта регистра, «ё» = «е», пробелы запроса по краям не важны, пустой запрос — все. Запрос с «@» ищет только по mentionName. Порядок списка сохраняется.",
+  "cases": [
+    {
+      "name": "substring",
+      "members": [
+        {
+          "id": "1",
+          "name": "Анна Петрова"
+        },
+        {
+          "id": "2",
+          "name": "Иван"
+        },
+        {
+          "id": "3",
+          "name": "Жанна"
+        }
+      ],
+      "query": "анна",
+      "expect": [
+        "1",
+        "3"
+      ]
+    },
+    {
+      "name": "yo",
+      "members": [
+        {
+          "id": "1",
+          "name": "Пётр"
+        },
+        {
+          "id": "2",
+          "name": "Петя"
+        }
+      ],
+      "query": "петр",
+      "expect": [
+        "1"
+      ]
+    },
+    {
+      "name": "yo-in-query",
+      "members": [
+        {
+          "id": "1",
+          "name": "Федор"
+        },
+        {
+          "id": "2",
+          "name": "Фёдор"
+        }
+      ],
+      "query": "Фёдор",
+      "expect": [
+        "1",
+        "2"
+      ]
+    },
+    {
+      "name": "trim",
+      "members": [
+        {
+          "id": "1",
+          "name": "Иван"
+        }
+      ],
+      "query": "  ИВ ",
+      "expect": [
+        "1"
+      ]
+    },
+    {
+      "name": "empty",
+      "members": [
+        {
+          "id": "1",
+          "name": "Иван"
+        },
+        {
+          "id": "2",
+          "name": "Анна"
+        }
+      ],
+      "query": "",
+      "expect": [
+        "1",
+        "2"
+      ]
+    },
+    {
+      "name": "nothing",
+      "members": [
+        {
+          "id": "1",
+          "name": "Иван"
+        }
+      ],
+      "query": "зз",
+      "expect": []
+    },
+    {
+      "name": "mention-name",
+      "members": [
+        {
+          "id": "1",
+          "name": "Анна Петрова",
+          "mentionName": "anya_p"
+        },
+        {
+          "id": "2",
+          "name": "Иван"
+        }
+      ],
+      "query": "ANYA",
+      "expect": [
+        "1"
+      ]
+    },
+    {
+      "name": "mention-name-with-at",
+      "members": [
+        {
+          "id": "1",
+          "name": "Анна Петрова",
+          "mentionName": "anya_p"
+        },
+        {
+          "id": "2",
+          "name": "anya fan"
+        }
+      ],
+      "query": "@anya",
+      "expect": [
+        "1"
+      ]
+    },
+    {
+      "name": "name-or-mention",
+      "members": [
+        {
+          "id": "1",
+          "name": "Пётр",
+          "mentionName": "ivan_p"
+        },
+        {
+          "id": "2",
+          "name": "Иван"
+        }
+      ],
+      "query": "иван",
+      "expect": [
+        "2"
+      ]
+    },
+    {
+      "name": "name-or-mention-latin",
+      "members": [
+        {
+          "id": "1",
+          "name": "Пётр",
+          "mentionName": "ivan_p"
+        },
+        {
+          "id": "2",
+          "name": "Ivan"
+        }
+      ],
+      "query": "ivan",
+      "expect": [
+        "1",
+        "2"
+      ]
+    },
+    {
+      "name": "at-only",
+      "members": [
+        {
+          "id": "1",
+          "name": "Иван",
+          "mentionName": "ivan"
+        },
+        {
+          "id": "2",
+          "name": "Анна"
+        }
+      ],
+      "query": "@",
+      "expect": [
+        "1",
+        "2"
+      ]
+    }
+  ]
+}
