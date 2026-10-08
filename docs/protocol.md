@@ -515,8 +515,8 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 147 | `NOTIF_LOCATION` | `NOTIF_LOCATION` |  |
 | 148 | `NOTIF_LOCATION_REQUEST` | `NOTIF_LOCATION_REQUEST` |  |
 | 150 | `NOTIF_ASSETS_UPDATE` | `NOTIF_ASSETS_UPDATE` |  |
-| 152 | `NOTIF_DRAFT` | `NOTIF_DRAFT` | веб-клиент игнорирует, тело не подтверждено; ядро читает терпимо как `{chatId \| userId, draft: {...}}` → `MaxEvent.DraftSaved` (заменяет только более поздний; битое — `MaxEvent.Unknown`); в мосте — событие `draft` |
-| 153 | `NOTIF_DRAFT_DISCARD` | `NOTIF_DRAFT_DISCARD` | веб-клиент игнорирует, тело не подтверждено; ядро читает терпимо как `{chatId \| userId, time}` → `MaxEvent.DraftDiscarded` (стирает, если наш не новее); в мосте — событие `draft` |
+| 152 | `NOTIF_DRAFT` | `NOTIF_DRAFT` | веб-клиент игнорирует, тело не подтверждено; ядро читает терпимо как `{chatId \| userId, draft: {...}}` → `MaxEvent.DraftSaved` (заменяет только более поздний и только позже метки стирания; пустой — стирание; битое — `MaxEvent.Unknown`); в мосте — событие `draft`; сырое тело (с редактированием текста) — в `MaxClient.onDiagnostic` / `IosDiagnostics` |
+| 153 | `NOTIF_DRAFT_DISCARD` | `NOTIF_DRAFT_DISCARD` | веб-клиент игнорирует, тело не подтверждено; ядро читает терпимо как `{chatId \| userId, time}` → `MaxEvent.DraftDiscarded` (стирает, если наш не новее, и ставит метку стирания `MaxState.draftDiscards`); в мосте — событие `draft` с временем метки; сырое тело — в `MaxClient.onDiagnostic` / `IosDiagnostics` |
 | 154 | `NOTIF_MSG_DELAYED` | `NOTIF_MSG_DELAYED` |  |
 | 155 | `NOTIF_MSG_REACTIONS_CHANGED` | `NOTIF_MSG_REACTIONS_CHANGED` |  |
 | 156 | `NOTIF_MSG_YOU_REACTED` | `NOTIF_MSG_YOU_REACTED` |  |
@@ -540,7 +540,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 161 | `COMPLAIN` | `COMPLAIN` |  |
 | 162 | `COMPLAIN_REASONS_GET` | `COMPLAIN_REASONS_GET` |  |
 | 176 | `DRAFT_SAVE` | `DRAFT_SAVE` | `{chatId \| userId, draft: {text?, elements, replyTo?}}` → `{time}` (opcodes.md, «Черновики на сервере») |
-| 177 | `DRAFT_DISCARD` | `DRAFT_DISCARD` | `{chatId \| userId, time}`, `time` — `updateTime` черновика; после успешной отправки в чат с черновиком ядро шлёт его само, один раз |
+| 177 | `DRAFT_DISCARD` | `DRAFT_DISCARD` | `{chatId \| userId, time}`, `time` — `updateTime` черновика; после успешной отправки в чат с черновиком ядро шлёт его само, один раз; ставит метку стирания с этим `time` |
 | 196 | `CHAT_HIDE` | `CHAT_HIDE` |  |
 | 198 | `CHAT_SEARCH_COMMON_PARTICIPANTS` | `CHAT_SEARCH_COMMON_PARTICIPANTS` |  |
 | 199 | `PROFILE_DELETE` | `PROFILE_DELETE` |  |
