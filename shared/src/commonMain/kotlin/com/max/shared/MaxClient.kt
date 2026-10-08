@@ -11,6 +11,8 @@ import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxApi
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
+import com.max.core.api.MessageReader
+import com.max.core.api.MessageReaders
 import com.max.core.api.Transcription
 import com.max.core.api.PrivacySettings
 import com.max.core.api.Profile
@@ -1028,6 +1030,63 @@ class MaxClient @Throws(Exception::class) constructor(
         return users
     }
 
+    // ---- Readers ---------------------------------------------------------------------------------
+
+    /** `max-readmarks` of the server config ([AccountConfig.maxReadmarks]); 100 while the config is unknown. */
+    private fun maxReadmarks(): Int = _accountConfig.value?.maxReadmarks ?: AccountConfig.DEFAULT_MAX_READMARKS
+
+    /**
+     * Whether [chatId] shows who read its messages ([MessageReaders.isAvailable] with the server's
+     * `max-readmarks`), judged from the chat in [store]; `false` for a chat not in [store]. No
+     * request: an app can use it to show or hide the action. [loadMessageReaders] decides again
+     * with fresh chat info.
+     */
+    fun isMessageReadersAvailable(chatId: Long): Boolean {
+        val chat = store.state.value.chats[chatId] ?: return false
+        return MessageReaders.isAvailable(chat, maxReadmarks())
+    }
+
+    /**
+     * Who read [messageId] in group [chatId] ([com.max.core.api.ReadersApi.loadMessageReaders]):
+     * users who reacted first (with the emoji), then members whose read mark reaches the message,
+     * latest first; without this account and the message author. Empty for a chat that does not
+     * show readers (dialogs, channels, groups above `max-readmarks`, a running group call).
+     *
+     * Every call asks `CHAT_INFO` so the marks are fresh, and the chat goes into [store]. The
+     * server marks are merged with the `NOTIF_MARK` marks of [store] (the later wins). The message
+     * time and author come from [store] (stored messages or the chat's last message), else from
+     * `MSG_GET`. Reactions (`MSG_GET_DETAILED_REACTIONS` 181) are best effort: when they fail,
+     * only the readers are returned. Users missing from [store] are fetched (`CONTACT_INFO`, best
+     * effort) so the caller can name them.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun loadMessageReaders(chatId: Long, messageId: Long): List<MessageReader> {
+        val t = ticket()
+        val state = store.state.value
+        val known = state.messagesOf(chatId).firstOrNull { it.id == messageId }
+            ?: state.chats[chatId]?.lastMessage?.takeIf { it.id == messageId }
+        val result = api.readers.loadMessageReaders(
+            chatId,
+            messageId,
+            me = state.me ?: userId.value,
+            maxReadmarks = maxReadmarks(),
+            liveMarks = state.readMarks[chatId].orEmpty(),
+            message = known,
+        )
+        commit(t) { store.putChats(listOf(result.chat)) }
+        val unknown = result.readers.map { it.userId }.filter { it !in store.state.value.users }
+        if (unknown.isNotEmpty()) {
+            try {
+                unknown.chunked(READER_USERS_PAGE).forEach { loadUsers(it) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Names are optional: the list is shown with ids.
+            }
+        }
+        return result.readers
+    }
+
     private val catalogLock = Mutex()
     private var catalog: List<Animoji>? = null
 
@@ -1112,3 +1171,6 @@ private fun Any?.asMarker(): Long? = when (this) {
  * `attachment.not.ready`, a second apart (Komet waits up to 30 s for a video).
  */
 const val ATTACHMENT_SEND_ATTEMPTS: Int = 30
+
+/** Users per `CONTACT_INFO` request when [MaxClient.loadMessageReaders] names the readers. */
+private const val READER_USERS_PAGE = 100
