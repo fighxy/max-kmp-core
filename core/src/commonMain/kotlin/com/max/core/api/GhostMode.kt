@@ -25,6 +25,12 @@ import com.max.core.transport.OutboundGuard
  *
  * Everything else goes unchanged: sending, editing, deleting messages, reactions, drafts,
  * uploads, calls, presence and history requests. They reveal activity by themselves.
+ *
+ * The answer to a server PING (opcode 1 sent by the server with `cmd` 0) is not a request and
+ * never reaches the guard: the transport writes `cmd` 1 with the server's `seq` and an empty
+ * body. It carries no `interactive` flag and reveals nothing beyond the open socket, so ghost
+ * mode keeps answering (the Android app always answers; an unanswered keepalive may cost the
+ * connection).
  */
 object GhostMode {
     /** The device clock (ms), the fallback time of a local read whose message is not stored. */

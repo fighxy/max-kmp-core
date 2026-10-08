@@ -5,7 +5,9 @@ import com.max.core.protocol.DefaultMessagePackCodec
 import com.max.core.protocol.MessagePackCodec
 import com.max.core.protocol.Opcode
 import com.max.core.protocol.PROTOCOL_VERSION
+import com.max.core.protocol.PacketHeader
 import com.max.core.protocol.decodeHeader
+import com.max.core.protocol.encodePacket
 import com.max.core.protocol.decodePayloadPacket
 import com.max.core.protocol.CompressionFormat
 import com.max.core.protocol.encodePacketCompressed
@@ -47,7 +49,9 @@ import kotlin.time.Duration
  * Behaviour follows kolibri `transport/client.rs`, `dispatcher.rs` and `session/manager.rs`:
  * - `seq`: [SeqCounter], 1, 2, ... 65535, 0, 1, ..., restarting at 1 on every connection;
  * - replies (`cmd` 1 OK, 2 NOT_FOUND, 3 ERROR) resolve the waiter with the same `seq`; replies
- *   nobody waits for are dropped; everything else goes to [pushes];
+ *   nobody waits for are dropped; everything else goes to [pushes], except the server's own
+ *   PING (opcode 1 with `cmd` 0): the transport answers it at once with `cmd` 1, the same `seq`
+ *   and opcode and an empty body, as the Android app does (`vpc`), and does not publish it;
  * - requests time out after [TransportConfig.requestTimeout], counted from before the write (wait
  *   for the write lock, the write, the reply); a write still running at the deadline closes the
  *   connection so a blocked socket cannot hold the caller or later writers, and so does a timeout
@@ -402,7 +406,7 @@ class MaxTransport(
                 if (n == 0) continue
                 inboundChunks++
                 rawChunks.tryEmit(buffer.copyOf(n))
-                for (frame in reassembler.feed(buffer, 0, n)) dispatch(frame)
+                for (frame in reassembler.feed(buffer, 0, n)) dispatch(conn, frame)
             }
         } catch (e: CancellationException) {
             throw e
@@ -411,11 +415,18 @@ class MaxTransport(
         }
     }
 
-    /** Routes one complete packet: a reply to its waiter, anything else to [pushes]. */
-    private suspend fun dispatch(frame: ByteArray) {
+    /**
+     * Routes one complete packet: a reply to its waiter, a server PING to [answerServerPing],
+     * anything else to [pushes].
+     */
+    private suspend fun dispatch(conn: RawConnection, frame: ByteArray) {
         val header = try {
             decodeHeader(frame)
         } catch (e: IllegalArgumentException) {
+            return
+        }
+        if (isServerPing(header)) {
+            answerServerPing(conn, header)
             return
         }
         val decoded = runCatching { decodePayloadPacket(frame, codec) }
@@ -432,6 +443,36 @@ class MaxTransport(
                 val packet = TransportPacket(h, payload)
                 reliableQueues.value.forEach { it.trySend(packet) }
                 _pushes.tryEmit(packet)
+            }
+        }
+    }
+
+    /**
+     * Answers a server PING (opcode 1, `cmd` 0) on [conn]: `cmd` 1 (OK), the same `seq` and
+     * opcode, empty body, like the Android app (`vpc`, `new bld(1, seq, opcode, empty)`). The
+     * server's body, if any, is ignored.
+     *
+     * The reply is not a request, so [outboundGuard] does not see it: ghost mode rewrites the
+     * `interactive` flag of the PINGs this client sends, and an empty acknowledgement carries no
+     * flag and tells the server nothing about the user (it only proves the socket is alive,
+     * which the open connection already does). Passing it through the guard would turn it into
+     * a body `{interactive: false}`, which the official client never sends in a reply.
+     *
+     * The write runs in its own coroutine so a busy write lock never stalls the reader; a failed
+     * write is dropped (the connection is then broken anyway and the reader sees it).
+     */
+    private fun answerServerPing(conn: RawConnection, header: PacketHeader) {
+        val reply = encodePacket(
+            PacketHeader(PROTOCOL_VERSION, CmdType.OK.value, header.seq, header.opcode, 0, compressed = false),
+            ByteArray(0),
+        )
+        scope.launch {
+            try {
+                writeWithin(conn, reply, header.opcodeValue, header.seq)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // the connection is gone; nothing to answer on
             }
         }
     }
@@ -517,5 +558,9 @@ class MaxTransport(
 
         private fun isReply(cmd: Byte): Boolean =
             cmd == CmdType.OK.value || cmd == CmdType.NOT_FOUND.value || cmd == CmdType.ERROR.value
+
+        /** A keepalive the server sends on its own: opcode PING with `cmd` 0 (a request, not a reply). */
+        private fun isServerPing(header: PacketHeader): Boolean =
+            header.cmd == CmdType.REQUEST.value && header.opcodeValue == Opcode.PING.value
     }
 }
