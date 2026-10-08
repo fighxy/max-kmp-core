@@ -50,7 +50,11 @@ import com.max.shared.Watcher
 import com.max.shared.watch
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.withTimeoutOrNull
 import com.max.shared.ClientState
@@ -236,6 +240,36 @@ class MaxIosClient internal constructor(
     /** Mutes [chatId] for good or turns its sound back on ([MaxClient.setChatMuted]). */
     fun setChatMuted(chatId: String, muted: Boolean, onResult: (String?, String?) -> Unit) {
         runUnit(onResult) { it.setChatMuted(parseId(chatId), muted) }
+    }
+
+    /**
+     * Mutes [chatId] until [untilMs] (Unix ms), for good with `-1`, or turns the sound back on with
+     * `0` ([MaxClient.setChatMuteUntil]).
+     */
+    fun setChatMuteUntil(chatId: String, untilMs: Long, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { it.setChatMuteUntil(parseId(chatId), untilMs) }
+    }
+
+    /**
+     * Whether [chatId] is muted now, with the same codes as [IosChat.muted]: `1` muted (for good
+     * or until a time still ahead), `0` sound on, `-1` UNKNOWN (no account config yet: before the
+     * first login, after logout; a config that does not know this chat; a malformed id). `-1`
+     * never means "muted for good" (that raw `dontDisturbUntil` is [chatMuteUntil]): keep the
+     * value shown before. Reads the core's config, no request.
+     */
+    fun isChatMuted(chatId: String): Int = attempt(-1) {
+        val id = chatId.trim().toLongOrNull() ?: return@attempt -1
+        muteCode(client().accountConfig.value, id, nowMs())
+    }
+
+    /**
+     * [chatId]'s raw `dontDisturbUntil`: `0` sound on, `-1` muted for good, else the end of the
+     * mute (Unix ms; a time in the past means the sound is on again). [Long.MIN_VALUE] while
+     * unknown (the same cases as `-1` of [isChatMuted]).
+     */
+    fun chatMuteUntil(chatId: String): Long = attempt(Long.MIN_VALUE) {
+        val id = chatId.trim().toLongOrNull() ?: return@attempt Long.MIN_VALUE
+        client().chatMuteUntil(id) ?: Long.MIN_VALUE
     }
 
     /**
@@ -1733,7 +1767,7 @@ class MaxIosClient internal constructor(
      * [SENDER_WAIT_MS] for `CONTACT_INFO`, so the event carries the sender name and avatar.
      */
     fun watchEvents(onEach: (IosEvent) -> Unit): IosWatch = watch { c ->
-        c.events.all
+        val pushes = c.events.all
             .map { event ->
                 val sender = when (event) {
                     is MaxEvent.NewMessage -> event.message.sender
@@ -1741,9 +1775,18 @@ class MaxIosClient internal constructor(
                     else -> null
                 }
                 if (sender != null) withTimeoutOrNull(SENDER_WAIT_MS) { resolveUsers(c, listOf(sender)) }
-                event
+                IosEventSource.Push(event)
             }
-            .watch(scope) { event -> guarded { flatten(event, c.store.state.value).forEach(onEach) } }
+        merge(pushes, configChanges(c.accountConfig))
+            .watch(scope) { source ->
+                guarded {
+                    val events = when (source) {
+                        is IosEventSource.Push -> flatten(source.event, c.store.state.value)
+                        is IosEventSource.Config -> source.events
+                    }
+                    events.forEach(onEach)
+                }
+            }
     }
 
     /**
@@ -2314,7 +2357,12 @@ class IosChat(
     val comments: Int = -1,
     /** The account may post here: `1` yes, `0` no ([canWrite]). */
     val canWrite: Int = 1,
-    /** Notifications off (`config.chats[id].dontDisturbUntil`): `1` muted, `0` on, `-1` unknown. */
+    /**
+     * Notifications off (`config.chats[id].dontDisturbUntil`, read at the time of the snapshot):
+     * `1` muted, `0` on, `-1` unknown (no config yet, or a config that does not know this chat;
+     * never "muted for good"). Keep the shown value on `-1`; `chatMute` events of [MaxIosClient.watchEvents]
+     * bring later changes. See `muteCode`.
+     */
     val muted: Int = -1,
     /** Display name of the last message's author, empty when unknown. */
     val lastAuthorName: String = "",
@@ -2726,6 +2774,11 @@ object IosTypingType {
  * is unknown (`NOTIF_MSG_REACTIONS_CHANGED` 155 carries only counters).
  * [updateTime] is the edit time (ms) of the message of a `message` or `edited` event, as in
  * [IosMessage.updateTime]; `0` when the message was never edited or the event carries none.
+ * `chatMute`: the mute of [chatId] changed (on another device, `NOTIF_CONFIG` 134, after a
+ * reconnect or by `setChatMuted`); [muted] is `1` / `0` / `-1` (unknown), [timeMs] the raw `dontDisturbUntil`
+ * (`0` sound on, `-1` muted for good, else the end of the mute in ms, so a timed mute runs out
+ * without another event). `config`: the account config became known or was dropped; reload the
+ * mute states ([MaxIosClient.isChatMuted]). See `configEvents`.
  * Presence and unknown pushes are not forwarded; incoming calls come from `watchIncomingCalls`.
  */
 class IosEvent(
@@ -2749,6 +2802,13 @@ class IosEvent(
     /** Text formatting of the message of a `message` or `edited` event; empty otherwise. */
     var marks: List<IosTextMark> = emptyList()
         internal set
+
+    /**
+     * For a `chatMute` event: `1` muted, `0` sound on, `-1` unknown (codes of [IosChat.muted]).
+     * `-1` for every other kind.
+     */
+    var muted: Int = -1
+        internal set
 }
 
 private fun phaseOf(state: ClientState): String = when (state) {
@@ -2769,6 +2829,65 @@ private fun classify(t: Throwable): Pair<String, String?> {
         error.kind.name
     }
     return kind to error.errorKey
+}
+
+private fun nowMs(): Long = (NSDate().timeIntervalSince1970 * 1000).toLong()
+
+/**
+ * [IosChat.muted] / [MaxIosClient.isChatMuted] of [chatId] ([AccountConfig.chatMuteState]):
+ * - `1` muted: `dontDisturbUntil` `-1` or an end time still ahead;
+ * - `0` sound on: `0`, a timed mute that ran out, or no entry while the config holds the full
+ *   `chats` section ([AccountConfig.chatsKnown]);
+ * - `-1` unknown: no config, or a config without the full `chats` section and no entry for the chat.
+ */
+internal fun muteCode(config: AccountConfig?, chatId: Long, nowMs: Long): Int = muteCode(config?.chatMuteState(chatId, nowMs))
+
+private fun muteCode(state: Boolean?): Int = when (state) {
+    true -> 1
+    false -> 0
+    null -> -1
+}
+
+/** What [MaxIosClient.watchEvents] turns into [IosEvent]s: a push, or events of a config change. */
+private sealed interface IosEventSource {
+    class Push(val event: MaxEvent) : IosEventSource
+    class Config(val events: List<IosEvent>) : IosEventSource
+}
+
+/** [configEvents] for every change of [config] after the value it has when collected. */
+private fun configChanges(config: StateFlow<AccountConfig?>): Flow<IosEventSource> = flow {
+    var started = false
+    var prev: AccountConfig? = null
+    config.collect { next ->
+        if (!started) {
+            started = true
+        } else {
+            val events = configEvents(prev, next, nowMs())
+            if (events.isNotEmpty()) emit(IosEventSource.Config(events))
+        }
+        prev = next
+    }
+}
+
+/**
+ * The [IosEvent]s of an account config change from [prev] to [next] (`MaxClient.accountConfig`:
+ * `LOGIN`, the `NOTIF_CONFIG` 134 push, `setChatMuted`):
+ * - `chatMute` for each chat whose mute changed: [IosEvent.chatId], [IosEvent.muted] `1` / `0` /
+ *   `-1` (same codes as [IosChat.muted]), [IosEvent.timeMs] the raw `dontDisturbUntil` (`0` sound
+ *   on, `-1` muted for good, else the end of the mute in ms; `0` when unknown);
+ * - one `config` (no chat), after the `chatMute` ones, when the config became known or was
+ *   dropped (login, logout) or [AccountConfig.chatsKnown] changed: the state of chats without an
+ *   entry changed too, reload the mute states ([MaxIosClient.isChatMuted] or the chat list).
+ */
+internal fun configEvents(prev: AccountConfig?, next: AccountConfig?, nowMs: Long): List<IosEvent> {
+    if (prev == next) return emptyList()
+    val chats = AccountConfig.chatMuteChanges(prev ?: AccountConfig(), next ?: AccountConfig(), nowMs).map { change ->
+        iosEvent(kind = "chatMute", chatId = change.chatId.toString(), timeMs = change.dontDisturbUntil ?: 0L).apply {
+            muted = muteCode(change.muted)
+        }
+    }
+    val bulk = prev == null || next == null || prev.chatsKnown != next.chatsKnown
+    return if (bulk) chats + iosEvent(kind = "config") else chats
 }
 
 private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = null): IosChat {
@@ -2802,11 +2921,7 @@ private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = n
             else -> -1
         },
         canWrite = if (canWrite(chat, state)) 1 else 0,
-        muted = when (config?.isMuted(chat.id, (NSDate().timeIntervalSince1970 * 1000).toLong())) {
-            true -> 1
-            false -> 0
-            null -> if (config == null) -1 else 0
-        },
+        muted = muteCode(config, chat.id, nowMs()),
         lastAuthorName = last?.sender?.let { state.displayName(it) }.orEmpty(),
         lastFromMe = when {
             last?.sender == null || me == null -> -1
