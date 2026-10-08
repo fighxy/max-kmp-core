@@ -504,7 +504,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 130 | `NOTIF_MARK` | `NOTIF_MARK` | `{chatId, userId, mark, setAsUnread}` → `MaxState.readMarks`; входит в «кто прочитал» |
 | 131 | `NOTIF_CONTACT` | `NOTIF_CONTACT` | `{contact}`: правка контакта с другого устройства, применяется, если `updateTime` не старее (`MaxEvent.ContactUpdated`) |
 | 132 | `NOTIF_PRESENCE` | `NOTIF_PRESENCE` |  |
-| 134 | `NOTIF_CONFIG` | `NOTIF_CONFIG` |  |
+| 134 | `NOTIF_CONFIG` | `NOTIF_CONFIG` | изменение конфига аккаунта (заглушение с другого устройства): `{config}` или разделы на верхнем уровне → `MaxEvent.ConfigUpdated`, слияние в `MaxClient.accountConfig`, `hash` → `configHash`; схема тела в референсах не описана (см. «Заглушение чатов») |
 | 135 | `NOTIF_CHAT` | `NOTIF_CHAT` |  |
 | 136 | `NOTIF_ATTACH` | `NOTIF_ATTACH` |  |
 | 137 | `NOTIF_CALL_START` | `NOTIF_CALL_START` |  |
@@ -598,6 +598,27 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 - В ядре: `ChatFolders`, `AccountApi.setFolderFavorites`, `MaxEvent.FoldersChanged`,
   `MaxState.chatFolders` / `pinnedChatIds`, `MaxClient.loadFolders` / `setPinnedChats`,
   `MaxIosClient.setPinnedChats` / `watchPinnedChats`. На живом сервере не проверено.
+
+#### Заглушение чатов (`config.chats`)
+
+- Значение: `config.chats["<chatId>"].dontDisturbUntil` — `0` звук, `-1` навсегда, иначе конец в мс.
+  В карточке чата заглушения нет (Komet: «мьют и избранное лежат в конфиге а не в чате»).
+- Отправка: `CONFIG` 22 `{settings: {chats: {<chatId>: {dontDisturbUntil}}}}` (ключ — целое), ответ
+  `{hash}`; новый хеш идёт в `configHash` следующего `LOGIN`.
+- Приём: `config` ответа `LOGIN` 19 и `LOGIN2` 8, пуш `NOTIF_CONFIG` 134.
+- Полнота `config`. `LOGIN` с `configHash` по умолчанию возвращает весь конфиг. `LOGIN` со знакомым
+  серверу хешем — без `config`, с устаревшим — `config`, где может не быть разделов (`chats`, `user`,
+  `server`, `chatFolders`). Хеш составной, из нескольких частей. Komet сохраняет каждый раздел, только
+  если он пришёл, а запись чата в `chats` — только если она есть. Полон ли пришедший `chats` в ответе
+  на устаревший хеш, по референсам не установить. Ядро считает его дельтой и сливает по id чата,
+  чтобы не терять заглушения. Цена такого выбора: если сервер в полном разделе просто убирает запись
+  при включении звука, а не шлёт `0`, старое заглушение может остаться до следующего полного снимка.
+  Это вопрос для проверки на живом сервере.
+- В ядре: `AccountConfig` (`chatsKnown`, `chatMuteState`, `replacedBy`, `mergedWith`,
+  `chatMuteChanges`), `AccountConfigUpdate`, `MaxEvent.ConfigUpdated`, `TokenLogin.sentSync`,
+  `MaxClient.isChatMuted` / `chatMuteUntil` / `setChatMuteUntil`; мост iOS `isChatMuted`,
+  `chatMuteUntil`, `setChatMuteUntil`, события `chatMute` / `config`. Подробно — `opcodes.md`,
+  «Заглушение чатов: config.chats, 22 и 134».
 
 ### Stories
 
@@ -971,6 +992,8 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
     suspend fun fillGaps(); suspend fun loadChats(); suspend fun loadHistory(chatId); suspend fun sendText(chatId, text)
     suspend fun closeOtherSessions()         // 97: новый токен сохраняется
     suspend fun updatePrivacy(settings)      // 22: новый configHash идёт в следующий LOGIN
+    suspend fun setChatMuted(chatId, muted)  // 22: config.chats[id].dontDisturbUntil -1 / 0, хеш — в следующий LOGIN
+    fun isChatMuted(chatId): Boolean?        // null — неизвестно (нет конфига или чат не известен)
 }
 ```
 

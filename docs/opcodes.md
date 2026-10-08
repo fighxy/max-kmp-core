@@ -62,6 +62,7 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | 2FA | `104` (схема Komet), `107`–`113` | `TwoFactorApi` (`MaxApi.twoFactor`): `details` / `status`, смена почты (`sendEmailCode`, `confirmEmailCode`, `commitEmail`) |
 | пользователи | `8` (`{contactsSync: 0}`, схема Komet), `32`, `34` (в т. ч. `BLOCK` / `UNBLOCK`), `36` (чёрный список, схема Komet), `46`, `21`, `96` | `UsersApi` (`MaxApi.users`), `MaxClient.syncContacts` |
 | аккаунт | `16`, `22`, `43`, `97`, `199`, `272`, `274`, `275`, `276` (43, 199, 275 и общий `22 {settings:{user}}` по схеме Komet) | `AccountApi` (`MaxApi.account`), `AccountConfig` (`config` из `19`); `MaxClient` сохраняет новый токен (97), `configHash` (22) и держит `accountConfig` |
+| заглушение чатов | `22` `{settings: {chats: {<chatId>: {dontDisturbUntil}}}}`, `config.chats` в `19` / `8`, пуш `134` `NOTIF_CONFIG` | `AccountConfig` (`chatMuteState`, `chatsKnown`, `mergedWith` / `replacedBy`), `AccountConfigUpdate`, `MaxEvent.ConfigUpdated`; `MaxClient.setChatMuted` / `setChatMuteUntil` / `isChatMuted` / `chatMuteUntil`; мост iOS `isChatMuted`, `chatMuteUntil`, `setChatMuteUntil`, события `chatMute` и `config`. См. «Заглушение чатов: config.chats, 22 и 134» |
 | закреплённые чаты | `274` (`favorites` папки «Все чаты»), `272`, `277` (push), `config.chatFolders` в `19` | `ChatFolders`, `MaxClient.setPinnedChats` / `loadFolders`, схема Komet (protocol.md, «Закреплённые чаты») |
 | чаты | `48`, `49`, `50`, `52`, `53`, `55`, `57`, `58`, `59`, `75`, `77`, `89` | `ChatsApi` (группы, ссылки, заявки, админы) |
 | сообщения | `64` (текст, вложения, отложенная отправка, опросы, комментарии), `66`, `67`, `71`, `91`, `94`, `178`, `179`, `180`, `304` | `MessagesApi` |
@@ -74,7 +75,7 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | жалобы | `161`, `162` | `ComplaintsApi` (`MaxApi.complaints`). Типы с вектором: канал `2`, пользователь `6`. Тип сообщения не назван |
 | поиск в чате | `73` | `SearchApi.searchInChat`: `{chatId, query, count}` |
 | общие чаты | `198` | `ChatsApi.commonChats`: `{userIds:[id]}` → `commonChats` |
-| push | `128`, `129`, `130`, `132`, `135`, `136`, `137`, `142`, `155`, `277` и др. | `EventParser` → `MaxEvents` → `EventRouter` → `MaxStore` |
+| push | `128`, `129`, `130`, `132`, `134`, `135`, `136`, `137`, `142`, `155`, `277` и др. | `EventParser` → `MaxEvents` → `EventRouter` → `MaxStore` |
 | «печатает» | `65` (исходящий, без ожидания ответа), `129` (push, с `type`) | `MessagesApi.sendTyping`, `MaxClient.sendTyping`, `TypingType`; `MaxEvent.Typing.type` / `effectiveType`, `MaxState.typingUsersWithType` / `typingType`; мост iOS `sendTyping`, `IosTypingType`, `text` у события `typing`. См. «Печатает: 65 и 129» |
 | кто прочитал | `48` (`participants`), `59` (`readMark`), `71` (время и автор сообщения, если его нет в сторе), `130` (push), `181`; ключ конфига `max-readmarks` | `MessageReaders`, `ReadersApi` (`MaxApi.readers`), `Chat.participants`, `ChatMember.readMark`, `AccountConfig.maxReadmarks`, `MaxState.chatReadMarks`; `MaxClient.loadMessageReaders` / `isMessageReadersAvailable`; мост iOS `loadMessageReaders`, `isReadersAvailable`, `IosMessageReader`. См. «Кто прочитал сообщение» |
 | время правки сообщения | поле `updateTime` сообщения везде, где приходит сообщение (`19`, `49`, `67`, `71`, `128` и др.) | `MaxMessage.updateTime` (`null`, если поля нет или `0`); push правки без поля сохраняет известное время; мост iOS `IosMessage.updateTime`, `IosEvent.updateTime` (`0` — не правилось) |
@@ -83,6 +84,68 @@ ws2-сигналинг и WebRTC остаются на хосте. `Conversation
 | черновики на сервере | `176` `DRAFT_SAVE`, `177` `DRAFT_DISCARD`, `drafts` в ответе `19` `LOGIN` | `DraftsApi`, `Drafts`, `MaxDraft`, `MaxState.drafts`; `MaxClient.saveDraft` / `discardDraft` / `drafts`; мост iOS `saveDraft`, `discardDraft`, `drafts()` (`IosDraft`) |
 | участники группы | `59` `CHAT_MEMBERS` (страницы по `marker`, поиск по `query`), роли из `48` (`owner`, `admins`, `adminParticipants`) | `ChatsApi.getChatMembers` / `searchChatMembers`, `MemberListType`, `ChatRoles`, `ChatMemberEntry`, `ChatMembersResult`; `MaxClient.loadChatMembers` / `searchChatMembers`; мост iOS `loadChatMembers` (`IosChatMembersPage`, `IosGroupMember`), `searchChatMembers` |
 | контакты и имена | `34` `UPDATE` / `REMOVE`, `41` `CONTACT_ADD_BY_PHONE`, пуш `131` `NOTIF_CONTACT`; книга устройства — без запросов | `UsersApi.renameContact` / `removeContact` / `addContactByPhone`, `PhoneNumbers`, `ContactNames`; `MaxClient.renameContact` / `removeContact` / `addContactByPhone` / `setAddressBook` / `setLocalName` / `displayName` / `displayLabel`; мост iOS те же имена, `IosPhoneContact`, `IosContact.displayName`, событие `contact` |
+
+## Заглушение чатов: config.chats, 22 и 134
+
+Заглушение хранится не в чате, а в конфиге аккаунта: `config.chats["<chatId>"].dontDisturbUntil`.
+`0` — звук включён, `-1` — заглушён навсегда, иначе — время конца заглушения в мс (Unix). Чат без
+записи в полном разделе `chats` считается со звуком. В карточке чата (`19`, `48`, `135`) поля
+заглушения нет, поэтому пуши и страницы чатов его не трогают.
+
+Почему метки слетали (подтверждено по коду, на живом сервере не воспроизводилось):
+
+1. `AccountConfig.fromLoginReply` собирал из `config` ответа `LOGIN` новый конфиг целиком, и
+   `MaxClient` подменял им известный. После переподключения ядро шлёт прежний `configHash`, и сервер
+   может прислать `config` не полностью. Хеш состоит из нескольких частей, и Komet (`feature/FullStack`,
+   `account.dart`) сохраняет `user`, `server` и `chatFolders` каждый, только если раздел пришёл, а
+   `chat_parsing.dart` при отсутствии записи чата держит прежнее заглушение. Ответ без `chats` давал
+   пустой `chats`, и все чаты выглядели «со звуком».
+2. Мост iOS при известном конфиге без записи чата отдавал `muted = 0`. Orbitle пишет `0` в базу как
+   «звук включён», а `-1` пропускает. Вместе с п. 1 метка снималась со всех чатов сразу.
+3. Пуш `NOTIF_CONFIG` 134 шёл как `MaxEvent.Unknown`: заглушение с другого устройства не
+   применялось, а его хеш не сохранялся.
+4. `setChatMuted` не переносил новый хеш в маркеры следующего `LOGIN`, как это делают
+   `updatePrivacy` и `updateUserSettings`. После `CONFIG` 22 переподключение шло со старым хешем, и
+   сервер присылал частичный конфиг из п. 1.
+5. `setChatMuted` и `updateUserSettings` без загруженного конфига начинали с пустого `AccountConfig()`.
+   Получался конфиг с одним чатом, и все остальные выглядели «со звуком».
+
+Как теперь (`AccountConfig`, `MaxClient`):
+
+- `AccountConfigUpdate` — раздел `config` как он пришёл: отсутствующий раздел (`null`) отличается от
+  пустого.
+- `LOGIN` с `configHash` по умолчанию (первый вход процесса) — полный снимок (`replacedBy`): пришедший
+  раздел заменяет известный, отсутствующий остаётся. Пришедший `chats` ставит `chatsKnown = true`.
+- `LOGIN` после переподключения (с прежним хешем), `LOGIN2` 8 и пуш `134` — дельта (`mergedWith`).
+  Отсутствующий раздел остаётся. `user` и `server` сливаются по ключам. `chats` сливается по id чата,
+  а запись чата — по полям: `{"dontDisturbUntil": 0}` включает звук и сохраняет `favIndex`, запись
+  `null` удаляет настройки чата. `chatsKnown` не меняется: частичный `chats` ничего не говорит о чатах,
+  которых в нём нет.
+- Другой аккаунт (другой `userId` в ответе) — прежний конфиг не используется.
+- Пуш `134`: `MaxEvent.ConfigUpdated(update)`. Схемы тела нет ни в одном референсе (Komet, PyMax и
+  kolibri знают только константу), поэтому читаются обе формы конфига: `{config: {...}}`, как в
+  `LOGIN`, и разделы `chats` / `user` / `server` / `hash` на верхнем уровне. Тело без них остаётся
+  `MaxEvent.Unknown`. `MaxClient` сливает пуш в `accountConfig`, а `hash` сохраняет как `configHash`
+  следующего `LOGIN`.
+- `CONFIG` 22 (`setChatMuted`, `setChatMuteUntil`, `updateUserSettings`): хеш ответа уходит в маркеры
+  `LOGIN`, только если в `accountConfig` уже есть конфиг от сервера. Без него новый конфиг знает только
+  изменённый чат (`chatsKnown = false`), а следующий `LOGIN` всё равно просит конфиг целиком.
+- Что показывать (`AccountConfig.chatMuteState`, `MaxClient.isChatMuted`): `true` — заглушён (`-1` или
+  время конца ещё впереди), `false` — звук (`0`, истёкшее заглушение или нет записи при
+  `chatsKnown`), `null` — неизвестно (нет конфига или нет записи без `chatsKnown`). `null` не
+  сохранять как «звук включён». `isMuted` (`null` для чата без записи) не менялся.
+
+Мост iOS:
+
+- `IosChat.muted` и `MaxIosClient.isChatMuted(chatId)`: `1` заглушён, `0` звук, `-1` неизвестно
+  (никогда не «навсегда»). `chatMuteUntil(chatId)` — сырое `dontDisturbUntil`, `Long.MIN_VALUE`, если
+  неизвестно. `setChatMuteUntil(chatId, untilMs, onResult)` — заглушить до времени.
+- `watchEvents` присылает `chatMute` при каждом изменении заглушения в `accountConfig` (пуш `134`,
+  `setChatMuted`, `LOGIN`): `chatId`, `IosEvent.muted` `1` / `0` / `-1`, `timeMs` — сырое
+  `dontDisturbUntil`. Отдельного события об истечении заглушения на время нет: по `timeMs` его
+  считает приложение, или `muted` пересчитывается при следующем чтении списка.
+- Событие `config` (без чата) приходит, когда конфиг появился, сброшен (вход, выход) или поменялся
+  `chatsKnown`. Тогда надо перечитать заглушение всех чатов.
 
 ## Печатает: 65 и 129
 
