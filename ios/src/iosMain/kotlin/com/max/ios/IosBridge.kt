@@ -3,6 +3,7 @@
 package com.max.ios
 
 import com.max.core.ErrorKind
+import com.max.core.MaxError
 import com.max.core.api.AccountConfig
 import com.max.core.api.EntryApp
 import com.max.core.api.Transcription
@@ -102,9 +103,10 @@ import platform.Foundation.NSLock
  * Error boundary: nothing here throws into Swift. Every asynchronous operation calls its callback
  * exactly once, with a null error kind on success or an [com.max.core.ErrorKind] name (plus the
  * server error key, if any) on failure, including cancellation (`CANCELLED`) and calls made after
- * [close]. The [MaxClient] is created on first use, so a Keychain failure while loading the
- * device identity becomes an error kind of the failing call instead of an exception in the
- * initializer. The synchronous getters fall back to `failed` / empty / `false`. Exceptions thrown
+ * [close]. While a failure callback runs, [IosErrors.current] holds the same failure with the
+ * server's texts ([IosError]); the callback signatures stay `(…, kind, errorKey)`. The
+ * [MaxClient] is created on first use, so a Keychain failure while loading the device identity
+ * becomes an error kind of the failing call instead of an exception in the initializer. The synchronous getters fall back to `failed` / empty / `false`. Exceptions thrown
  * by a callback itself are dropped and never abort the process.
  */
 class MaxIosClient internal constructor(
@@ -509,16 +511,16 @@ class MaxIosClient internal constructor(
         // Typing is sent every few seconds and is worthless once missed: a failure goes to the
         // callback only, never to the error log, so a stretch offline does not flood it.
         scope.launch(start = CoroutineStart.ATOMIC) {
-            val (kind, key) = try {
+            val failure = try {
                 val chat = parseId(chatId)
                 val post = postId.takeIf { it.isNotBlank() }?.let(::parseId)
                 val c = client()
                 // ghost mode holds typing back on purpose: no error for the app
-                if (c.ghostMode || c.sendTyping(chat, type, post)) null to null else "NETWORK" to null
+                if (c.ghostMode || c.sendTyping(chat, type, post)) null else Failure.of("NETWORK")
             } catch (t: Throwable) {
                 classify(t)
             }
-            guarded { onResult(kind, key) }
+            if (failure == null) guarded { onResult(null, null) } else deliverFailure(failure.error) { onResult(failure.kind, failure.key) }
         }
     }
 
@@ -665,9 +667,9 @@ class MaxIosClient internal constructor(
                 if (kind != null || error == null) {
                     onResult(result, kind, key)
                 } else {
-                    val (k, e) = classify(error)
-                    if (k != "CANCELLED") IosDiagnostics.reportFailure(k, error)
-                    onResult(result, k, e)
+                    val failure = classify(error)
+                    if (failure.kind != "CANCELLED") IosDiagnostics.reportFailure(failure.kind, error)
+                    deliverFailure(failure.error) { onResult(result, failure.kind, failure.key) }
                 }
             },
             { IosForwardResult(emptyList(), 0) to null },
@@ -2395,7 +2397,8 @@ class MaxIosClient internal constructor(
 
     /**
      * Runs [body] and calls [onResult] exactly once: `(value, null, null)` on success,
-     * `(fallback, kind, errorKey)` on any failure. ATOMIC start: the body runs (and reports
+     * `(fallback, kind, errorKey)` on any failure, with [IosErrors.current] set to the failure
+     * while [onResult] runs ([deliverFailure]). ATOMIC start: the body runs (and reports
      * `CANCELLED`) even when the scope is already cancelled by [close].
      */
     private fun <T> perform(
@@ -2415,9 +2418,9 @@ class MaxIosClient internal constructor(
             outcome.fold(
                 onSuccess = { guarded { onResult(it, null, null) } },
                 onFailure = { t ->
-                    val (kind, key) = classify(t)
-                    if (kind != "CANCELLED") IosDiagnostics.reportFailure(kind, t)
-                    guarded { onResult(fallback(), kind, key) }
+                    val failure = classify(t)
+                    if (failure.kind != "CANCELLED") IosDiagnostics.reportFailure(failure.kind, t)
+                    deliverFailure(failure.error) { onResult(fallback(), failure.kind, failure.key) }
                 },
             )
         }
@@ -2507,7 +2510,7 @@ private inline fun <T> attempt(fallback: T, block: () -> T): T = try {
 }
 
 private fun classifyKind(t: Throwable): String = try {
-    classify(t).first
+    classify(t).kind
 } catch (e: Throwable) {
     "UNKNOWN"
 }
@@ -3578,14 +3581,90 @@ private fun phaseOf(state: ClientState): String = when (state) {
     is ClientState.Failed -> "failed"
 }
 
-private fun classify(t: Throwable): Pair<String, String?> {
+/** A failure as a callback reports it: [kind] and [key] as passed, [error] for [IosErrors.current]. */
+private class Failure(val kind: String, val key: String?, val error: IosError) {
+    companion object {
+        /** A failure without an exception or a server reply (e.g. a typing frame not written). */
+        fun of(kind: String): Failure = Failure(kind, null, IosError(kind, "", "", "", ""))
+    }
+}
+
+private fun classify(t: Throwable): Failure {
     val error = t.toMaxError()
     val kind = if (error.kind == ErrorKind.UNKNOWN && error.message.contains("not found", ignoreCase = true)) {
         "NOT_FOUND"
     } else {
         error.kind.name
     }
-    return kind to error.errorKey
+    return Failure(kind, error.errorKey, iosErrorOf(kind, error))
+}
+
+/** [error] for Swift: every text is an empty string when the server sent none. */
+internal fun iosErrorOf(kind: String, error: MaxError): IosError = IosError(
+    kind = kind,
+    errorKey = error.errorKey.orEmpty(),
+    title = error.title.orEmpty(),
+    localizedMessage = error.localizedMessage.orEmpty(),
+    description = error.description.orEmpty(),
+)
+
+/**
+ * The failure of a [MaxIosClient] call, with the server's texts for the user
+ * ([IosErrors.current]). Every field is an empty string when it is unknown or the server did not
+ * send it; only ERROR replies (`SERVER`, `SESSION_EXPIRED`) carry texts.
+ *
+ * - [kind]: the error kind the callback got ([com.max.core.ErrorKind] name, or `NOT_FOUND`);
+ * - [errorKey]: the server's `error` code, e.g. `attachment.not.ready`;
+ * - [title], [localizedMessage], [description]: as the server sent them (Swift sees
+ *   [description] as `description_`, as in [IosLoginRejection]);
+ * - [serverText] (same value as [displayText]): the text to show, [title], else
+ *   [localizedMessage]; empty means show your own text for [kind].
+ */
+class IosError(
+    val kind: String,
+    val errorKey: String,
+    val title: String,
+    val localizedMessage: String,
+    val description: String,
+) {
+    val serverText: String get() = title.ifEmpty { localizedMessage }
+
+    /** The same value as [serverText], under the name of `ServerErrorException.displayText`. */
+    val displayText: String get() = serverText
+}
+
+/**
+ * The failure being reported to a [MaxIosClient] callback.
+ *
+ * Callbacks keep their `(…, kind, errorKey)` signature. Inside a callback that got a non-nil
+ * kind, [current] returns that failure with the server's texts ([IosError]); everywhere else it
+ * returns `nil`. It is bound to the thread that runs the callback, so read it synchronously in
+ * the callback, before any hop to another queue or task:
+ *
+ * ```swift
+ * client.loadChats { chats, kind, key in
+ *     let error = IosErrors.shared.current() // read here, not inside DispatchQueue.main.async
+ *     DispatchQueue.main.async { … error?.serverText … }
+ * }
+ * ```
+ */
+object IosErrors {
+    fun current(): IosError? = deliveredError
+}
+
+/** [IosErrors.current]: one value per thread, set only while a failure callback runs. */
+@kotlin.native.concurrent.ThreadLocal
+private var deliveredError: IosError? = null
+
+/** Runs the failure callback [block] (guarded) with [error] as [IosErrors.current] on this thread. */
+private inline fun deliverFailure(error: IosError, block: () -> Unit) {
+    val outer = deliveredError
+    deliveredError = error
+    try {
+        guarded(block)
+    } finally {
+        deliveredError = outer
+    }
 }
 
 private fun nowMs(): Long = (NSDate().timeIntervalSince1970 * 1000).toLong()
