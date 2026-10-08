@@ -216,6 +216,7 @@ class PresenceDraftsClientTest {
         t.conn.answer(Opcode.MSG_SEND, msg(1, dialog))
         s1.await()
         assertNull(t.c.drafts[dialog])
+        assertEquals(900L, t.c.draftDiscardedAt(dialog))
         runCurrent()
         val discard = t.conn.answer(Opcode.DRAFT_DISCARD, emptyMap<String, Any?>())
         assertEquals(mapOf("userId" to peer, "time" to 900L), discard.mapKeys { it.key.toString() }.mapValues { it.value.long() })
@@ -255,6 +256,42 @@ class PresenceDraftsClientTest {
         runCurrent()
         assertNull(t.conn.takeWritten())
         assertEquals("y", t.c.drafts[-70L]?.text)
+    }
+
+    @Test
+    fun discardMarksReachTheClient() = runTest {
+        val t = loggedIn(mapOf("drafts" to mapOf("chats" to mapOf("discarded" to mapOf("-70" to 1_500L)))))
+        assertEquals(1_500L, t.c.draftDiscardedAt(-70))
+        assertEquals(mapOf(-70L to 1_500L), t.c.draftDiscards)
+        // the app's own draft from before the discard is cleared (fixture discard-newer-clears)
+        val local = com.max.core.api.MaxDraft(-70, "мой", emptyList(), null, 1_000)
+        assertNull(t.c.reconcileDraft(-70, local))
+        assertEquals(local.copy(updateTime = 1_600), t.c.reconcileDraft(-70, local.copy(updateTime = 1_600)))
+        // a draft not later than the mark is ignored, a later one replaces it
+        t.conn.feed(push(Opcode.NOTIF_DRAFT.value, mapOf("chatId" to -70, "draft" to mapOf("text" to "секретный текст", "time" to 1_500L))))
+        runCurrent()
+        assertNull(t.c.drafts[-70L])
+        t.conn.feed(push(Opcode.NOTIF_DRAFT.value, mapOf("chatId" to -70, "draft" to mapOf("text" to "секретный текст", "time" to 1_501L))))
+        runCurrent()
+        assertEquals("секретный текст", t.c.drafts[-70L]?.text)
+        assertNull(t.c.draftDiscardedAt(-70))
+        // an own discard sets the mark at the time sent
+        val d = async { t.c.discardDraft(-70) }
+        runCurrent()
+        t.conn.answer(Opcode.DRAFT_DISCARD, emptyMap<String, Any?>())
+        assertTrue(d.await())
+        assertEquals(1_501L, t.c.draftDiscardedAt(-70))
+        // an own save clears it
+        val sv = async { t.c.saveDraft(-70, "снова") }
+        runCurrent()
+        t.conn.answer(Opcode.DRAFT_SAVE, mapOf("time" to 1_400L))
+        sv.await()
+        assertNull(t.c.draftDiscardedAt(-70))
+        assertEquals("снова", t.c.drafts[-70L]?.text)
+        // a later discard
+        t.conn.feed(push(Opcode.NOTIF_DRAFT_DISCARD.value, mapOf("chatId" to -70, "time" to 2_000L)))
+        runCurrent()
+        assertEquals(2_000L, t.c.draftDiscardedAt(-70))
     }
 
     @Test

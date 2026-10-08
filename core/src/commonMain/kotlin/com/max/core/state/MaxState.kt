@@ -65,6 +65,10 @@ import com.max.core.events.MaxEvent
  *   Both maps are device data: a `LOGIN` of another account keeps them, [MaxStore.clear] drops them.
  * @property drafts server drafts by chat id (`LOGIN` `drafts`, confirmed `DRAFT_SAVE` /
  *   `DRAFT_DISCARD`, pushes 152 / 153); a `LOGIN` of another account drops them.
+ * @property draftDiscards discard marks by chat id: the server time (ms) of the latest known
+ *   discard of the chat's draft (`LOGIN` `discarded`, push 153, an empty push 152, an own
+ *   `DRAFT_DISCARD` 177 or a send that consumed the draft). A mark stays until a strictly later
+ *   draft replaces it; a chat has a draft or a mark, never both. Dropped like [drafts].
  * @property preferAddressBookNames name rule of [displayName]: `true` (default) the address book
  *   wins over the contact name this account set, `false` the other way round
  *   ([ContactNames.resolve]). A client setting: it survives a `LOGIN` of another account and
@@ -85,6 +89,7 @@ data class MaxState(
     val addressBook: Map<String, String> = emptyMap(),
     val localNames: Map<Long, String> = emptyMap(),
     val drafts: Map<Long, MaxDraft> = emptyMap(),
+    val draftDiscards: Map<Long, Long> = emptyMap(),
     val presenceTimes: Map<Long, Long> = emptyMap(),
     val preferAddressBookNames: Boolean = true,
 ) {
@@ -107,8 +112,15 @@ data class MaxState(
     /** The server draft of [chatId], or `null`. */
     fun draftOf(chatId: Long): MaxDraft? = drafts[chatId]
 
-    /** The newest draft update time kept here (`-1` without drafts): what `draftsSync` may send. */
-    val draftsSyncTime: Long get() = drafts.values.maxOfOrNull { it.updateTime } ?: -1
+    /** The discard mark of [chatId] (server time, ms; [draftDiscards]), or `null`. */
+    fun draftDiscardedAt(chatId: Long): Long? = draftDiscards[chatId]
+
+    /**
+     * The newest draft time kept here, drafts and discard marks (`-1` without either): what
+     * `draftsSync` may send.
+     */
+    val draftsSyncTime: Long
+        get() = maxOf(drafts.values.maxOfOrNull { it.updateTime } ?: -1, draftDiscards.values.maxOrNull() ?: -1)
 
     /** The address-book name of [userId]: [localNames], else [addressBook] by the user's normalized `phone`. */
     fun addressBookName(userId: Long): String? =
@@ -228,10 +240,12 @@ data class MaxState(
  *   keeps the stored time, a push without `status` reads as offline) and records `now` in
  *   [MaxState.presenceTimes].
  * - [MaxEvent.DraftSaved] (152) — the draft of its chat ([MaxEvent.DraftSaved.targetChatId]) by
- *   [Drafts.mergeRemote] (only a later time replaces ours). An empty draft ([MaxDraft.isEmpty])
- *   is read as a discard at its time.
- * - [MaxEvent.DraftDiscarded] (153) — removes the chat's draft unless ours is newer than the
- *   discard. Both are ignored for a dialog while [MaxState.me] is unknown.
+ *   [Drafts.mergeRemote] (only a later time replaces ours), and only when it is strictly later
+ *   than the chat's discard mark ([MaxState.draftDiscards]; it then clears the mark). An empty
+ *   draft ([MaxDraft.isEmpty]) is read as a discard at its time.
+ * - [MaxEvent.DraftDiscarded] (153) — [discardDraft]: removes the chat's draft and sets the
+ *   discard mark unless the stored draft is newer than the discard. Both are ignored for a
+ *   dialog while [MaxState.me] is unknown.
  * - [MaxEvent.ReactionsChanged] — replaces counters / total of the stored message. The own
  *   `yourReaction` is taken from the push when it has one, otherwise the stored one is kept while
  *   its counter is still in the push.
@@ -260,7 +274,7 @@ object StateReducer {
             when {
                 draft == null -> state
                 draft.isEmpty -> discardDraft(state, draft.chatId, draft.updateTime)
-                else -> state.copy(drafts = state.drafts + (draft.chatId to Drafts.mergeRemote(state.drafts[draft.chatId], draft)))
+                else -> putRemoteDraft(state, draft, Drafts::mergeRemote)
             }
         }
         is MaxEvent.DraftDiscarded -> {
@@ -320,18 +334,32 @@ object StateReducer {
 
     /**
      * Server drafts of a `LOGIN` reply: each saved draft by the store rule ([Drafts.merge]: newer
-     * or equal replaces, older is ignored); a discarded entry removes the stored draft unless
-     * that one is newer than the discard.
+     * or equal replaces, older is ignored) when it is strictly later than the chat's discard mark;
+     * then each discarded entry by [discardDraft] (removes the stored draft and sets the mark
+     * unless the stored draft is newer than the discard).
      */
     fun putDrafts(state: MaxState, snapshot: DraftsSnapshot): MaxState {
         if (snapshot.saved.isEmpty() && snapshot.discarded.isEmpty()) return state
-        val drafts = LinkedHashMap(state.drafts)
-        for ((chatId, d) in snapshot.saved) drafts[chatId] = Drafts.merge(drafts[chatId], d)
-        for ((chatId, time) in snapshot.discarded) {
-            val stored = drafts[chatId] ?: continue
-            if (stored.updateTime <= time) drafts.remove(chatId)
-        }
-        return state.copy(drafts = drafts)
+        var s = state
+        for (d in snapshot.saved.values) s = putRemoteDraft(s, d, Drafts::merge)
+        for ((chatId, time) in snapshot.discarded) s = discardDraft(s, chatId, time)
+        return s
+    }
+
+    /**
+     * A non-empty draft from the server (`LOGIN`, push 152): ignored unless strictly later than
+     * the chat's discard mark (equal time: the discard wins, fixture `discard-equal-clears`);
+     * otherwise merged with the stored draft by [rule], and the mark is cleared once a draft
+     * newer than it is stored.
+     */
+    private fun putRemoteDraft(state: MaxState, draft: MaxDraft, rule: (MaxDraft?, MaxDraft) -> MaxDraft): MaxState {
+        val mark = state.draftDiscards[draft.chatId]
+        if (mark != null && draft.updateTime <= mark) return state
+        val merged = rule(state.drafts[draft.chatId], draft)
+        return state.copy(
+            drafts = state.drafts + (draft.chatId to merged),
+            draftDiscards = if (mark == null) state.draftDiscards else state.draftDiscards - draft.chatId,
+        )
     }
 
     /** Local time meaning "unknown" for [login] / [putPresence]: no refresh time is recorded. */
@@ -387,21 +415,44 @@ object StateReducer {
         if (state.preferAddressBookNames == prefer) state else state.copy(preferAddressBookNames = prefer)
 
     /**
-     * A discard of [chatId]'s draft at [time] (push 153, a `discarded` entry): applied when the
-     * stored draft is not newer than [time]; a newer stored draft stays.
+     * A discard of [chatId]'s draft at [time] from the server (push 153, an empty push 152, a
+     * `LOGIN` `discarded` entry). A stored draft strictly newer than [time] stays and no mark is
+     * set (that draft already replaced the discard). Otherwise the stored draft (time <= [time]:
+     * on an equal time the discard wins) is removed and the discard mark becomes the later of
+     * the stored mark and [time].
      */
     fun discardDraft(state: MaxState, chatId: Long, time: Long): MaxState {
-        val stored = state.drafts[chatId] ?: return state
-        return if (stored.updateTime <= time) state.copy(drafts = state.drafts - chatId) else state
+        val stored = state.drafts[chatId]
+        if (stored != null && stored.updateTime > time) return state
+        return markDiscarded(state, chatId, time)
     }
 
-    /** One draft (a confirmed `DRAFT_SAVE`) by the store rule ([Drafts.merge]). */
+    /**
+     * One draft (a confirmed `DRAFT_SAVE`) by the store rule ([Drafts.merge]). An own confirmed
+     * save is the latest word on the chat: it clears the discard mark.
+     */
     fun putDraft(state: MaxState, draft: MaxDraft): MaxState =
-        state.copy(drafts = state.drafts + (draft.chatId to Drafts.merge(state.drafts[draft.chatId], draft)))
+        state.copy(
+            drafts = state.drafts + (draft.chatId to Drafts.merge(state.drafts[draft.chatId], draft)),
+            draftDiscards = state.draftDiscards - draft.chatId,
+        )
 
-    /** Removes the draft of [chatId] (a confirmed `DRAFT_DISCARD`, or the draft was sent). */
-    fun removeDraft(state: MaxState, chatId: Long): MaxState =
-        if (chatId in state.drafts) state.copy(drafts = state.drafts - chatId) else state
+    /**
+     * Removes the draft of [chatId] (a confirmed `DRAFT_DISCARD`, or the draft was sent). With a
+     * [time] (the `time` sent in `DRAFT_DISCARD` 177) the discard mark becomes the later of the
+     * stored mark and [time]; the stored draft goes regardless of its time (our own discard).
+     */
+    fun removeDraft(state: MaxState, chatId: Long, time: Long? = null): MaxState = when {
+        time != null -> markDiscarded(state, chatId, time)
+        chatId in state.drafts -> state.copy(drafts = state.drafts - chatId)
+        else -> state
+    }
+
+    private fun markDiscarded(state: MaxState, chatId: Long, time: Long): MaxState {
+        val mark = maxOf(state.draftDiscards[chatId] ?: time, time)
+        if (chatId !in state.drafts && state.draftDiscards[chatId] == mark) return state
+        return state.copy(drafts = state.drafts - chatId, draftDiscards = state.draftDiscards + (chatId to mark))
+    }
 
     /**
      * Adds / replaces chats (a chat without `lastMessage` keeps the stored one) in one pass: one

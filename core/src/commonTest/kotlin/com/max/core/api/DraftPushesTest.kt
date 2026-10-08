@@ -110,9 +110,10 @@ class DraftPushesTest {
         assertEquals("ours", store.state.value.drafts[-70L]?.text) // older: ignored
         store.apply(EventParser.parse(152, 0, mapOf("chatId" to -70L, "draft" to mapOf("text" to "  ", "time" to 1_500L))))
         assertNull(store.state.value.drafts[-70L])
-        // and an empty saved draft of LOGIN is no draft
+        // and an empty saved draft of LOGIN is no draft, but a discard mark at its time
         val s = StateReducer.putDrafts(MaxState(), Drafts.fromLogin(mapOf("drafts" to mapOf("chats" to mapOf("saved" to mapOf("-5" to mapOf("text" to " ", "saveTime" to 1L))))), me))
         assertTrue(s.drafts.isEmpty())
+        assertEquals(mapOf(-5L to 1L), s.draftDiscards)
     }
 
     @Test

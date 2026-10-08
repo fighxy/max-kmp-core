@@ -31,7 +31,8 @@ data class MaxDraft(
 /**
  * Drafts of the `LOGIN` 19 reply: `drafts: {chats: {saved: {chatId: draft}, discarded: {chatId:
  * time}}, users: {saved: {userId: draft}, discarded: {userId: time}}}`. User keys (dialogs, bots,
- * Saved Messages) are turned into dialog chat ids. Both maps are keyed by chat id.
+ * Saved Messages) are turned into dialog chat ids. Both maps are keyed by chat id. An empty
+ * saved draft ([MaxDraft.isEmpty]) is listed in [discarded] at its time, like an empty push 152.
  */
 data class DraftsSnapshot(val saved: Map<Long, MaxDraft>, val discarded: Map<Long, Long>) {
     companion object {
@@ -87,7 +88,10 @@ object Drafts {
             val map = section as? Map<*, *> ?: return
             (map["saved"] as? Map<*, *>).orEmpty().forEach { (k, v) ->
                 val id = k.asLong()?.let(chatIdOf) ?: return@forEach
-                parse(id, v)?.takeUnless { it.isEmpty }?.let { d -> if ((saved[id]?.updateTime ?: Long.MIN_VALUE) < d.updateTime) saved[id] = d }
+                val d = parse(id, v) ?: return@forEach
+                // An empty saved draft is a discard at its time, like an empty push 152.
+                if (d.isEmpty) discarded[id] = maxOf(discarded[id] ?: Long.MIN_VALUE, d.updateTime)
+                else if ((saved[id]?.updateTime ?: Long.MIN_VALUE) < d.updateTime) saved[id] = d
             }
             (map["discarded"] as? Map<*, *>).orEmpty().forEach { (k, v) ->
                 val id = k.asLong()?.let(chatIdOf) ?: return@forEach
@@ -114,6 +118,28 @@ object Drafts {
      */
     fun mergeRemote(stored: MaxDraft?, incoming: MaxDraft): MaxDraft =
         if (stored != null && stored.updateTime >= incoming.updateTime) stored else incoming
+
+    /**
+     * What the composer of one chat should show, from the app's own [local] draft, the server
+     * draft kept in the store ([server], `MaxState.draftOf`) and the chat's discard mark
+     * ([discardedAt], `MaxState.draftDiscardedAt`). Shared Orbitle rule (fixture
+     * `drafts/merge.json`):
+     * 1. an empty draft ([MaxDraft.isEmpty]) counts as none;
+     * 2. of the two drafts the later `updateTime` wins, on an equal time [local] stays;
+     * 3. a discard at the winner's time or later clears it (`null`): on an equal time the
+     *    discard wins.
+     */
+    fun reconcile(local: MaxDraft?, server: MaxDraft?, discardedAt: Long?): MaxDraft? {
+        val l = local?.takeUnless { it.isEmpty }
+        val s = server?.takeUnless { it.isEmpty }
+        val winner = when {
+            l == null -> s
+            s == null -> l
+            s.updateTime > l.updateTime -> s
+            else -> l
+        } ?: return null
+        return if (discardedAt != null && discardedAt >= winner.updateTime) null else winner
+    }
 }
 
 /**

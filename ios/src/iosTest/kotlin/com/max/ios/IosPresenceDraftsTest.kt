@@ -65,6 +65,16 @@ class IosPresenceDraftsTest {
         val gone = storeEvents(base.copy(drafts = mapOf(-70L to draft)), base).single()
         assertNull(gone.draft)
         assertEquals(0L, gone.timeMs)
+        // a discard carries the discard mark's time, with or without a draft before
+        val discarded = storeEvents(base.copy(drafts = mapOf(-70L to draft)), base.copy(draftDiscards = mapOf(-70L to 950L))).single()
+        assertNull(discarded.draft)
+        assertEquals(950L, discarded.timeMs)
+        val marked = storeEvents(base, base.copy(draftDiscards = mapOf(-71L to 1_200L))).single()
+        assertEquals("-71" to 1_200L, marked.chatId to marked.timeMs)
+        assertNull(marked.draft)
+        // a later draft replacing the mark: one event with the draft
+        val back = storeEvents(base.copy(draftDiscards = mapOf(-70L to 950L)), base.copy(drafts = mapOf(-70L to draft.copy(updateTime = 1_000)))).single()
+        assertEquals(1_000L, back.draft?.updateTime)
 
         // logout and another account: no flood of events
         assertTrue(storeEvents(withPresence, MaxState()).isEmpty())
@@ -155,8 +165,18 @@ class IosPresenceDraftsTest {
         assertEquals("-70", draft.chatId)
         assertEquals("с телефона", assertNotNull(draft.draft).text)
         assertEquals(1, c.drafts().size)
+        // a local draft older than the server's loses, an equal one stays
+        assertEquals("с телефона", c.reconcileDraft("-70", "мой", "", "", 4_000L)?.text)
+        assertEquals("мой", c.reconcileDraft("-70", "мой", "", "", 5_000L)?.text)
         conn.feed(push(Opcode.NOTIF_DRAFT_DISCARD.value, mapOf("chatId" to -70, "time" to 5_000L)))
-        assertNull(events.nextOf("draft").draft)
+        val discarded = events.nextOf("draft")
+        assertNull(discarded.draft)
+        assertEquals(5_000L, discarded.timeMs)
+        assertEquals(5_000L, c.draftDiscardedAt("-70"))
+        assertEquals(0L, c.draftDiscardedAt("-71"))
+        // the discard clears a local draft not newer than it (fixture discard-newer-clears)
+        assertNull(c.reconcileDraft("-70", "мой", "", "", 4_000L))
+        assertEquals("мой", c.reconcileDraft("-70", "мой", "", "", 5_001L)?.text)
 
         // loadPresence
         val loaded = CompletableDeferred<List<IosPresence>?>()

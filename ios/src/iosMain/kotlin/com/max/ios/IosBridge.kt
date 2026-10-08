@@ -787,6 +787,32 @@ class MaxIosClient internal constructor(
         client().drafts.values.sortedByDescending { it.updateTime }.map(::draftSnapshot)
     }
 
+    /**
+     * The discard mark of [chatId]: the server time (ms) of the latest known discard of its draft
+     * (`LOGIN` `discarded`, push 153, an empty push 152, [discardDraft], a send that consumed the
+     * draft); `0` when there is none. A mark stays until a strictly later draft replaces it, so
+     * a chat has a draft in [drafts] or a mark, never both. A local draft of the app with
+     * `updateTime <=` the mark was discarded elsewhere: clear it ([reconcileDraft] does this).
+     */
+    fun draftDiscardedAt(chatId: String): Long = attempt(0L) {
+        client().draftDiscardedAt(parseId(chatId)) ?: 0L
+    }
+
+    /**
+     * What the composer of [chatId] should show, given the app's own unsent draft ([text],
+     * [elementsJson] as in [saveDraft], [replyTo] empty when none, [updateTime] in ms), the
+     * server draft of [drafts] and the discard mark ([draftDiscardedAt]). Shared rule (fixture
+     * `drafts/merge.json`): an empty draft counts as none; the later draft wins, the local one
+     * on an equal time; a discard at the winner's time or later clears it. `null`: an empty
+     * composer. Pass an empty [text] and [replyTo] when the app has no draft of its own.
+     */
+    fun reconcileDraft(chatId: String, text: String, elementsJson: String, replyTo: String, updateTime: Long): IosDraft? = attempt(null) {
+        val id = parseId(chatId)
+        val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
+        val local = MaxDraft(id, text, TextElementsJson.parse(elementsJson, text.length), reply, updateTime)
+        client().reconcileDraft(id, local)?.let(::draftSnapshot)
+    }
+
     /** Sends sticker [stickerId] of the catalog; a non-empty [replyTo] makes it a reply. */
     fun sendSticker(chatId: String, stickerId: String, replyTo: String, onResult: (IosMessage?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
@@ -2925,7 +2951,11 @@ class IosEvent(
     var presence: Int = -1
         internal set
 
-    /** For a `draft` event: the draft now, `null` when it was discarded or sent; `null` for other kinds. */
+    /**
+     * For a `draft` event: the draft now, `null` when it was discarded or sent; `null` for other
+     * kinds. When it is `null`, [timeMs] is the chat's discard mark
+     * ([MaxIosClient.draftDiscardedAt]; `0` when the draft went without one).
+     */
     var draft: IosDraft? = null
         internal set
 }
@@ -2996,7 +3026,8 @@ private fun storeChanges(state: StateFlow<MaxState>): Flow<IosEventSource> = flo
 
 /**
  * `presence` and `draft` events between two store snapshots: one per user whose stored presence
- * changed and one per chat whose draft changed (set, replaced or removed). Nothing on logout
+ * changed and one per chat whose draft or discard mark changed (set, replaced or removed; a
+ * gone draft carries the mark's time, [draftEvent]). Nothing on logout
  * ([MaxState.me] gone) or when another account replaced the snapshot; the first login of a
  * session reports its presence and drafts.
  */
@@ -3009,12 +3040,17 @@ internal fun storeEvents(prev: MaxState, next: MaxState): List<IosEvent> {
             out += presenceEvent(id, p)
         }
     }
-    if (prev.drafts !== next.drafts) {
-        for ((chatId, d) in next.drafts) {
-            if (prev.drafts[chatId] == d) continue
-            out += draftEvent(chatId, d)
+    if (prev.drafts !== next.drafts || prev.draftDiscards !== next.draftDiscards) {
+        val changed = LinkedHashSet<Long>()
+        for ((chatId, d) in next.drafts) if (prev.drafts[chatId] != d) changed += chatId
+        for (chatId in prev.drafts.keys) if (chatId !in next.drafts) changed += chatId
+        for ((chatId, t) in next.draftDiscards) if (prev.draftDiscards[chatId] != t) changed += chatId
+        for (chatId in changed) {
+            val d = next.drafts[chatId]
+            // a mark that went away together with the draft's arrival is covered by that draft
+            if (d == null && chatId !in prev.drafts && chatId !in next.draftDiscards) continue
+            out += draftEvent(chatId, d, next.draftDiscards[chatId])
         }
-        for (chatId in prev.drafts.keys) if (chatId !in next.drafts) out += draftEvent(chatId, null)
     }
     return out
 }
@@ -3025,14 +3061,17 @@ internal fun presenceEvent(userId: Long, info: PresenceInfo?): IosEvent =
         presence = PresenceStatus.of(info)
     }
 
-/** A `draft` event of [chatId]: [IosEvent.draft] is the draft, `null` when it is gone. */
-internal fun draftEvent(chatId: Long, draft: MaxDraft?): IosEvent =
+/**
+ * A `draft` event of [chatId]: [IosEvent.draft] is the draft, `null` when it is gone; [IosEvent.timeMs]
+ * is the draft's time, or for a gone draft the discard mark [discardedAt] (`0` without one).
+ */
+internal fun draftEvent(chatId: Long, draft: MaxDraft?, discardedAt: Long? = null): IosEvent =
     iosEvent(
         kind = "draft",
         chatId = chatId.toString(),
         messageId = draft?.replyTo?.toString().orEmpty(),
         text = draft?.text.orEmpty(),
-        timeMs = draft?.updateTime ?: 0L,
+        timeMs = draft?.updateTime ?: discardedAt ?: 0L,
     ).apply {
         this.draft = draft?.let(::draftSnapshot)
     }

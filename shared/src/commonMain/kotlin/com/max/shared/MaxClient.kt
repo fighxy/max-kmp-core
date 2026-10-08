@@ -1159,6 +1159,26 @@ class MaxClient @Throws(Exception::class) constructor(
     val drafts: Map<Long, MaxDraft> get() = store.state.value.drafts
 
     /**
+     * Discard marks by chat id: the server time (ms) of the latest known discard of the chat's
+     * draft ([com.max.core.state.MaxState.draftDiscards]). A mark stays until a strictly later
+     * draft replaces it; a chat has a draft in [drafts] or a mark here, never both.
+     */
+    val draftDiscards: Map<Long, Long> get() = store.state.value.draftDiscards
+
+    /** The discard mark of [chatId] ([draftDiscards]), or `null`. */
+    fun draftDiscardedAt(chatId: Long): Long? = store.state.value.draftDiscardedAt(chatId)
+
+    /**
+     * What the composer of [chatId] should show given the app's own unsent [local] draft
+     * ([Drafts.reconcile]: empty counts as none, the later draft wins with [local] kept on an equal
+     * time, a discard at the winner's time or later clears it). `null`: an empty composer.
+     */
+    fun reconcileDraft(chatId: Long, local: MaxDraft?): MaxDraft? {
+        val state = store.state.value
+        return Drafts.reconcile(local, state.draftOf(chatId), state.draftDiscardedAt(chatId))
+    }
+
+    /**
      * Saves the draft of [chatId] on the server (`DRAFT_SAVE` 176). Dialogs and Saved Messages are
      * addressed by the peer's `userId`, other chats by `chatId` ([Drafts.address]). The server
      * time of the reply becomes the draft's `updateTime`; the draft goes into [store].
@@ -1178,7 +1198,8 @@ class MaxClient @Throws(Exception::class) constructor(
     /**
      * Discards the draft of [chatId] (`DRAFT_DISCARD` 177, `{chatId | userId, time}`). [time]
      * defaults to the stored draft's `updateTime`; without either nothing is sent and `false` is
-     * returned. [store] drops the draft.
+     * returned. [store] drops the draft; after a sent discard the chat gets a discard mark at
+     * that time ([draftDiscardedAt]).
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun discardDraft(chatId: Long, time: Long? = null): Boolean {
@@ -1189,7 +1210,7 @@ class MaxClient @Throws(Exception::class) constructor(
         }
         val t = ticket()
         api.drafts.discardDraft(Drafts.address(chatId, state.chats[chatId], state.me), at)
-        commit(t) { store.removeDraft(chatId) }
+        commit(t) { store.removeDraft(chatId, at) }
         return true
     }
 

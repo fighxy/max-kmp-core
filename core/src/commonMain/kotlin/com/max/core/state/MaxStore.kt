@@ -85,13 +85,14 @@ class MaxStore(
 
     /**
      * Removes and returns the draft of [chatId] in one atomic step (`null` when there is none), so
-     * of two concurrent callers only one gets it.
+     * of two concurrent callers only one gets it. The chat gets a discard mark at the draft's
+     * `updateTime` (the time its `DRAFT_DISCARD` 177 carries).
      */
     fun takeDraft(chatId: Long): MaxDraft? {
         var taken: MaxDraft? = null
         _state.update { s ->
             taken = s.drafts[chatId]
-            if (taken == null) s else StateReducer.removeDraft(s, chatId)
+            taken?.let { StateReducer.removeDraft(s, chatId, it.updateTime) } ?: s
         }
         return taken
     }
@@ -143,8 +144,11 @@ class MaxStore(
     /** A confirmed draft save ([StateReducer.putDraft]). */
     fun putDraft(draft: MaxDraft) = _state.update { StateReducer.putDraft(it, draft) }
 
-    /** A discarded or sent draft ([StateReducer.removeDraft]). */
-    fun removeDraft(chatId: Long) = _state.update { StateReducer.removeDraft(it, chatId) }
+    /**
+     * A discarded or sent draft ([StateReducer.removeDraft]); with [time] (the discard's time)
+     * the chat also gets a discard mark.
+     */
+    fun removeDraft(chatId: Long, time: Long? = null) = _state.update { StateReducer.removeDraft(it, chatId, time) }
 
     /** The resolved name of one user ([MaxState.displayName]). */
     fun displayName(userId: Long): Flow<String?> = state.map { it.displayName(userId) }.distinctUntilChanged()

@@ -113,28 +113,59 @@ class SharedFixturesTest {
         return MaxDraft(chatId, text, elements, m["replyTo"].str()?.toLong(), m["updateTime"]!!.jsonPrimitive.longOrNull!!)
     }
 
+    private fun assertDraft(want: MaxDraft?, got: MaxDraft?, name: String) {
+        assertEquals(want?.text, got?.text, name)
+        assertEquals(want?.updateTime, got?.updateTime, name)
+        assertEquals(want?.replyTo, got?.replyTo, name)
+        assertEquals(want?.elements, got?.elements, name)
+    }
+
+    private fun serverPush(d: MaxDraft) =
+        com.max.core.events.MaxEvent.DraftSaved(d.chatId, null, d.updateTime, d.text, d.elements, d.replyTo, emptyMap<Any?, Any?>(), 152, null)
+
+    private fun discardPush(chatId: Long, time: Long) =
+        com.max.core.events.MaxEvent.DraftDiscarded(chatId, null, time, 153, null)
+
     /**
-     * `drafts/merge`: the store holds the local draft, the server draft arrives as push 152 and
-     * the discard as push 153 (the core's view of the same rule).
+     * `drafts/merge` as the apps use it: the local draft stays in the app, the server draft
+     * arrives as push 152 and the discard as push 153 (both orders), or both in one `LOGIN`
+     * snapshot; the composer shows [Drafts.reconcile] of the local draft, the store's draft and
+     * the store's discard mark.
      */
     @Test
     fun draftMerge() {
         val chatId = -7000L
         for (c in cases("drafts/merge.json")) {
-            var state = MaxState()
-            draft(c["local"], chatId)?.takeUnless { it.isEmpty }?.let { state = StateReducer.putDraft(state, it) }
-            draft(c["server"], chatId)?.let { d ->
-                state = StateReducer.reduce(state, com.max.core.events.MaxEvent.DraftSaved(chatId, null, d.updateTime, d.text, d.elements, d.replyTo, emptyMap<Any?, Any?>(), 152, null), 0L)
-            }
-            c["discardedAt"]?.jsonPrimitive?.longOrNull?.let { t ->
-                state = StateReducer.reduce(state, com.max.core.events.MaxEvent.DraftDiscarded(chatId, null, t, 153, null), 0L)
-            }
+            val local = draft(c["local"], chatId)
+            val server = draft(c["server"], chatId)
+            val discardedAt = c["discardedAt"]?.jsonPrimitive?.longOrNull
             val want = draft(c["expect"], chatId)
-            val got = state.drafts[chatId]
-            assertEquals(want?.text, got?.text, c.name)
-            assertEquals(want?.updateTime, got?.updateTime, c.name)
-            assertEquals(want?.replyTo, got?.replyTo, c.name)
-            assertEquals(want?.elements, got?.elements, c.name)
+            val pushes = listOfNotNull(server?.let(::serverPush), discardedAt?.let { discardPush(chatId, it) })
+            for ((order, events) in listOf("152,153" to pushes, "153,152" to pushes.reversed())) {
+                var state = MaxState()
+                for (e in events) state = StateReducer.reduce(state, e, 0L)
+                assertDraft(want, Drafts.reconcile(local, state.draftOf(chatId), state.draftDiscardedAt(chatId)), "${c.name} [$order]")
+            }
+            val snapshot = DraftsSnapshot(listOfNotNull(server).associateBy { it.chatId }, listOfNotNull(discardedAt).associateBy { chatId })
+            val state = StateReducer.putDrafts(MaxState(), snapshot)
+            assertDraft(want, Drafts.reconcile(local, state.draftOf(chatId), state.draftDiscardedAt(chatId)), "${c.name} [LOGIN]")
         }
     }
+
+    /**
+     * `drafts/merge` with the local draft kept in the store too (an own confirmed save), the
+     * server draft as push 152 and the discard as push 153: the store alone reaches the result.
+     */
+    @Test
+    fun draftMergeInStore() {
+        val chatId = -7000L
+        for (c in cases("drafts/merge.json")) {
+            var state = MaxState()
+            draft(c["local"], chatId)?.takeUnless { it.isEmpty }?.let { state = StateReducer.putDraft(state, it) }
+            draft(c["server"], chatId)?.let { state = StateReducer.reduce(state, serverPush(it), 0L) }
+            c["discardedAt"]?.jsonPrimitive?.longOrNull?.let { state = StateReducer.reduce(state, discardPush(chatId, it), 0L) }
+            assertDraft(draft(c["expect"], chatId), state.drafts[chatId], c.name)
+        }
+    }
+
 }
