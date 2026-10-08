@@ -7,6 +7,11 @@ import com.max.core.api.AccountConfig
 import com.max.core.api.EntryApp
 import com.max.core.api.Transcription
 import com.max.core.api.Chat
+import com.max.core.api.ChatMemberEntry
+import com.max.core.api.ContactNames
+import com.max.core.api.PhoneContact
+import com.max.core.api.TextElement
+import com.max.core.api.TextElementType
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.ReactionInfo
@@ -451,21 +456,39 @@ class MaxIosClient internal constructor(
     /** Replaces the text of a sent message (`MSG_EDIT` 67); the edited message comes back. */
     fun editMessage(chatId: String, messageId: String, text: String, onResult: (IosMessage?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
-            val edited = c.api.messages.editMessage(parseId(chatId), parseId(messageId), text)
+            // An empty element list goes out, as before: the edit clears the formatting.
+            val edited = c.editText(parseId(chatId), parseId(messageId), text)
             // The edit reply may leave reactions out; the app keeps the ones it has.
             messageSnapshot(edited, chatId, c.store.state.value, withReactions = false)
         }
     }
 
     /**
-     * Deletes messages (`MSG_DELETE` 66). [forEveryone] `false` removes them only for this
-     * account (`forMe`), `true` for every participant.
+     * Replaces the text and formatting of a sent message (`MSG_EDIT` 67 with `elements`).
+     * [marks] as in [sendFormattedText]; an empty list clears the formatting. The result carries
+     * the reactions the store keeps for the message; when the message is not in the store its
+     * [IosMessage.reactionsJson] is empty (unknown), as for [editMessage].
+     */
+    fun editFormattedText(chatId: String, messageId: String, text: String, marks: List<IosTextMark>, onResult: (IosMessage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val chat = parseId(chatId)
+            val id = parseId(messageId)
+            val known = c.store.state.value.messagesOf(chat).any { it.id == id }
+            val edited = c.editText(chat, id, text, textElementsOf(marks))
+            messageSnapshot(edited, chatId, c.store.state.value, withReactions = known)
+        }
+    }
+
+    /**
+     * Deletes messages (`MSG_DELETE` 66), a whole selection in one request. [forEveryone]
+     * `false` removes them only for this account (`forMe`), `true` for every participant. After
+     * the server accepted, the store drops them (watchers see the chat's new last message).
      */
     fun deleteMessages(chatId: String, messageIds: List<String>, forEveryone: Boolean, onResult: (String?, String?) -> Unit) {
         runUnit(onResult) { c ->
             val ids = messageIds.map(::parseId)
             require(ids.isNotEmpty()) { "no message ids" }
-            c.api.messages.deleteMessages(parseId(chatId), ids, forMe = !forEveryone)
+            c.deleteMessages(parseId(chatId), ids, forMe = !forEveryone)
         }
     }
 
@@ -477,6 +500,36 @@ class MaxIosClient internal constructor(
         perform(onResult, { null }) { c ->
             val sent = c.api.messages.forwardMessage(parseId(toChatId), parseId(messageId), sourceChatId = parseId(fromChatId))
             messageSnapshot(sent, toChatId, c.store.state.value)
+        }
+    }
+
+    /**
+     * Forwards several messages of [fromChatId] to [toChatId] (multi-select): one `MSG_SEND` with
+     * a `FORWARD` link per message, in the order of [messageIds] (pass them oldest first). The
+     * first failure stops the rest: [onResult] then gets the messages sent so far,
+     * [IosForwardResult.failedAt] (index into [messageIds]) and the error kind and key of that
+     * failure. On success `failedAt` is `-1` and the kind is `null`. A bad id or no ids fail
+     * before anything is sent (`failedAt` 0, kind `UNKNOWN`).
+     */
+    fun forwardMessages(toChatId: String, fromChatId: String, messageIds: List<String>, onResult: (IosForwardResult, String?, String?) -> Unit) {
+        perform<Pair<IosForwardResult, Throwable?>>(
+            { value, kind, key ->
+                val (result, error) = value
+                if (kind != null || error == null) {
+                    onResult(result, kind, key)
+                } else {
+                    val (k, e) = classify(error)
+                    if (k != "CANCELLED") IosDiagnostics.reportFailure(k, error)
+                    onResult(result, k, e)
+                }
+            },
+            { IosForwardResult(emptyList(), 0) to null },
+        ) { c ->
+            val ids = messageIds.map(::parseId)
+            require(ids.isNotEmpty()) { "no message ids" }
+            val batch = c.forwardMessages(parseId(toChatId), parseId(fromChatId), ids)
+            val state = c.store.state.value
+            IosForwardResult(batch.sent.map { messageSnapshot(it, toChatId, state) }, batch.failedIndex ?: -1) to batch.error
         }
     }
 
@@ -585,6 +638,20 @@ class MaxIosClient internal constructor(
         }
     }
 
+    /**
+     * Sends [text] with formatting [marks] (`elements` of `MSG_SEND`): bold, italic, underline,
+     * strikethrough, monospace, heading, quote, link, mention and animated emoji ([IosTextMark],
+     * types in [IosTextMarkType]). Offsets are UTF-16 indexes into [text]; a mark outside the
+     * text, a link without url, a mention without a numeric user id or an animoji without id and
+     * Lottie address is dropped. A non-empty [replyTo] makes it a reply.
+     */
+    fun sendFormattedText(chatId: String, text: String, replyTo: String, marks: List<IosTextMark>, onResult: (IosMessage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
+            messageSnapshot(c.sendFormattedText(parseId(chatId), text, textElementsOf(marks), reply), chatId, c.store.state.value)
+        }
+    }
+
     /** Sends sticker [stickerId] of the catalog; a non-empty [replyTo] makes it a reply. */
     fun sendSticker(chatId: String, stickerId: String, replyTo: String, onResult: (IosMessage?, String?, String?) -> Unit) {
         perform(onResult, { null }) { c ->
@@ -653,7 +720,7 @@ class MaxIosClient internal constructor(
             val state = c.store.state.value
             users.map { entry ->
                 val user = state.users[entry.userId]
-                IosReactionUser(entry.userId.toString(), user?.displayName.orEmpty(), user?.baseUrl.orEmpty(), entry.reaction)
+                IosReactionUser(entry.userId.toString(), state.displayName(entry.userId).orEmpty(), user?.baseUrl.orEmpty(), entry.reaction)
             }
         }
     }
@@ -674,7 +741,7 @@ class MaxIosClient internal constructor(
             readers.map { reader ->
                 IosMessageReader(
                     userId = reader.userId.toString(),
-                    name = state.users[reader.userId]?.displayName?.trim()?.takeIf { it.isNotEmpty() },
+                    name = state.displayName(reader.userId)?.trim()?.takeIf { it.isNotEmpty() },
                     reaction = reader.reaction,
                     readMark = reader.readMark ?: 0L,
                 )
@@ -1092,6 +1159,71 @@ class MaxIosClient internal constructor(
     }
 
     /**
+     * Renames contact [userId] for this account (`CONTACT_UPDATE` 34, `action: "UPDATE"` with
+     * [firstName] and [lastName]). The name becomes the contact's `CUSTOM` name, which wins over
+     * the address book and the profile ([displayName]). A blank [firstName] fails (`UNKNOWN`).
+     */
+    fun renameContact(userId: String, firstName: String, lastName: String, onResult: (IosContact?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val user = c.renameContact(parseId(userId), firstName, lastName)
+            contactSnapshot(user, c.store.state.value)
+        }
+    }
+
+    /**
+     * Removes contact [userId] (`CONTACT_UPDATE` 34, `action: "REMOVE"`). The store drops it from
+     * the contact list and forgets its contact name; the chat with the user stays.
+     */
+    fun removeContact(userId: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult) { c -> c.removeContact(parseId(userId)) }
+    }
+
+    /**
+     * Imports phone-book entries (`SYNC` 21, `{contactList: {<phone>: {firstName}}}`); only the
+     * first name goes out. [onResult] gets one [IosImportedContact] per entry that belongs to a
+     * Max user, with the phone as given. Entries become the address book used by [displayName]:
+     * the phone-book name shows unless the user has a contact name. Entries without a phone or a
+     * first name are skipped; none left fails (`UNKNOWN`). Send a big book in parts.
+     */
+    fun importPhoneBook(entries: List<IosPhoneContact>, onResult: (List<IosImportedContact>, String?, String?) -> Unit) {
+        perform(onResult, { emptyList() }) { c ->
+            val book = phoneContactsOf(entries)
+            require(book.isNotEmpty()) { "no phone-book entries" }
+            val result = c.importPhoneBook(book)
+            val state = c.store.state.value
+            result.byPhone.map { (phone, user) -> IosImportedContact(phone, contactSnapshot(state.users[user.id] ?: user, state)) }
+        }
+    }
+
+    /**
+     * Hands the device address book to the core without a request: its names are matched to
+     * users by phone for [displayName] and every name the bridge reports (chat titles, authors,
+     * contacts). It replaces the previous book, survives a switch to another account and is
+     * dropped on logout. Entries without a phone or a first name are skipped.
+     */
+    fun setAddressBook(entries: List<IosPhoneContact>) {
+        attempt(Unit) { client().setAddressBook(phoneContactsOf(entries)) }
+    }
+
+    /**
+     * Sets the address-book name of one user without a request (for a user matched by the app
+     * itself); an empty [name] clears it. It counts like a phone-book name in [displayName].
+     */
+    fun setLocalName(userId: String, name: String) {
+        val id = userId.toLongOrNull() ?: return
+        attempt(Unit) { client().setLocalName(id, name.takeIf { it.isNotBlank() }) }
+    }
+
+    /**
+     * The name to show for [userId]: the contact name this account set (`CUSTOM`), else the
+     * address-book name, else the user's profile name. Empty when the user is unknown.
+     */
+    fun displayName(userId: String): String {
+        val id = userId.toLongOrNull() ?: return ""
+        return attempt("") { client().displayName(id).orEmpty() }
+    }
+
+    /**
      * Creates a group (`MSG_SEND` 64, CONTROL `event: new`, `chatType: CHAT`, [ChatsApi.createGroup]).
      * Empty [userIds] are allowed. The caller's own id is dropped. A reply without `chat` is a null
      * chat and no error kind.
@@ -1240,13 +1372,31 @@ class MaxIosClient internal constructor(
         }
     }
 
-    /** First page of group or channel members. */
+    /** First page of group or channel members ([loadChatMembers] pages them with roles). */
     fun chatMembers(chatId: String, onResult: (List<IosChatMember>, String?, String?) -> Unit) {
         perform(onResult, { emptyList() }) { c ->
-            c.api.chats.getChatMembers(parseId(chatId)).members.mapNotNull { member ->
+            val members = c.api.chats.getChatMembers(parseId(chatId)).members
+            val state = c.store.state.value
+            members.mapNotNull { member ->
                 val user = MaxUser.from(member.contact) ?: return@mapNotNull null
-                IosChatMember(user.id.toString(), user.displayName?.trim().orEmpty().ifEmpty { "Участник" }, user.baseUrl.orEmpty())
+                IosChatMember(user.id.toString(), nameOf(user, state)?.trim().orEmpty().ifEmpty { "Участник" }, user.baseUrl.orEmpty())
             }
+        }
+    }
+
+    /**
+     * One page of group or channel members with roles (`CHAT_MEMBERS` 59). Start with an empty
+     * [marker] (or `"0"`) and pass [IosChatMembersPage.nextMarker] until it is empty. [count] is
+     * the page size (50 when not positive). Roles come from the chat's owner and admins; the
+     * first page of a chat the app has not loaded asks the chat first. Members go into the store,
+     * so their names follow [displayName].
+     */
+    fun loadChatMembers(chatId: String, marker: String, count: Int, onResult: (IosChatMembersPage?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val from = marker.trim().takeIf { it.isNotEmpty() }?.let(::parseId) ?: 0L
+            val page = c.loadChatMembers(parseId(chatId), from, if (count > 0) count else 50)
+            val state = c.store.state.value
+            IosChatMembersPage(page.members.mapNotNull { groupMemberSnapshot(it, state) }, page.nextMarker?.toString().orEmpty())
         }
     }
 
@@ -1663,7 +1813,7 @@ class MaxIosClient internal constructor(
             kind = if (isBot) "bot" else "user",
             chatId = chatId,
             peerId = peer.toString(),
-            title = user.displayName.orEmpty(),
+            title = nameOf(user, c.store.state.value).orEmpty(),
             avatarUrl = user.baseUrl.orEmpty(),
             description = card.description?.trim().orEmpty(),
             link = card.link.orEmpty(),
@@ -1820,6 +1970,54 @@ private fun mentionElements(text: String, mentions: List<IosMentionMark>): List<
         linkedMapOf("type" to "USER_MENTION", "from" to mark.from, "length" to mark.length, "entityId" to id)
     }
 
+/** [marks] from Swift as core elements; marks that cannot be sent are dropped (see [MaxIosClient.sendFormattedText]). */
+internal fun textElementsOf(marks: List<IosTextMark>): List<TextElement> = marks.mapNotNull { m ->
+    when (val type = m.type.trim().uppercase()) {
+        "" -> null
+        TextElementType.LINK -> m.url.trim().takeIf { it.isNotEmpty() }?.let { TextElement.link(m.from, m.length, it) }
+        TextElementType.USER_MENTION -> m.entityId.toLongOrNull()?.let { TextElement.mention(m.from, m.length, it) }
+        TextElementType.ANIMOJI -> {
+            val id = m.entityId.toLongOrNull()
+            if (id == null || m.lottieUrl.isBlank()) null else TextElement.animoji(m.from, m.length, id, m.lottieUrl)
+        }
+        else -> TextElement(type, m.from, m.length)
+    }
+}
+
+/** Formatting of [message] for Swift. */
+internal fun textMarksOf(message: MaxMessage): List<IosTextMark> = message.textElements.map { e ->
+    IosTextMark(e.type, e.from, e.length, e.url.orEmpty(), e.entityId?.toString().orEmpty(), e.animojiLottieUrl.orEmpty())
+}
+
+/** Phone-book entries from Swift; entries without a phone or a first name are skipped. */
+internal fun phoneContactsOf(entries: List<IosPhoneContact>): List<PhoneContact> = entries.mapNotNull { e ->
+    val phone = e.phone.trim()
+    val first = e.firstName.trim()
+    if (phone.isEmpty() || first.isEmpty()) null else PhoneContact(phone, first, e.lastName.trim().takeIf { it.isNotEmpty() })
+}
+
+/** The name the app shows for [user] ([ContactNames.resolve] with the address book of [state]). */
+internal fun nameOf(user: MaxUser, state: MaxState): String? = ContactNames.resolve(user, state.addressBookName(user.id))
+
+/** Presence time (seconds or ms) as ms; 0 when unknown. */
+private fun seenMs(seen: Long?): Long = seen?.let { if (it < 100_000_000_000L) it * 1000 else it } ?: 0L
+
+internal fun groupMemberSnapshot(entry: ChatMemberEntry, state: MaxState): IosGroupMember? {
+    val id = entry.userId ?: entry.user?.id ?: return null
+    val user = state.users[id] ?: entry.user
+    val presence = state.presence[id] ?: entry.member.presenceInfo
+    return IosGroupMember(
+        id = id.toString(),
+        name = (user?.let { nameOf(it, state) } ?: state.addressBookName(id))?.trim().orEmpty().ifEmpty { "Участник" },
+        avatarUrl = user?.baseUrl.orEmpty(),
+        role = entry.role.name.lowercase(),
+        alias = entry.admin?.alias.orEmpty(),
+        permissions = entry.admin?.permissions ?: -1,
+        lastSeenMs = seenMs(presence?.seen),
+        online = presence?.status == 1,
+    )
+}
+
 private fun foundFromSearch(fallbackChatId: Long, result: Any?): List<IosFoundMessage> {
     val list = result as? List<*> ?: return emptyList()
     return list.mapNotNull { item ->
@@ -1870,7 +2068,7 @@ private fun storyPreviewSnapshot(preview: StoryPreview, state: MaxState): IosSto
     return IosStoryPreview(
         ownerId = id.toString(),
         ownerType = preview.owner.type.code,
-        name = user?.displayName ?: state.chats[id]?.title.orEmpty(),
+        name = user?.let { nameOf(it, state) } ?: state.chats[id]?.title.orEmpty(),
         avatarUrl = user?.baseUrl.orEmpty(),
         updateTimeMs = preview.updateTime,
         totalCount = preview.totalCount,
@@ -2076,7 +2274,15 @@ class IosContact(
     val isBot: Boolean = false,
     val isOfficial: Boolean = false,
     val isServiceAccount: Boolean = false,
-)
+) {
+    /**
+     * The name to show ([MaxIosClient.displayName]): the contact name, else the address-book
+     * name, else the profile name. Read-only outside the initializer, so the Swift initializer
+     * stays the same.
+     */
+    var displayName: String = ""
+        internal set
+}
 
 /**
  * One call of the call log. [peerId] is empty for a group call ([isGroup]). [hangupType] is the
@@ -2128,6 +2334,10 @@ class IosMessage(
 ) {
     var updateTime: Long = 0L
         internal set
+
+    /** Text formatting ([IosTextMark]), in the order the server sent it; empty for plain text. */
+    var marks: List<IosTextMark> = emptyList()
+        internal set
 }
 
 /** Reactions of one message ([MaxIosClient.loadReactions]); [json] as [IosMessage.reactionsJson]. */
@@ -2140,6 +2350,75 @@ class IosAnimojiMark(val from: Int, val length: Int, val animojiId: String, val 
 class IosMentionMark(val from: Int, val length: Int, val userId: String)
 
 class IosChatMember(val id: String, val name: String, val avatarUrl: String = "")
+
+/**
+ * A formatting mark of a message text: [type] is an [IosTextMarkType] value (an unknown server
+ * type is passed as is), [from] / [length] are UTF-16 offsets. [url] is the target of a `LINK`,
+ * [entityId] the user of a `USER_MENTION` or the animoji of an `ANIMOJI`, [lottieUrl] the
+ * animation of an `ANIMOJI`; empty when not used.
+ */
+class IosTextMark(
+    val type: String,
+    val from: Int,
+    val length: Int,
+    val url: String = "",
+    val entityId: String = "",
+    val lottieUrl: String = "",
+)
+
+/** [IosTextMark.type] values: the server's element types. */
+object IosTextMarkType {
+    /** Bold. */
+    const val STRONG: String = TextElementType.STRONG
+
+    /** Italic. */
+    const val EMPHASIZED: String = TextElementType.EMPHASIZED
+    const val UNDERLINE: String = TextElementType.UNDERLINE
+    const val STRIKETHROUGH: String = TextElementType.STRIKETHROUGH
+
+    /** Inline monospace. */
+    const val MONOSPACED: String = TextElementType.MONOSPACED
+
+    /** A code block; received from some clients, the official ones send [MONOSPACED]. */
+    const val CODE: String = TextElementType.CODE
+    const val HEADING: String = TextElementType.HEADING
+    const val QUOTE: String = TextElementType.QUOTE
+    const val LINK: String = TextElementType.LINK
+    const val USER_MENTION: String = TextElementType.USER_MENTION
+    const val ANIMOJI: String = TextElementType.ANIMOJI
+}
+
+/**
+ * Result of [MaxIosClient.forwardMessages]: the new messages in the target chat, in order, and
+ * [failedAt], the index of the first message that was not sent (`-1` when all were).
+ */
+class IosForwardResult(val messages: List<IosMessage>, val failedAt: Int)
+
+/**
+ * A member of a group or channel ([MaxIosClient.loadChatMembers]). [role] is `owner`, `admin` or
+ * `member`; [alias] is an admin's title (empty when none) and [permissions] an admin's permission
+ * bits as the server sent them (`-1` when unknown or not an admin). [lastSeenMs] is 0 when
+ * unknown; [online] is the presence the server reported.
+ */
+class IosGroupMember(
+    val id: String,
+    val name: String,
+    val avatarUrl: String,
+    val role: String,
+    val alias: String,
+    val permissions: Int,
+    val lastSeenMs: Long,
+    val online: Boolean,
+)
+
+/** One page of members; [nextMarker] is empty after the last page. */
+class IosChatMembersPage(val members: List<IosGroupMember>, val nextMarker: String)
+
+/** A phone-book entry for [MaxIosClient.importPhoneBook] / [MaxIosClient.setAddressBook]. */
+class IosPhoneContact(val phone: String, val firstName: String, val lastName: String = "")
+
+/** A phone-book entry that is a Max user: [phone] as the app sent it. */
+class IosImportedContact(val phone: String, val contact: IosContact)
 
 /** A chat shared with a user ([MaxIosClient.commonChats]); [type] is `CHAT` or `CHANNEL`. */
 class IosCommonChat(val id: String, val type: String, val title: String, val iconUrl: String, val participants: Int)
@@ -2336,6 +2615,10 @@ class IosEvent(
 ) {
     var updateTime: Long = 0L
         internal set
+
+    /** Text formatting of the message of a `message` or `edited` event; empty otherwise. */
+    var marks: List<IosTextMark> = emptyList()
+        internal set
 }
 
 private fun phaseOf(state: ClientState): String = when (state) {
@@ -2366,7 +2649,7 @@ private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = n
         else -> 0L
     }
     val peer = dialogPeer(chat, state.me)?.let { state.users[it] }
-    val title = chat.title?.takeIf { it.isNotBlank() } ?: peer?.displayName.orEmpty()
+    val title = chat.title?.takeIf { it.isNotBlank() } ?: peer?.let { nameOf(it, state) }.orEmpty()
     val avatar = (chat.raw["baseIconUrl"] as? String)?.takeIf { it.isNotBlank() } ?: peer?.baseUrl.orEmpty()
     val forwarded = forwardedOf(last)
     val attaches = last?.attaches?.takeIf { it.isNotEmpty() } ?: forwarded?.get("attaches") as? List<*> ?: emptyList<Any?>()
@@ -2394,7 +2677,7 @@ private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = n
             false -> 0
             null -> if (config == null) -1 else 0
         },
-        lastAuthorName = last?.sender?.let { state.users[it]?.displayName }.orEmpty(),
+        lastAuthorName = last?.sender?.let { state.displayName(it) }.orEmpty(),
         lastFromMe = when {
             last?.sender == null || me == null -> -1
             last.sender == me -> 1
@@ -2577,7 +2860,7 @@ private fun contactSnapshot(user: MaxUser, state: MaxState): IosContact {
         isBot = "BOT" in options,
         isOfficial = "OFFICIAL" in options,
         isServiceAccount = "SERVICE_ACCOUNT" in options,
-    )
+    ).apply { displayName = nameOf(user, state).orEmpty() }
 }
 
 /** Drops loaded messages and the chat preview. The chat itself stays. */
@@ -2615,7 +2898,7 @@ internal fun incomingCallSnapshot(
     return IosIncomingCall(
         conversationId = event.conversationId,
         callerId = event.callerId.toString(),
-        callerName = caller?.displayName.orEmpty(),
+        callerName = caller?.let { nameOf(it, state) }.orEmpty(),
         callerAvatarUrl = caller?.baseUrl.orEmpty(),
         chatId = event.chatId?.toString().orEmpty(),
         isVideo = event.type == "VIDEO" || params.isVideo,
@@ -2636,7 +2919,7 @@ private fun callSnapshot(entry: CallLogEntry, me: Long?, state: MaxState): IosCa
         id = entry.messageId.toString(),
         chatId = entry.chatId?.toString().orEmpty(),
         peerId = peerId?.toString().orEmpty(),
-        title = peer?.displayName.orEmpty(),
+        title = peer?.let { nameOf(it, state) }.orEmpty(),
         avatarUrl = peer?.baseUrl.orEmpty(),
         isGroup = peer == null && entry.contactIds.size > 1,
         outgoing = me != null && entry.senderId == me,
@@ -2656,11 +2939,14 @@ internal fun messageSnapshot(message: MaxMessage, fallbackChatId: String, state:
         authorId = message.sender?.toString().orEmpty(),
         text = message.text,
         timeMs = message.time,
-        contentJson = messageContentJson(message) { id -> state.users[id]?.displayName },
-        authorName = user?.displayName.orEmpty(),
+        contentJson = messageContentJson(message) { id -> state.displayName(id) },
+        authorName = user?.let { nameOf(it, state) }.orEmpty(),
         authorAvatarUrl = user?.baseUrl.orEmpty(),
         reactionsJson = if (withReactions) historyReactions(message, message.chatId ?: fallbackChatId.toLongOrNull(), state) else "",
-    ).apply { updateTime = message.updateTime ?: 0L }
+    ).apply {
+        updateTime = message.updateTime ?: 0L
+        marks = textMarksOf(message)
+    }
 }
 
 /**
@@ -2764,11 +3050,14 @@ internal fun messageEvent(kind: String, message: MaxMessage, state: MaxState, wi
         authorId = message.sender?.toString().orEmpty(),
         text = message.text,
         timeMs = message.time,
-        contentJson = messageContentJson(message) { id -> state.users[id]?.displayName },
-        authorName = user?.displayName.orEmpty(),
+        contentJson = messageContentJson(message) { id -> state.displayName(id) },
+        authorName = user?.let { nameOf(it, state) }.orEmpty(),
         authorAvatarUrl = user?.baseUrl.orEmpty(),
         reactionsJson = if (withReactions) historyReactions(message, message.chatId, state) else "",
-    ).apply { updateTime = message.updateTime ?: 0L }
+    ).apply {
+        updateTime = message.updateTime ?: 0L
+        marks = textMarksOf(message)
+    }
 }
 
 private fun chatEvent(chat: Chat, state: MaxState): IosEvent {

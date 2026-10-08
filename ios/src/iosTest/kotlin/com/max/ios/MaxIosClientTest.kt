@@ -1,6 +1,13 @@
 package com.max.ios
 
+import com.max.core.api.ChatMember
+import com.max.core.api.ChatMembersPage
+import com.max.core.api.ChatMembersResult
+import com.max.core.api.ChatRoles
 import com.max.core.api.MaxMessage
+import com.max.core.api.MaxUser
+import com.max.core.api.PhoneContact
+import com.max.core.api.TextElementType
 import com.max.core.calls.CallSignaling
 import com.max.core.calls.ConversationParams
 import com.max.core.events.MaxEvent
@@ -10,6 +17,7 @@ import com.max.core.transport.ConnectionClosedException
 import com.max.core.transport.ConnectionFactory
 import com.max.core.session.UserAgentInfo
 import com.max.core.state.MaxState
+import com.max.core.state.StateReducer
 import com.max.core.transport.TransportConfig
 import com.max.shared.CredentialStore
 import com.max.shared.InMemoryKeyValueStore
@@ -299,5 +307,106 @@ class MaxIosClientTest {
         assertEquals(20L, start.peerCallsUserId)
         assertTrue(start.ws2Url.startsWith("wss://sig.test/ws?userId=3&token=t&platform=ANDROID&version=5&capabilities=3c02f"))
         assertTrue(start.ws2Url.endsWith("&tgt=start"))
+    }
+    @Test
+    fun multiSelectFormattingMembersAndContactsReportKindsOffline() {
+        val c = offlineClient()
+        val badForward = callback<Triple<Int, Int, String?>> { d ->
+            c.forwardMessages("1", "2", listOf("3", "x")) { r, k, _ -> d.complete(Triple(r.messages.size, r.failedAt, k)) }
+        }
+        assertEquals(Triple(0, 0, "UNKNOWN"), badForward)
+        assertEquals("UNKNOWN", callback<String?> { d -> c.forwardMessages("1", "2", emptyList()) { _, k, _ -> d.complete(k) } })
+        val forward = callback<Pair<Int, String?>> { d -> c.forwardMessages("1", "2", listOf("3", "4")) { r, k, _ -> d.complete(r.failedAt to k) } }
+        assertEquals(0 to "NETWORK", forward)
+        assertEquals("UNKNOWN", callback<String?> { d -> c.deleteMessages("1", listOf("x"), true) { k, _ -> d.complete(k) } })
+        assertEquals("NETWORK", callback<String?> { d -> c.deleteMessages("1", listOf("2", "3"), false) { k, _ -> d.complete(k) } })
+        val marks = listOf(IosTextMark(IosTextMarkType.STRONG, 0, 2))
+        assertEquals(null to "NETWORK", callback<Pair<IosMessage?, String?>> { d -> c.sendFormattedText("1", "hi", "", marks) { m, k, _ -> d.complete(m to k) } })
+        assertEquals(null to "UNKNOWN", callback<Pair<IosMessage?, String?>> { d -> c.editFormattedText("1", "y", "hi", marks) { m, k, _ -> d.complete(m to k) } })
+        assertEquals(null to "UNKNOWN", callback<Pair<IosChatMembersPage?, String?>> { d -> c.loadChatMembers("1", "x", 50) { p, k, _ -> d.complete(p to k) } })
+        assertEquals(null to "NETWORK", callback<Pair<IosChatMembersPage?, String?>> { d -> c.loadChatMembers("1", "", 0) { p, k, _ -> d.complete(p to k) } })
+        assertEquals(null to "UNKNOWN", callback<Pair<IosContact?, String?>> { d -> c.renameContact("x", "Ann", "") { u, k, _ -> d.complete(u to k) } })
+        assertEquals("NETWORK", callback<String?> { d -> c.removeContact("5") { k, _ -> d.complete(k) } })
+        val noEntries = callback<Pair<Int, String?>> { d -> c.importPhoneBook(listOf(IosPhoneContact(" ", "Ann"))) { l, k, _ -> d.complete(l.size to k) } }
+        assertEquals(0 to "UNKNOWN", noEntries)
+        val import = callback<Pair<Int, String?>> { d -> c.importPhoneBook(listOf(IosPhoneContact("+79990000001", "Ann"))) { l, k, _ -> d.complete(l.size to k) } }
+        assertEquals(0 to "NETWORK", import)
+        // the address book needs no network
+        c.setAddressBook(listOf(IosPhoneContact("+79990000001", "Ann", "Lee")))
+        c.setLocalName("5", "Сосед")
+        assertEquals("Сосед", c.displayName("5"))
+        assertEquals("", c.displayName("6"))
+        assertEquals("", c.displayName("x"))
+        callback<Unit> { d -> c.close { d.complete(Unit) } }
+
+        val broken = MaxIosClient(scope()) { throw IllegalStateException("keychain read failed") }
+        broken.setAddressBook(listOf(IosPhoneContact("1", "A")))
+        assertEquals("", broken.displayName("5"))
+        callback<Unit> { d -> broken.close { d.complete(Unit) } }
+    }
+
+    @Test
+    fun marksTravelBothWays() {
+        val elements = textElementsOf(
+            listOf(
+                IosTextMark(" strong ", 0, 2),
+                IosTextMark(IosTextMarkType.LINK, 3, 4, url = "https://max.ru"),
+                IosTextMark(IosTextMarkType.LINK, 3, 4),
+                IosTextMark(IosTextMarkType.USER_MENTION, 0, 2, entityId = "77"),
+                IosTextMark(IosTextMarkType.USER_MENTION, 0, 2, entityId = "x"),
+                IosTextMark(IosTextMarkType.ANIMOJI, 0, 2, entityId = "9", lottieUrl = "https://l"),
+                IosTextMark(IosTextMarkType.ANIMOJI, 0, 2, entityId = "9"),
+                IosTextMark("", 0, 1),
+            ),
+        )
+        assertEquals(listOf("STRONG", "LINK", "USER_MENTION", "ANIMOJI"), elements.map { it.type })
+        assertEquals("https://max.ru", elements[1].url)
+        assertEquals(77L, elements[2].entityId)
+
+        val message = MaxMessage.from(
+            mapOf(
+                "id" to 5L, "chatId" to 7L, "sender" to 20L, "time" to 1_000L, "type" to "USER", "text" to "hi there",
+                "elements" to listOf(mapOf("type" to "EMPHASIZED", "from" to 0, "length" to 2), mapOf("type" to "LINK", "from" to 3, "length" to 5, "attributes" to mapOf("url" to "https://a"))),
+            ),
+        )!!
+        val snap = messageSnapshot(message, "7", MaxState())
+        assertEquals(listOf(TextElementType.EMPHASIZED, TextElementType.LINK), snap.marks.map { it.type })
+        assertEquals("https://a", snap.marks[1].url)
+        assertEquals(2, messageEvent("edited", message, MaxState(), withReactions = false).marks.size)
+        assertTrue(IosMessage("5", "7", "20", "hi", 1_000).marks.isEmpty())
+        assertEquals(listOf(PhoneContact("+7999", "Ann", "Lee"), PhoneContact("1", "B")), phoneContactsOf(listOf(IosPhoneContact(" +7999 ", " Ann ", "Lee"), IosPhoneContact("1", "B", " "), IosPhoneContact("2", " "))))
+    }
+
+    @Test
+    fun namesFollowContactThenAddressBookThenProfile() {
+        fun user(id: Long, phone: Long, vararg names: Map<String, Any?>) = MaxUser.from(mapOf("id" to id, "phone" to phone, "names" to names.toList()))!!
+        val oneme = mapOf("name" to "Ivan Petrov", "type" to "ONEME")
+        var state = StateReducer.putUsers(MaxState(), listOf(user(1, 79990000001, oneme), user(2, 79990000002, mapOf("firstName" to "Vanya", "type" to "CUSTOM"), oneme)))
+        state = StateReducer.setAddressBook(state, listOf(PhoneContact("+79990000001", "Brother"), PhoneContact("+79990000002", "Book")))
+        val message = MaxMessage.from(mapOf("id" to 5L, "chatId" to 7L, "sender" to 1L, "time" to 1_000L, "type" to "USER", "text" to "hi"))!!
+        assertEquals("Brother", messageSnapshot(message, "7", state).authorName)
+        assertEquals("Vanya", messageSnapshot(message.copy(sender = 2), "7", state).authorName)
+        assertEquals("Brother", nameOf(state.users.getValue(1), state))
+        assertEquals("Ivan Petrov", nameOf(state.users.getValue(1), MaxState()))
+
+        val roles = ChatRoles(owner = 1, admins = mapOf(2L to com.max.core.api.ChatAdmin(2, 3, "mod")))
+        val page = ChatMembersPage(
+            listOf(
+                ChatMember(1, mapOf("id" to 1L, "names" to listOf(oneme)), mapOf("seen" to 1_700_000_000L, "status" to 1), emptyMap<String, Any?>()),
+                ChatMember(2, mapOf("id" to 2L), null, emptyMap<String, Any?>()),
+                ChatMember(3, mapOf("id" to 3L), null, emptyMap<String, Any?>()),
+            ),
+            0,
+            emptyMap<String, Any?>(),
+        )
+        val members = ChatMembersResult.of(page, 0, roles).members.mapNotNull { groupMemberSnapshot(it, state) }
+        assertEquals(listOf("owner", "admin", "member"), members.map { it.role })
+        assertEquals(listOf("Brother", "Vanya", "Участник"), members.map { it.name })
+        assertEquals("mod", members[1].alias)
+        assertEquals(3, members[1].permissions)
+        assertEquals(-1, members[2].permissions)
+        assertEquals(1_700_000_000_000L, members[0].lastSeenMs)
+        assertTrue(members[0].online)
+        assertFalse(members[2].online)
     }
 }
