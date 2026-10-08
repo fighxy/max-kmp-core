@@ -3,6 +3,7 @@ package com.max.core.events
 import com.max.core.api.Chat
 import com.max.core.api.Folder
 import com.max.core.api.MaxMessage
+import com.max.core.api.MaxUser
 import com.max.core.api.ReactionCounter
 import com.max.core.calls.ConversationParams
 
@@ -43,6 +44,12 @@ sealed interface MaxEvent {
         override val opcode: Int,
         override val raw: Any?,
     ) : MaxEvent
+
+    /**
+     * A contact changed on another session (`NOTIF_CONTACT` 131 `{contact}`, MAX web client):
+     * a rename, add or remove. The store keeps the newer `updateTime`.
+     */
+    data class ContactUpdated(val user: MaxUser, override val opcode: Int, override val raw: Any?) : MaxEvent
 
     /** A chat changed (`NOTIF_CHAT` 135 `{chat}`; PyMax `CHAT_UPDATE`). */
     data class ChatUpdated(val chat: Chat, override val opcode: Int, override val raw: Any?) : MaxEvent

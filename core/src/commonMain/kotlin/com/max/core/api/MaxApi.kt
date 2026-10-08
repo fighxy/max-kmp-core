@@ -40,4 +40,5 @@ class MaxApi(sink: RequestSink, clock: () -> Long, val cids: ClientIdGenerator) 
     val complaints: ComplaintsApi = ComplaintsApi(sink)
     val stories: StoriesApi = StoriesApi(sink, clock)
     val readers: ReadersApi = ReadersApi(chats, messages)
+    val drafts: DraftsApi = DraftsApi(sink)
 }

@@ -237,7 +237,9 @@ class AuthApiTest {
         assertEquals(1_700_000_000_000L, r.time)
         assertEquals("cfg-hash", r.configHash)
         assertEquals(mapOf("x" to 1), r.login2Flags)
-        assertEquals(SyncState(1_700_000_000_000L, 1_700_000_000_000L, 1_700_000_000_000L, 1_700_000_000_000L, "cfg-hash"), SyncState().updatedBy(r))
+        // the drafts marker is not moved to the login time (the drafts are not persisted)
+        assertEquals(SyncState(1_700_000_000_000L, 1_700_000_000_000L, -1, 1_700_000_000_000L, "cfg-hash"), SyncState().updatedBy(r))
+        assertEquals(5L, SyncState(draftsSync = 5).updatedBy(r).draftsSync)
         assertEquals(SyncState(), SyncState().updatedBy(LoginResult.from(emptyMap<String, Any>())))
 
         for ((error, message) in listOf("login.token" to "FAIL_LOGIN_TOKEN", "FAIL_LOGIN_TOKEN" to null, "x" to "FAIL_LOGOUT_ALL")) {

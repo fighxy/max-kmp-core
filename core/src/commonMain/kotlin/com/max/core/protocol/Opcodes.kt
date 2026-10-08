@@ -78,6 +78,7 @@ enum class Opcode(val value: Int) {
     CONTACT_MUTUAL(38),
     CONTACT_PHOTOS(39),
     CONTACT_SORT(40),
+    CONTACT_ADD_BY_PHONE(41), // MAX web client and Komet; absent in kolibri and PyMax
     CONTACT_VERIFY(42),
     REMOVE_CONTACT_PHOTO(43),
     CONTACT_INFO_BY_PHONE(46),

@@ -179,13 +179,18 @@ data class SyncState(
     val presenceSync: Long = -1,
     val configHash: Any = DEFAULT_CONFIG_HASH,
 ) {
-    /** Markers after a login (PyMax `LoginResponse.update_sync_state`): all syncs = `time`, hash = `config.hash`. */
+    /**
+     * Markers after a login (PyMax `LoginResponse.update_sync_state`): chat, contact and presence
+     * syncs = `time`, hash = `config.hash`. [draftsSync] stays: it must be the newest draft time
+     * the client still keeps (MAX web client), and the core does not persist drafts, so moving
+     * it to the login time would hide every older server draft from the next `LOGIN`.
+     */
     fun updatedBy(result: LoginResult): SyncState {
         val t = result.time
         return SyncState(
             chatsSync = t ?: chatsSync,
             contactsSync = t ?: contactsSync,
-            draftsSync = t ?: draftsSync,
+            draftsSync = draftsSync,
             presenceSync = t ?: presenceSync,
             configHash = result.configHash ?: configHash,
         )

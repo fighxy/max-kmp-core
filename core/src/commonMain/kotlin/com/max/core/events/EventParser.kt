@@ -17,6 +17,7 @@ import com.max.core.transport.TransportPacket
  * | `NOTIF_MESSAGE` 128, `MSG_EDIT` 67 | [MaxEvent.NewMessage] / [MaxEvent.MessageEdited] (`status` EDITED) / [MaxEvent.MessagesDeleted] (`status` REMOVED) |
  * | `NOTIF_MSG_DELETE` 142 | [MaxEvent.MessagesDeleted] |
  * | `NOTIF_CHAT` 135 | [MaxEvent.ChatUpdated] |
+ * | `NOTIF_CONTACT` 131 | [MaxEvent.ContactUpdated] (`{contact}`) |
  * | `NOTIF_TYPING` 129 | [MaxEvent.Typing] (`type` optional) |
  * | `NOTIF_MARK` 130 | [MaxEvent.MessageRead] |
  * | `NOTIF_PRESENCE` 132 | [MaxEvent.Presence] |
@@ -53,6 +54,7 @@ object EventParser {
             else MaxEvent.MessagesDeleted(chatId, ids, Chat.from(chat), null, map["ttl"] as? Boolean ?: false, opcode, raw)
         }
         Opcode.NOTIF_CHAT.value -> Chat.from(map["chat"])?.let { MaxEvent.ChatUpdated(it, opcode, raw) }
+        Opcode.NOTIF_CONTACT.value -> com.max.core.api.MaxUser.from(map["contact"])?.let { MaxEvent.ContactUpdated(it, opcode, raw) }
         Opcode.NOTIF_TYPING.value -> {
             val chatId = map["chatId"].long()
             val userId = map["userId"].long()

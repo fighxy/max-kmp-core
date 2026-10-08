@@ -61,7 +61,8 @@ class CredentialStore(private val kv: KeyValueStore, private val prefix: String 
             sync = SyncState(
                 chatsSync = get("sync.chats")?.toLongOrNull() ?: -1,
                 contactsSync = get("sync.contacts")?.toLongOrNull() ?: -1,
-                draftsSync = get("sync.drafts")?.toLongOrNull() ?: -1,
+                // Older builds saved the login time under "sync.drafts", which hid server drafts.
+                draftsSync = get(DRAFTS_SYNC_KEY)?.toLongOrNull() ?: -1,
                 presenceSync = get("sync.presence")?.toLongOrNull() ?: -1,
                 configHash = decodeHash(get("sync.configHash")),
             ),
@@ -78,7 +79,7 @@ class CredentialStore(private val kv: KeyValueStore, private val prefix: String 
         put("userId", c.userId?.toString())
         put("sync.chats", c.sync.chatsSync.toString())
         put("sync.contacts", c.sync.contactsSync.toString())
-        put("sync.drafts", c.sync.draftsSync.toString())
+        put(DRAFTS_SYNC_KEY, c.sync.draftsSync.toString())
         put("sync.presence", c.sync.presenceSync.toString())
         put("sync.configHash", encodeHash(c.sync.configHash))
     }
@@ -107,3 +108,6 @@ class CredentialStore(private val kv: KeyValueStore, private val prefix: String 
         else -> v
     }
 }
+
+/** Key of [SyncState.draftsSync]; a new name, so a login time saved by older builds is not read. */
+private const val DRAFTS_SYNC_KEY = "sync.drafts.v2"

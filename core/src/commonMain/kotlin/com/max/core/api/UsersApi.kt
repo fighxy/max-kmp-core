@@ -40,20 +40,45 @@ class UsersApi(private val sink: RequestSink) {
 
     /**
      * Renames a contact for this account (`CONTACT_UPDATE` 34, `{contactId, action: "UPDATE",
-     * firstName, lastName}`, KometTeam/Komet `ContactsModule.updateContact`); reply `contact`.
-     * The new name is the user's `CUSTOM` entry of `names`, seen only by this account. An empty
-     * [lastName] is sent as `""`, as Komet does.
+     * firstName, lastName}`, as the MAX web client and KometTeam/Komet `updateContact` send it);
+     * reply `contact`. The new name is the user's `CUSTOM` entry of `names`, seen only by this
+     * account. Both names are trimmed; a blank [lastName] goes out as `null` (web client). A
+     * blank [firstName] or a name over [CONTACT_NAME_MAX] characters fails before sending (the
+     * server answers `error.contact.name.empty` / `error.contact.name.maxlength`). The web client
+     * adds a user who is not a contact yet (`ADD`, [addContact]) before renaming.
      */
-    suspend fun renameContact(userId: Long, firstName: String, lastName: String = ""): MaxUser {
+    suspend fun renameContact(userId: Long, firstName: String, lastName: String? = null): MaxUser {
         val first = firstName.trim()
+        val last = lastName?.trim()?.takeIf { it.isNotEmpty() }
         require(first.isNotEmpty()) { "firstName must not be blank" }
-        val payload = linkedMapOf<String, Any?>("contactId" to userId, "action" to "UPDATE", "firstName" to first, "lastName" to lastName.trim())
+        require(first.length <= CONTACT_NAME_MAX && (last?.length ?: 0) <= CONTACT_NAME_MAX) { "name longer than $CONTACT_NAME_MAX" }
+        val payload = linkedMapOf<String, Any?>("contactId" to userId, "action" to "UPDATE", "firstName" to first, "lastName" to last)
         return contact(Opcode.CONTACT_UPDATE, sink.request(Opcode.CONTACT_UPDATE, payload).payload)
     }
 
-    /** Removes a contact (`CONTACT_UPDATE` 34, `{contactId, action: "REMOVE"}`). */
-    suspend fun removeContact(userId: Long) {
-        replyMap(sink.request(Opcode.CONTACT_UPDATE, contactAction(userId, "REMOVE")), Opcode.CONTACT_UPDATE)
+    /**
+     * Removes a contact (`CONTACT_UPDATE` 34, `{contactId, action: "REMOVE"}`). Returns the
+     * reply's `contact` when there is one (the web client reads it); undo is [addContact].
+     */
+    suspend fun removeContact(userId: Long): MaxUser? {
+        val map = replyMap(sink.request(Opcode.CONTACT_UPDATE, contactAction(userId, "REMOVE")), Opcode.CONTACT_UPDATE)
+        return MaxUser.from(map["contact"])
+    }
+
+    /**
+     * Adds a contact by phone (`CONTACT_ADD_BY_PHONE` 41, `{phone, firstName?, lastName?}`, MAX
+     * web client); reply `{contact, new}`. Blank names are left out. [ContactByPhone.isNew] is the
+     * reply's `new` (the contact was not in the list before).
+     */
+    suspend fun addContactByPhone(phone: String, firstName: String? = null, lastName: String? = null): ContactByPhone {
+        val number = phone.trim()
+        require(number.isNotEmpty()) { "phone must not be blank" }
+        val payload = linkedMapOf<String, Any?>("phone" to number)
+        firstName?.trim()?.takeIf { it.isNotEmpty() }?.let { payload["firstName"] = it }
+        lastName?.trim()?.takeIf { it.isNotEmpty() }?.let { payload["lastName"] = it }
+        val reply = sink.request(Opcode.CONTACT_ADD_BY_PHONE, payload).payload
+        val user = contact(Opcode.CONTACT_ADD_BY_PHONE, reply)
+        return ContactByPhone(user, (reply as Map<*, *>)["new"] == true)
     }
 
     /**
@@ -61,36 +86,10 @@ class UsersApi(private val sink: RequestSink) {
      * `{contactList: {<phone>: {firstName}}}`; PyMax sends only the first name). Reply `contacts`:
      * the entries that are Max users.
      */
-    suspend fun importContacts(contacts: List<PhoneContact>): List<MaxUser> = userList(Opcode.SYNC, importPayload(contacts))
-
-    /**
-     * Imports phone-book entries like [importContacts] (`SYNC` 21, `{contactList: {<phone>:
-     * {firstName}}}`) and maps each requested phone to the Max user it belongs to
-     * ([PhoneBookImport.byPhone]). The reply's `contacts` are the entries that are Max users; an
-     * invalid entry is skipped instead of failing the whole import. A user is matched by its
-     * `phone`; when the reply also carries `phones` (requested phone → the server's form of it,
-     * noted only in a PyMax comment: `{contacts, phones}`), that form is used for the match.
-     * Entries without a match are not Max users (or hide their number).
-     *
-     * Only `firstName` goes on the wire, as in PyMax and Komet; [PhoneContact.lastName] stays local.
-     */
-    suspend fun importPhoneBook(contacts: List<PhoneContact>): PhoneBookImport {
-        require(contacts.isNotEmpty()) { "contacts must not be empty" }
-        val map = replyMap(sink.request(Opcode.SYNC, importPayload(contacts)), Opcode.SYNC)
-        val users = (map["contacts"] as? List<*>).orEmpty().mapNotNull { MaxUser.from(it) }
-        val phones = LinkedHashMap<String, Long>()
-        (map["phones"] as? Map<*, *>).orEmpty().forEach { (k, v) ->
-            val key = k?.toString() ?: return@forEach
-            PhoneNumbers.digits(v)?.let { phones[key] = it }
-        }
-        return PhoneBookImport(users, phones, PhoneBookImport.match(contacts, users, phones), map)
-    }
-
-    /** `SYNC` 21 body (PyMax `ImportContactsPayload`): `{contactList: {<phone>: {firstName}}}`, phones as given. */
-    fun importPayload(contacts: List<PhoneContact>): Map<String, Any?> {
+    suspend fun importContacts(contacts: List<PhoneContact>): List<MaxUser> {
         val list = LinkedHashMap<String, Any?>()
         for (c in contacts) list[c.phone] = linkedMapOf("firstName" to c.firstName)
-        return linkedMapOf("contactList" to list)
+        return userList(Opcode.SYNC, linkedMapOf("contactList" to list))
     }
 
     /**
@@ -141,15 +140,18 @@ class UsersApi(private val sink: RequestSink) {
     private fun contactAction(userId: Long, action: String): Map<String, Any?> = linkedMapOf("contactId" to userId, "action" to action)
 
     companion object {
+        /** Longest first or last name of a contact the server accepts (MAX web client form). */
+        const val CONTACT_NAME_MAX = 64
+
         /** Id of the dialog between two users (PyMax `get_chat_id`: `a xor b`). */
         fun dialogChatId(firstUserId: Long, secondUserId: Long): Long = firstUserId xor secondUserId
     }
 }
 
 /**
- * A phone-book entry for [UsersApi.importContacts] / [UsersApi.importPhoneBook] (PyMax
- * `ContactInfo`). [lastName] is not sent (PyMax drops it too); it only completes the local
- * address-book name ([fullName]).
+ * A phone-book entry: for [UsersApi.importContacts] (PyMax `ContactInfo`; [lastName] is not sent)
+ * and for the on-device address book (`com.max.core.state.StateReducer.setAddressBook`, never
+ * sent), where [fullName] is the name.
  */
 data class PhoneContact(val phone: String, val firstName: String, val lastName: String? = null) {
     /** `firstName lastName`, trimmed; `null` when both are blank. */
@@ -157,39 +159,49 @@ data class PhoneContact(val phone: String, val firstName: String, val lastName: 
         get() = listOfNotNull(firstName.trim(), lastName?.trim()).filter { it.isNotEmpty() }.joinToString(" ").takeIf { it.isNotEmpty() }
 }
 
-/**
- * Result of [UsersApi.importPhoneBook].
- *
- * @property users the reply's `contacts`: the imported entries that are Max users.
- * @property phones the reply's `phones` (requested phone → server phone digits), empty when absent.
- * @property byPhone requested phone (as given) → its Max user.
- */
-data class PhoneBookImport(val users: List<MaxUser>, val phones: Map<String, Long>, val byPhone: Map<String, MaxUser>, val raw: Map<*, *>) {
-    companion object {
-        /**
-         * Requested phone → user: the server form from [phones] when present, else the digits of
-         * the requested phone, compared with the user's `phone`. Numbers are not rewritten
-         * otherwise (no country-code guessing).
-         */
-        fun match(contacts: List<PhoneContact>, users: List<MaxUser>, phones: Map<String, Long>): Map<String, MaxUser> {
-            val byNumber = users.filter { (it.phone ?: 0L) > 0L }.associateBy { it.phone!! }
-            val out = LinkedHashMap<String, MaxUser>()
-            for (c in contacts) {
-                val number = phones[c.phone] ?: PhoneNumbers.digits(c.phone) ?: continue
-                byNumber[number]?.let { out[c.phone] = it }
-            }
-            return out
-        }
-    }
-}
+/** Reply of [UsersApi.addContactByPhone]: the contact and whether it was [isNew] to the list. */
+data class ContactByPhone(val user: MaxUser, val isNew: Boolean)
 
-/** Phone numbers as the server keeps them in `phone`: digits only, as a number. */
+/**
+ * Phone numbers for matching the device address book against users, by the rules the Orbitle
+ * iOS and Android clients share (fixtures `test-fixtures/names/`):
+ *
+ * 1. spaces (any whitespace), dashes, parentheses and dots are dropped; a leading `+` is kept;
+ * 2. a leading `00` counts as `+`;
+ * 3. without `+`: 11 digits starting with `8` become `+7…` (8 913 123-45-67 → +79131234567),
+ *    11 digits starting with `7` get the `+`;
+ * 4. without `+`: exactly 10 digits are Russian, `+7` is put in front;
+ * 5. any other number keeps (or gets) its `+`: the result always starts with `+`;
+ * 6. fewer than 7 or more than 15 digits, or any other character, is no number (`null`), so
+ *    short service numbers such as 900 never match.
+ *
+ * The server's `phone` of a user (digits as a number, e.g. `79131234567`) normalizes the same way.
+ */
 object PhoneNumbers {
-    /** Digits of [value] (a number or a string such as `+7 (999) 000-11-22`) as a positive number; `null` otherwise. */
-    fun digits(value: Any?): Long? = when (value) {
-        is Number -> value.toLong().takeIf { it > 0 }
-        is String -> value.filter { it in '0'..'9' }.takeIf { it.isNotEmpty() && it.length <= 18 }?.toLongOrNull()?.takeIf { it > 0 }
-        else -> null
+    fun normalize(value: Any?): String? {
+        val raw = when (value) {
+            is Number -> value.toLong().takeIf { it > 0 }?.toString()
+            is String -> value
+            else -> null
+        } ?: return null
+        var t = raw.filterNot { it.isWhitespace() || it == '-' || it == '(' || it == ')' || it == '.' }
+        var plus = false
+        if (t.startsWith("+")) {
+            plus = true
+            t = t.substring(1)
+        } else if (t.startsWith("00")) {
+            plus = true
+            t = t.substring(2)
+        }
+        if (t.isEmpty() || t.any { it !in '0'..'9' } || t.length < 7 || t.length > 15) return null
+        if (!plus) {
+            t = when {
+                t.length == 11 && t[0] == '8' -> "7" + t.substring(1)
+                t.length == 10 -> "7$t"
+                else -> t
+            }
+        }
+        return "+$t"
     }
 }
 

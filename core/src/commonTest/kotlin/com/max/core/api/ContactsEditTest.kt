@@ -5,62 +5,106 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Contact rename (`CONTACT_UPDATE` UPDATE) and phone-book import (`SYNC`) mapping. */
+/** Contact rename / remove / add by phone (`CONTACT_UPDATE` 34, `CONTACT_ADD_BY_PHONE` 41) and phone normalization. */
 class ContactsEditTest {
-    private fun user(id: Long, phone: Long) = mapOf("id" to id, "phone" to phone, "names" to listOf(mapOf("name" to "U$id", "type" to "ONEME")))
+    private val renamed = mapOf("id" to 5L, "names" to listOf(mapOf("firstName" to "Ваня", "lastName" to "Петров", "type" to "CUSTOM")))
 
     @Test
-    fun renameSendsUpdateWithTrimmedNamesAndReadsTheContact() = runTest {
-        val renamed = mapOf("id" to 5L, "names" to listOf(mapOf("firstName" to "Ваня", "lastName" to "", "type" to "CUSTOM")))
-        val sink = ScriptSink(mapOf("contact" to renamed))
-        val u = UsersApi(sink).renameContact(5, " Ваня ")
+    fun renameSendsUpdateWithTrimmedNamesAndNullForABlankLastName() = runTest {
+        val sink = ScriptSink(mapOf("contact" to renamed), mapOf("contact" to renamed))
+        val api = UsersApi(sink)
+        val u = api.renameContact(5, " Ваня ")
         assertEquals(5L, u.id)
         assertEquals(listOf(Opcode.CONTACT_UPDATE), sink.opcodes)
         val payload = sink.sent.single().second as Map<*, *>
         assertEquals(listOf("contactId", "action", "firstName", "lastName"), payload.keys.toList())
-        assertEquals(mapOf("contactId" to 5L, "action" to "UPDATE", "firstName" to "Ваня", "lastName" to ""), payload)
-        assertEquals("Ваня", ContactNames.customName(u))
+        assertEquals(mapOf("contactId" to 5L, "action" to "UPDATE", "firstName" to "Ваня", "lastName" to null), payload)
+        assertEquals("Ваня Петров", ContactNames.customName(u))
+        api.renameContact(5, "Ваня", " Петров ")
+        assertEquals("Петров", (sink.sent[1].second as Map<*, *>)["lastName"])
 
         assertFailsWith<IllegalArgumentException> { UsersApi(ScriptSink()).renameContact(5, "  ") }
+        assertFailsWith<IllegalArgumentException> { UsersApi(ScriptSink()).renameContact(5, "a".repeat(65)) }
+        assertFailsWith<IllegalArgumentException> { UsersApi(ScriptSink()).renameContact(5, "a", "b".repeat(65)) }
+        UsersApi(ScriptSink(mapOf("contact" to renamed))).renameContact(5, "a".repeat(64))
         assertFailsWith<MalformedReplyException> { UsersApi(ScriptSink(mapOf("x" to 1))).renameContact(5, "A", "B") }
     }
 
     @Test
-    fun importSendsTheContactListAndMapsPhonesByNumber() = runTest {
-        val sink = ScriptSink(mapOf("contacts" to listOf(user(1, 79990000001), "junk", user(2, 79990000002))))
-        val book = listOf(PhoneContact("+7 999 000-00-01", "Брат", "Старший"), PhoneContact("+79990000002", "Петя"), PhoneContact("+79990000003", "Нет"))
-        val result = UsersApi(sink).importPhoneBook(book)
-        assertEquals(Opcode.SYNC, sink.opcodes.single())
-        assertEquals(
-            mapOf("contactList" to mapOf("+7 999 000-00-01" to mapOf("firstName" to "Брат"), "+79990000002" to mapOf("firstName" to "Петя"), "+79990000003" to mapOf("firstName" to "Нет"))),
-            sink.sent.single().second,
-        )
-        assertEquals(listOf(1L, 2L), result.users.map { it.id })
-        assertEquals(mapOf("+7 999 000-00-01" to 1L, "+79990000002" to 2L), result.byPhone.mapValues { it.value.id })
-        assertTrue(result.phones.isEmpty())
-        assertEquals("Брат Старший", book[0].fullName)
+    fun removeReturnsTheReplyContact() = runTest {
+        val sink = ScriptSink(mapOf("contact" to mapOf("id" to 5L, "names" to emptyList<Any?>())), emptyMap<String, Any?>())
+        val api = UsersApi(sink)
+        assertEquals(5L, api.removeContact(5)?.id)
+        assertNull(api.removeContact(6))
+        assertEquals(mapOf("contactId" to 6L, "action" to "REMOVE"), sink.sent[1].second)
     }
 
     @Test
-    fun importUsesTheServerPhoneFormWhenTheReplyHasPhones() = runTest {
-        val sink = ScriptSink(mapOf("contacts" to listOf(user(1, 79990000001)), "phones" to mapOf("89990000001" to 79990000001L, "bad" to "x", "s" to "+7 999 000-00-01")))
-        val result = UsersApi(sink).importPhoneBook(listOf(PhoneContact("89990000001", "Брат")))
-        assertEquals(mapOf("89990000001" to 79990000001L, "s" to 79990000001L), result.phones)
-        assertEquals(1L, result.byPhone.getValue("89990000001").id)
+    fun addByPhoneSendsOpcode41AndReadsNew() = runTest {
+        val sink = ScriptSink(mapOf("contact" to renamed, "new" to true), mapOf("contact" to renamed))
+        val api = UsersApi(sink)
+        val added = api.addContactByPhone(" +79131234567 ", "Ваня", " ")
+        assertEquals(5L, added.user.id)
+        assertTrue(added.isNew)
+        assertEquals(Opcode.CONTACT_ADD_BY_PHONE, sink.opcodes[0])
+        assertEquals(41, Opcode.CONTACT_ADD_BY_PHONE.value)
+        assertEquals(mapOf("phone" to "+79131234567", "firstName" to "Ваня"), sink.sent[0].second)
+        assertFalse(api.addContactByPhone("+79131234567").isNew)
+        assertEquals(mapOf("phone" to "+79131234567"), sink.sent[1].second)
+        assertFailsWith<IllegalArgumentException> { api.addContactByPhone(" ") }
+    }
 
-        assertTrue(UsersApi(ScriptSink(emptyMap<String, Any?>())).importPhoneBook(listOf(PhoneContact("1", "A"))).users.isEmpty())
-        assertFailsWith<IllegalArgumentException> { UsersApi(ScriptSink()).importPhoneBook(emptyList()) }
+    // ---- phone normalization: one test per shared rule ------------------------------------------
+
+    @Test
+    fun rule1StripsSeparatorsAndKeepsThePlus() {
+        assertEquals("+79131234567", PhoneNumbers.normalize("+7 (913) 123-45.67"))
+        assertEquals("+79131234567", PhoneNumbers.normalize(" +7\u00a0913 123 45 67 "))
+        assertNull(PhoneNumbers.normalize("+7 913 abc 45 67"))
     }
 
     @Test
-    fun phoneDigits() {
-        assertEquals(79990001122L, PhoneNumbers.digits("+7 (999) 000-11-22"))
-        assertEquals(5L, PhoneNumbers.digits(5))
-        assertEquals(null, PhoneNumbers.digits(""))
-        assertEquals(null, PhoneNumbers.digits("0"))
-        assertEquals(null, PhoneNumbers.digits("1234567890123456789"))
-        assertEquals(null, PhoneNumbers.digits(null))
+    fun rule2LeadingDoubleZeroIsAPlus() {
+        assertEquals("+380501234567", PhoneNumbers.normalize("00 380 50 123 4567"))
+        assertEquals("+79131234567", PhoneNumbers.normalize("0079131234567"))
+    }
+
+    @Test
+    fun rule3ElevenDigitsStartingWith8Or7() {
+        assertEquals("+79131234567", PhoneNumbers.normalize("8 913 123-45-67"))
+        assertEquals("+79131234567", PhoneNumbers.normalize("79131234567"))
+        assertEquals("+79131234567", PhoneNumbers.normalize(79131234567L))
+        // with a plus an 8 stays: it is not a Russian trunk prefix then
+        assertEquals("+89131234567", PhoneNumbers.normalize("+89131234567"))
+    }
+
+    @Test
+    fun rule4TenDigitsAreRussian() {
+        assertEquals("+79131234567", PhoneNumbers.normalize("913 123 45 67"))
+        assertEquals("+79131234567", PhoneNumbers.normalize("(913)1234567"))
+    }
+
+    @Test
+    fun rule5ForeignNumbersAlwaysCarryAPlus() {
+        assertEquals("+4915112345678", PhoneNumbers.normalize("+49 151 12345678"))
+        assertEquals("+380501234567", PhoneNumbers.normalize("380501234567"))
+        assertEquals("+12025550123", PhoneNumbers.normalize("+1 (202) 555-0123"))
+    }
+
+    @Test
+    fun rule6TooShortOrTooLongIsNoNumber() {
+        assertNull(PhoneNumbers.normalize("900"))
+        assertNull(PhoneNumbers.normalize("123456"))
+        assertEquals("+1234567", PhoneNumbers.normalize("1234567"))
+        assertEquals("+123456789012345", PhoneNumbers.normalize("+123456789012345"))
+        assertNull(PhoneNumbers.normalize("+1234567890123456"))
+        assertNull(PhoneNumbers.normalize(""))
+        assertNull(PhoneNumbers.normalize("+"))
+        assertNull(PhoneNumbers.normalize(0))
+        assertNull(PhoneNumbers.normalize(null))
     }
 }

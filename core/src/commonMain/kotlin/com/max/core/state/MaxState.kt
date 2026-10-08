@@ -3,12 +3,14 @@ package com.max.core.state
 import com.max.core.api.Chat
 import com.max.core.api.ChatFolders
 import com.max.core.api.ContactNames
+import com.max.core.api.Drafts
+import com.max.core.api.DraftsSnapshot
+import com.max.core.api.MaxDraft
 import com.max.core.api.FolderList
 import com.max.core.api.FolderUpdate
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.MessageReaders
-import com.max.core.api.PhoneBookImport
 import com.max.core.api.PhoneContact
 import com.max.core.api.PhoneNumbers
 import com.max.core.api.PresenceInfo
@@ -45,11 +47,14 @@ import com.max.core.events.MaxEvent
  *   ([MaxEvent.Typing.effectiveType]: a `com.max.core.api.TypingType` value, `TEXT` when the push
  *   had none or an unrecognised one). Kept beside [typing] (same keys) so [typing] keeps its shape;
  *   read it through [typingUsersWithType] or [typingType], which apply the same TTL as [typingUsers].
- * @property addressBook names from the device address book, by phone number (digits, as
- *   [MaxUser.phone]). Supplied by the client ([StateReducer.setAddressBook]); never sent.
- * @property localNames address-book names by user id, for users matched by a phone-book import
- *   ([StateReducer.putPhoneBookImport]) or named by the client ([StateReducer.setLocalName]).
+ * @property addressBook names from the device address book, by phone number normalized with
+ *   [PhoneNumbers.normalize] (`+79131234567`). Supplied by the client
+ *   ([StateReducer.setAddressBook]) and matched on the device; never sent to the server.
+ * @property localNames address-book names by user id, for users the client matched itself
+ *   ([StateReducer.setLocalName]).
  *   Both maps are device data: a `LOGIN` of another account keeps them, [MaxStore.clear] drops them.
+ * @property drafts server drafts by chat id (`LOGIN` `drafts`, confirmed `DRAFT_SAVE` /
+ *   `DRAFT_DISCARD`); a `LOGIN` of another account drops them.
  */
 data class MaxState(
     val me: Long? = null,
@@ -63,18 +68,29 @@ data class MaxState(
     val gapAnchors: Map<Long, Long> = emptyMap(),
     val chatFolders: ChatFolders? = null,
     val typingTypes: Map<Long, Map<Long, String>> = emptyMap(),
-    val addressBook: Map<Long, String> = emptyMap(),
+    val addressBook: Map<String, String> = emptyMap(),
     val localNames: Map<Long, String> = emptyMap(),
+    val drafts: Map<Long, MaxDraft> = emptyMap(),
 ) {
-    /** The address-book name of [userId]: [localNames], else [addressBook] by the user's `phone`. */
+    /** The server draft of [chatId], or `null`. */
+    fun draftOf(chatId: Long): MaxDraft? = drafts[chatId]
+
+    /** The newest draft update time kept here (`-1` without drafts): what `draftsSync` may send. */
+    val draftsSyncTime: Long get() = drafts.values.maxOfOrNull { it.updateTime } ?: -1
+
+    /** The address-book name of [userId]: [localNames], else [addressBook] by the user's normalized `phone`. */
     fun addressBookName(userId: Long): String? =
-        localNames[userId] ?: users[userId]?.phone?.takeIf { it > 0 }?.let { addressBook[it] }
+        localNames[userId] ?: users[userId]?.phone?.let(PhoneNumbers::normalize)?.let { addressBook[it] }
 
     /**
-     * The name to show for [userId] ([ContactNames.resolve]): the contact name this account set
-     * (`CUSTOM`) > the address-book name > the user's profile name. `null` when none is known.
+     * The name to show for [userId] ([ContactNames.resolve]): address-book name > the contact
+     * name this account set (`CUSTOM`) > the user's own name (`ONEME`) > the first entry of
+     * `names` > the phone. `null` when none is known; [displayLabel] adds the last fallback.
      */
     fun displayName(userId: Long): String? = ContactNames.resolve(users[userId], addressBookName(userId))
+
+    /** [displayName], or [ContactNames.FALLBACK] ("Участник") when nothing is known. */
+    fun displayLabel(userId: Long): String = displayName(userId) ?: ContactNames.FALLBACK
 
     /**
      * Pinned chat ids, top first, as the server keeps them (`favorites` of the "all chats" folder,
@@ -187,6 +203,7 @@ object StateReducer {
         is MaxEvent.MessageEdited -> edited(state, event.message, messageLimit)
         is MaxEvent.MessagesDeleted -> deleted(state, event)
         is MaxEvent.ChatUpdated -> putChat(state, event.chat)
+        is MaxEvent.ContactUpdated -> contactUpdated(state, event.user)
         is MaxEvent.Typing -> state.copy(
             typing = state.typing.put2(event.chatId, event.userId, now),
             typingTypes = state.typingTypes.set2(event.chatId, event.userId, event.effectiveType),
@@ -229,8 +246,33 @@ object StateReducer {
             val list = (v as? List<*>).orEmpty().mapNotNull { MaxMessage.from(it, chatId) }
             s = putMessages(s, chatId, list, messageLimit)
         }
+        s = putDrafts(s, Drafts.fromLogin(result.raw, s.me))
         return openHistoryGaps(s)
     }
+
+    /**
+     * Server drafts of a `LOGIN` reply: each saved draft by the store rule ([Drafts.merge]: newer
+     * or equal replaces, older is ignored); a discarded entry removes the stored draft unless
+     * that one is newer than the discard.
+     */
+    fun putDrafts(state: MaxState, snapshot: DraftsSnapshot): MaxState {
+        if (snapshot.saved.isEmpty() && snapshot.discarded.isEmpty()) return state
+        val drafts = LinkedHashMap(state.drafts)
+        for ((chatId, d) in snapshot.saved) drafts[chatId] = Drafts.merge(drafts[chatId], d)
+        for ((chatId, time) in snapshot.discarded) {
+            val stored = drafts[chatId] ?: continue
+            if (stored.updateTime <= time) drafts.remove(chatId)
+        }
+        return state.copy(drafts = drafts)
+    }
+
+    /** One draft (a confirmed `DRAFT_SAVE`) by the store rule ([Drafts.merge]). */
+    fun putDraft(state: MaxState, draft: MaxDraft): MaxState =
+        state.copy(drafts = state.drafts + (draft.chatId to Drafts.merge(state.drafts[draft.chatId], draft)))
+
+    /** Removes the draft of [chatId] (a confirmed `DRAFT_DISCARD`, or the draft was sent). */
+    fun removeDraft(state: MaxState, chatId: Long): MaxState =
+        if (chatId in state.drafts) state.copy(drafts = state.drafts - chatId) else state
 
     /**
      * Adds / replaces chats (a chat without `lastMessage` keeps the stored one) in one pass: one
@@ -321,51 +363,46 @@ object StateReducer {
 
     /**
      * A contact removed on the server (`CONTACT_UPDATE` `REMOVE`): it leaves [MaxState.contactIds]
-     * and the stored user loses the `CUSTOM` name this account had given it.
+     * and the stored user ([reply], the reply's `contact`, when there is one) loses the `CUSTOM`
+     * name this account had given it.
      */
-    fun removeContact(state: MaxState, userId: Long): MaxState {
-        val user = state.users[userId]
+    fun removeContact(state: MaxState, userId: Long, reply: MaxUser? = null): MaxState {
+        val user = reply?.takeIf { it.id == userId } ?: state.users[userId]
         val users = if (user == null) state.users else state.users + (userId to ContactNames.withoutCustom(user))
         return state.copy(contactIds = state.contactIds - userId, users = users)
     }
 
     /**
-     * Replaces the device address book with [entries] (phone digits via [PhoneNumbers.digits] →
-     * [PhoneContact.fullName]). Entries without digits or a name are skipped; for a repeated
-     * number the last entry wins. [MaxState.localNames] are kept.
+     * Replaces the device address book with [entries] (number via [PhoneNumbers.normalize] →
+     * [PhoneContact.fullName]). Entries without a valid number or a name are skipped; for a
+     * repeated number the first entry with a name wins. [MaxState.localNames] are kept.
      */
     fun setAddressBook(state: MaxState, entries: List<PhoneContact>): MaxState {
-        val book = LinkedHashMap<Long, String>()
+        val book = LinkedHashMap<String, String>()
         for (e in entries) {
-            val number = PhoneNumbers.digits(e.phone) ?: continue
+            val number = PhoneNumbers.normalize(e.phone) ?: continue
+            if (number in book) continue
             book[number] = e.fullName ?: continue
         }
         return state.copy(addressBook = book)
+    }
+
+    /**
+     * A contact pushed by the server (`NOTIF_CONTACT` 131 `{contact}`, a rename or change made on
+     * another session): replaces the stored user unless the stored one has a newer `updateTime`.
+     */
+    fun contactUpdated(state: MaxState, user: MaxUser): MaxState {
+        val stored = state.users[user.id]
+        val storedTime = stored?.raw?.get("updateTime").asLong()
+        val time = user.raw["updateTime"].asLong()
+        if (storedTime != null && time != null && time < storedTime) return state
+        return putUsers(state, listOf(user))
     }
 
     /** Sets (or with a blank / `null` [name] clears) the address-book name of [userId]. */
     fun setLocalName(state: MaxState, userId: Long, name: String?): MaxState {
         val clean = name?.trim()?.takeIf { it.isNotEmpty() }
         return state.copy(localNames = if (clean == null) state.localNames - userId else state.localNames + (userId to clean))
-    }
-
-    /**
-     * A phone-book import: the users go to [MaxState.users], each matched user gets the name of
-     * its requested entry in [MaxState.localNames], and the requested entries join
-     * [MaxState.addressBook] under the server's number when [PhoneBookImport.phones] has it, else
-     * under their own digits.
-     */
-    fun putPhoneBookImport(state: MaxState, contacts: List<PhoneContact>, result: PhoneBookImport): MaxState {
-        var s = putUsers(state, result.users)
-        val names = LinkedHashMap(s.localNames)
-        val book = LinkedHashMap(s.addressBook)
-        for (c in contacts) {
-            val name = c.fullName ?: continue
-            (result.phones[c.phone] ?: PhoneNumbers.digits(c.phone))?.let { book[it] = name }
-            result.byPhone[c.phone]?.let { names[it.id] = name }
-        }
-        s = s.copy(localNames = names, addressBook = book)
-        return s
     }
 
     /**

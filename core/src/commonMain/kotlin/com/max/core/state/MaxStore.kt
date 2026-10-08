@@ -5,9 +5,9 @@ import com.max.core.api.ChatFolders
 import com.max.core.api.ChatHistory
 import com.max.core.api.FolderList
 import com.max.core.api.FolderUpdate
+import com.max.core.api.MaxDraft
 import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
-import com.max.core.api.PhoneBookImport
 import com.max.core.api.PhoneContact
 import com.max.core.api.PresenceInfo
 import com.max.core.api.ReactionInfo
@@ -88,7 +88,7 @@ class MaxStore(
     fun putContacts(contacts: List<MaxUser>) = _state.update { StateReducer.putContacts(it, contacts) }
 
     /** A removed contact ([StateReducer.removeContact]). */
-    fun removeContact(userId: Long) = _state.update { StateReducer.removeContact(it, userId) }
+    fun removeContact(userId: Long, reply: MaxUser? = null) = _state.update { StateReducer.removeContact(it, userId, reply) }
 
     /** Replaces the device address book ([StateReducer.setAddressBook]). */
     fun setAddressBook(entries: List<PhoneContact>) = _state.update { StateReducer.setAddressBook(it, entries) }
@@ -96,13 +96,15 @@ class MaxStore(
     /** Address-book name of one user ([StateReducer.setLocalName]); `null` clears it. */
     fun setLocalName(userId: Long, name: String?) = _state.update { StateReducer.setLocalName(it, userId, name) }
 
-    /** A phone-book import ([StateReducer.putPhoneBookImport]). */
-    fun putPhoneBookImport(contacts: List<PhoneContact>, result: PhoneBookImport) =
-        _state.update { StateReducer.putPhoneBookImport(it, contacts, result) }
-
     /** An own edit confirmed by the server ([StateReducer.putEditedMessage]). */
     fun putEditedMessage(chatId: Long, message: MaxMessage) =
         _state.update { StateReducer.putEditedMessage(it, chatId, message, messageLimit) }
+
+    /** A confirmed draft save ([StateReducer.putDraft]). */
+    fun putDraft(draft: MaxDraft) = _state.update { StateReducer.putDraft(it, draft) }
+
+    /** A discarded or sent draft ([StateReducer.removeDraft]). */
+    fun removeDraft(chatId: Long) = _state.update { StateReducer.removeDraft(it, chatId) }
 
     /** The resolved name of one user ([MaxState.displayName]). */
     fun displayName(userId: Long): Flow<String?> = state.map { it.displayName(userId) }.distinctUntilChanged()
