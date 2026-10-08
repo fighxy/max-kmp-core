@@ -3,6 +3,9 @@
 package com.max.shared
 
 import com.max.core.api.AccountConfig
+import com.max.core.api.FamilyProtection
+import com.max.core.api.PrivacyAccess
+import com.max.core.api.PrivacySettings
 import com.max.core.media.HttpResponse
 import com.max.core.media.MediaHttp
 import com.max.core.protocol.Opcode
@@ -11,12 +14,15 @@ import com.max.core.transport.FakeRawConnection
 import com.max.core.transport.ScriptedConnectionFactory
 import com.max.core.transport.TransportConfig
 import com.max.core.transport.ok
+import com.max.core.transport.push
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -104,6 +110,58 @@ class SettingsClientTest {
         runCurrent()
         assertNull(c.accountConfig.value)
         watch.cancel()
+    }
+
+    @Test
+    fun privacyChangesAreCheckedAndLandInTheConfig() = runTest {
+        val factory = ScriptedConnectionFactory()
+        val c = loggedIn(factory)
+        val conn = factory.lastConnection!!
+        // LOGIN config: HIDDEN false, phone ALL; the rest takes the web client's defaults
+        val before = assertNotNull(c.privacy)
+        assertEquals(PrivacyAccess.ALL, before.phoneNumber)
+        assertEquals(PrivacyAccess.ALL, before.incomingCalls)
+        assertFalse(before.locked)
+
+        val nobody = async { c.setPhoneNumberPrivacy(PrivacyAccess.NOBODY) }
+        runCurrent()
+        // a reply with only the hash: the sent value is kept
+        val sent = conn.answer(Opcode.CONFIG, mapOf("hash" to "cfg-2"))!!
+        assertEquals(mapOf("settings" to mapOf("user" to mapOf("PHONE_NUMBER_PRIVACY" to "NOBODY"))), sent)
+        nobody.await()
+        assertEquals(PrivacyAccess.NOBODY, c.privacy!!.phoneNumber)
+        assertEquals("cfg-2", c.accountConfig.value!!.hash)
+
+        // safe mode: the Komet set, then the four keys are locked and nothing is sent for them
+        val safe = async { c.setSafeMode(true) }
+        runCurrent()
+        val safeSent = (conn.answer(Opcode.CONFIG, mapOf("user" to mapOf("SAFE_MODE" to true), "hash" to "cfg-3"))!!["settings"] as Map<*, *>)["user"] as Map<*, *>
+        assertEquals(true, safeSent["SAFE_MODE"])
+        assertEquals("CONTACTS", safeSent["INCOMING_CALL"])
+        safe.await()
+        val locked = c.privacy!!
+        assertTrue(locked.locked)
+        assertEquals(PrivacyAccess.CONTACTS, locked.searchByPhone)
+        assertEquals(PrivacyAccess.NOBODY, locked.phoneNumber) // a reply with some keys merges into the known ones
+        assertFailsWith<IllegalStateException> { c.setIncomingCalls(PrivacyAccess.ALL) }
+        assertFailsWith<IllegalArgumentException> { c.setPrivacy("SHOW_READ_MARK", false) }
+        assertNull(conn.takeWritten(kotlin.time.Duration.parse("100ms")))
+
+        // a settings push from another device updates the cached config
+        conn.feed(push(Opcode.NOTIF_CONFIG.value, mapOf("config" to mapOf("hash" to "cfg-4", "user" to mapOf("SAFE_MODE" to false, "FAMILY_PROTECTION" to "ADMIN", "INCOMING_CALL" to "ALL")))))
+        runCurrent()
+        val pushed = c.privacy!!
+        assertFalse(pushed.locked)
+        assertEquals(PrivacyAccess.ALL, pushed.incomingCalls)
+        assertEquals(FamilyProtection.ADMIN, pushed.familyProtection)
+        assertEquals(PrivacyAccess.NOBODY, pushed.phoneNumber)
+
+        // the PyMax-style update goes through the same path and also lands in the config
+        val legacy = async { c.updatePrivacy(PrivacySettings(chatInvites = PrivacyAccess.CONTACTS)) }
+        runCurrent()
+        conn.answer(Opcode.CONFIG, mapOf("hash" to "cfg-5"))
+        assertEquals("cfg-5", legacy.await())
+        assertEquals(PrivacyAccess.CONTACTS, c.privacy!!.chatInvites)
     }
 
     @Test

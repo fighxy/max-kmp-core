@@ -39,6 +39,8 @@ import com.max.core.api.ReadState
 import com.max.core.api.PresenceStatus
 import com.max.core.api.TextElement
 import com.max.core.api.Transcription
+import com.max.core.api.PrivacyAccess
+import com.max.core.api.PrivacyConfig
 import com.max.core.api.PrivacySettings
 import com.max.core.api.Profile
 import com.max.core.api.Animoji
@@ -1180,16 +1182,63 @@ class MaxClient @Throws(Exception::class) constructor(
     }
 
     /**
-     * Changes privacy settings (`CONFIG` 22) and stores the returned config hash in the sync
-     * markers sent with the next `LOGIN` (PyMax `change_profile_settings`).
+     * Changes privacy settings (`CONFIG` 22, PyMax `change_profile_settings`) through
+     * [updateUserSettings]: [accountConfig] gets the new values and the reply's hash goes to the
+     * sync markers (once a server config is known). Returns the reply's hash, `null` without one.
+     * No checks; [setPrivacy] checks the key, the value and the safe-mode lock.
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun updatePrivacy(settings: PrivacySettings): String? {
-        val t = ticket()
-        val hash = api.account.updatePrivacy(settings) ?: return null
-        commit(t) { storeConfigHash(t.login, hash) }
-        return hash
+        require(!settings.isEmpty()) { "no privacy setting given" }
+        return changeUserSettings(settings.toPayload()).second
     }
+
+    /**
+     * The privacy settings of [accountConfig] ([PrivacyConfig.from], with the MAX web client's
+     * defaults for missing keys); `null` until the first config arrived.
+     */
+    val privacy: PrivacyConfig? get() = _accountConfig.value?.let(PrivacyConfig::from)
+
+    /**
+     * Sets one privacy setting (`CONFIG` 22 `{settings: {user: {KEY: value}}}`), checked by
+     * [PrivacyConfig.payload]: [key] one of [PrivacyConfig.WRITABLE], [value] a [PrivacyAccess]
+     * (or its name) or a boolean. `SAFE_MODE` on also sets search, calls and invites to contacts
+     * and safe content only; while safe mode is on (or the account is under family protection)
+     * those four are locked and a change throws [IllegalStateException]: turn safe mode off
+     * first. `SHOW_READ_MARK` and `FAMILY_PROTECTION` are read-only. [accountConfig] gets the
+     * new values; returns it.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setPrivacy(key: String, value: Any): AccountConfig =
+        updateUserSettings(PrivacyConfig.payload(key, value, privacy))
+
+    /** "Who can find me by phone number" (`SEARCH_BY_PHONE`, `ALL` / `CONTACTS`), [setPrivacy]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setSearchByPhone(access: PrivacyAccess): AccountConfig = setPrivacy(PrivacyConfig.SEARCH_BY_PHONE, access)
+
+    /** "Who can call me" (`INCOMING_CALL`, `ALL` / `CONTACTS`), [setPrivacy]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setIncomingCalls(access: PrivacyAccess): AccountConfig = setPrivacy(PrivacyConfig.INCOMING_CALL, access)
+
+    /** "Who can invite me to chats" (`CHATS_INVITE`, `ALL` / `CONTACTS`), [setPrivacy]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setChatInvites(access: PrivacyAccess): AccountConfig = setPrivacy(PrivacyConfig.CHATS_INVITE, access)
+
+    /** "Show content": `true` safe content only (`CONTENT_LEVEL_ACCESS`), [setPrivacy]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setSafeContentOnly(enabled: Boolean): AccountConfig = setPrivacy(PrivacyConfig.CONTENT_LEVEL_ACCESS, enabled)
+
+    /** Safe mode (`SAFE_MODE`, with the locked keys when turned on), [setPrivacy]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setSafeMode(enabled: Boolean): AccountConfig = setPrivacy(PrivacyConfig.SAFE_MODE, enabled)
+
+    /** "Who sees that I am online": `true` nobody, `false` contacts (`HIDDEN`), [setPrivacy]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setOnlineHidden(hidden: Boolean): AccountConfig = setPrivacy(PrivacyConfig.HIDDEN, hidden)
+
+    /** "Who sees my number" (`PHONE_NUMBER_PRIVACY`, `ALL` / `CONTACTS` / `NOBODY`), [setPrivacy]. */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun setPhoneNumberPrivacy(access: PrivacyAccess): AccountConfig = setPrivacy(PrivacyConfig.PHONE_NUMBER_PRIVACY, access)
 
     /** Changes the own profile (`PROFILE` 16) and updates the own user in [store]. */
     @Throws(CancellationException::class, Exception::class)
@@ -1202,21 +1251,25 @@ class MaxClient @Throws(Exception::class) constructor(
 
     /**
      * Changes user settings (`CONFIG` 22 with [values], see [com.max.core.api.AccountApi.updateUserSettings]).
-     * The reply's `user` replaces [accountConfig]'s and its hash goes to the sync markers.
+     * [accountConfig] gets them at once: the known `user`, then the sent [values], then the reply's
+     * `user` on top (the MAX web client upserts the reply), so a reply with only some keys (or
+     * none) loses nothing. The reply's hash goes to the sync markers once a server config is known.
      */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun updateUserSettings(values: Map<String, Any?>): AccountConfig {
+    suspend fun updateUserSettings(values: Map<String, Any?>): AccountConfig = changeUserSettings(values).first
+
+    /** [updateUserSettings]: the new [accountConfig] and the reply's hash (`null` without one). */
+    private suspend fun changeUserSettings(values: Map<String, Any?>): Pair<AccountConfig, String?> {
         val t = ticket()
         val update = api.account.updateUserSettings(values)
         return commit(t) {
-            // without `user` in the reply the server still accepted these values
             val prev = _accountConfig.value
-            val user = update.user ?: ((prev?.user ?: emptyMap()) + values)
+            val user = (prev?.user ?: emptyMap()) + values + (update.user ?: emptyMap())
             // without a server config the chats stay unknown (chatsKnown false) and the hash is not kept
             val next = (prev ?: AccountConfig()).withUser(user, update.hash)
             _accountConfig.value = next
             if (serverConfigLoaded) update.hash?.let { hash -> storeConfigHash(t.login, hash) }
-            next
+            next to update.hash
         }
     }
 
