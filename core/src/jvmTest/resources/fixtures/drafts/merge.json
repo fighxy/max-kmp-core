@@ -1,0 +1,206 @@
+{
+  "kind": "merge",
+  "name": "merge",
+  "description": "Черновик устройства (local) и сервера (server, из LOGIN drafts.*.saved или пуша) и время стирания на сервере (discardedAt, из drafts.*.discarded). updateTime и discardedAt — мс. expect — черновик, который остаётся, или null.",
+  "cases": [
+    {
+      "name": "server-newer-wins",
+      "local": {
+        "text": "мой",
+        "updateTime": 1000
+      },
+      "server": {
+        "text": "с телефона",
+        "updateTime": 2000
+      },
+      "discardedAt": null,
+      "expect": {
+        "text": "с телефона",
+        "updateTime": 2000
+      }
+    },
+    {
+      "name": "local-newer-wins",
+      "local": {
+        "text": "мой",
+        "updateTime": 3000
+      },
+      "server": {
+        "text": "с телефона",
+        "updateTime": 2000
+      },
+      "discardedAt": null,
+      "expect": {
+        "text": "мой",
+        "updateTime": 3000
+      }
+    },
+    {
+      "name": "equal-keeps-local",
+      "local": {
+        "text": "мой",
+        "updateTime": 2000
+      },
+      "server": {
+        "text": "с телефона",
+        "updateTime": 2000
+      },
+      "discardedAt": null,
+      "expect": {
+        "text": "мой",
+        "updateTime": 2000
+      }
+    },
+    {
+      "name": "only-server",
+      "local": null,
+      "server": {
+        "text": "с телефона",
+        "updateTime": 2000,
+        "replyTo": "555"
+      },
+      "discardedAt": null,
+      "expect": {
+        "text": "с телефона",
+        "updateTime": 2000,
+        "replyTo": "555"
+      }
+    },
+    {
+      "name": "only-local",
+      "local": {
+        "text": "мой",
+        "updateTime": 1000
+      },
+      "server": null,
+      "discardedAt": null,
+      "expect": {
+        "text": "мой",
+        "updateTime": 1000
+      }
+    },
+    {
+      "name": "discard-newer-clears",
+      "local": {
+        "text": "мой",
+        "updateTime": 1000
+      },
+      "server": null,
+      "discardedAt": 1500,
+      "expect": null
+    },
+    {
+      "name": "discard-equal-clears",
+      "local": null,
+      "server": {
+        "text": "с телефона",
+        "updateTime": 2000
+      },
+      "discardedAt": 2000,
+      "expect": null
+    },
+    {
+      "name": "discard-older-ignored",
+      "local": {
+        "text": "мой",
+        "updateTime": 3000
+      },
+      "server": null,
+      "discardedAt": 2000,
+      "expect": {
+        "text": "мой",
+        "updateTime": 3000
+      }
+    },
+    {
+      "name": "discard-between",
+      "local": {
+        "text": "мой",
+        "updateTime": 1000
+      },
+      "server": {
+        "text": "с телефона",
+        "updateTime": 3000
+      },
+      "discardedAt": 2000,
+      "expect": {
+        "text": "с телефона",
+        "updateTime": 3000
+      }
+    },
+    {
+      "name": "empty-local-is-none",
+      "local": {
+        "text": "   ",
+        "updateTime": 5000
+      },
+      "server": {
+        "text": "с телефона",
+        "updateTime": 2000
+      },
+      "discardedAt": null,
+      "expect": {
+        "text": "с телефона",
+        "updateTime": 2000
+      }
+    },
+    {
+      "name": "reply-only-is-draft",
+      "local": {
+        "text": "",
+        "updateTime": 5000,
+        "replyTo": "777"
+      },
+      "server": {
+        "text": "с телефона",
+        "updateTime": 2000
+      },
+      "discardedAt": null,
+      "expect": {
+        "text": "",
+        "updateTime": 5000,
+        "replyTo": "777"
+      }
+    },
+    {
+      "name": "both-empty",
+      "local": {
+        "text": "",
+        "updateTime": 5000
+      },
+      "server": {
+        "text": " ",
+        "updateTime": 6000
+      },
+      "discardedAt": null,
+      "expect": null
+    },
+    {
+      "name": "spans-travel",
+      "local": null,
+      "server": {
+        "text": "жирный",
+        "updateTime": 2000,
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 0,
+            "length": 6
+          }
+        ]
+      },
+      "discardedAt": null,
+      "expect": {
+        "text": "жирный",
+        "updateTime": 2000,
+        "spans": [
+          {
+            "type": "STRONG",
+            "from": 0,
+            "length": 6
+          }
+        ]
+      }
+    }
+  ]
+}

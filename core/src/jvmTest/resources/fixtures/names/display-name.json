@@ -1,0 +1,266 @@
+{
+  "kind": "display-name",
+  "name": "display-name",
+  "description": "Имя пользователя: адресная книга (если включена и номер совпал) > своё имя контакта (CUSTOM, переименован) > имя, которое пользователь дал себе (ONEME) > первая запись names > номер («+» и цифры) > «Участник». Имя записи — name, иначе «firstName lastName» без пустых частей.",
+  "cases": [
+    {
+      "name": "book-wins",
+      "addressBookEnabled": true,
+      "addressBook": [
+        {
+          "name": "Мама",
+          "phones": [
+            "8 913 123-45-67"
+          ]
+        }
+      ],
+      "user": {
+        "phone": "79131234567",
+        "names": [
+          {
+            "type": "ONEME",
+            "firstName": "Анна",
+            "lastName": "Петрова"
+          },
+          {
+            "type": "CUSTOM",
+            "firstName": "Аня",
+            "lastName": "соседка"
+          }
+        ]
+      },
+      "expect": "Мама"
+    },
+    {
+      "name": "book-disabled",
+      "addressBookEnabled": false,
+      "addressBook": [
+        {
+          "name": "Мама",
+          "phones": [
+            "8 913 123-45-67"
+          ]
+        }
+      ],
+      "user": {
+        "phone": "79131234567",
+        "names": [
+          {
+            "type": "ONEME",
+            "firstName": "Анна",
+            "lastName": "Петрова"
+          },
+          {
+            "type": "CUSTOM",
+            "firstName": "Аня",
+            "lastName": "соседка"
+          }
+        ]
+      },
+      "expect": "Аня соседка"
+    },
+    {
+      "name": "book-no-match",
+      "addressBookEnabled": true,
+      "addressBook": [
+        {
+          "name": "Мама",
+          "phones": [
+            "8 913 123-45-67"
+          ]
+        }
+      ],
+      "user": {
+        "phone": "79990000000",
+        "names": [
+          {
+            "type": "ONEME",
+            "firstName": "Анна",
+            "lastName": "Петрова"
+          },
+          {
+            "type": "CUSTOM",
+            "firstName": "Аня",
+            "lastName": "соседка"
+          }
+        ]
+      },
+      "expect": "Аня соседка"
+    },
+    {
+      "name": "phone-without-plus-matches",
+      "addressBookEnabled": true,
+      "addressBook": [
+        {
+          "name": "Офис",
+          "phones": [
+            "+44 20 7946 0958"
+          ]
+        }
+      ],
+      "user": {
+        "phone": "442079460958",
+        "names": [
+          {
+            "type": "ONEME",
+            "firstName": "Анна",
+            "lastName": "Петрова"
+          }
+        ]
+      },
+      "expect": "Офис"
+    },
+    {
+      "name": "custom-over-oneme",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "79131234567",
+        "names": [
+          {
+            "type": "ONEME",
+            "firstName": "Анна",
+            "lastName": "Петрова"
+          },
+          {
+            "type": "CUSTOM",
+            "firstName": "Аня",
+            "lastName": "соседка"
+          }
+        ]
+      },
+      "expect": "Аня соседка"
+    },
+    {
+      "name": "oneme-over-first",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "79131234567",
+        "names": [
+          {
+            "type": "OTHER",
+            "firstName": "Нюра"
+          },
+          {
+            "type": "ONEME",
+            "firstName": "Анна",
+            "lastName": "Петрова"
+          }
+        ]
+      },
+      "expect": "Анна Петрова"
+    },
+    {
+      "name": "first-entry",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "79131234567",
+        "names": [
+          {
+            "type": "OTHER",
+            "name": "Нюра"
+          }
+        ]
+      },
+      "expect": "Нюра"
+    },
+    {
+      "name": "name-field-wins-over-parts",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "",
+        "names": [
+          {
+            "type": "ONEME",
+            "name": "Аннушка",
+            "firstName": "Анна"
+          }
+        ]
+      },
+      "expect": "Аннушка"
+    },
+    {
+      "name": "first-name-only",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "",
+        "names": [
+          {
+            "type": "ONEME",
+            "firstName": "Анна",
+            "lastName": ""
+          }
+        ]
+      },
+      "expect": "Анна"
+    },
+    {
+      "name": "empty-custom-skipped",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "",
+        "names": [
+          {
+            "type": "CUSTOM",
+            "firstName": " "
+          },
+          {
+            "type": "ONEME",
+            "firstName": "Анна",
+            "lastName": "Петрова"
+          }
+        ]
+      },
+      "expect": "Анна Петрова"
+    },
+    {
+      "name": "phone-fallback",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "79131234567",
+        "names": []
+      },
+      "expect": "+79131234567"
+    },
+    {
+      "name": "phone-fallback-8",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "8 913 123-45-67",
+        "names": [
+          {
+            "type": "ONEME",
+            "firstName": ""
+          }
+        ]
+      },
+      "expect": "+79131234567"
+    },
+    {
+      "name": "nothing",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "phone": "",
+        "names": []
+      },
+      "expect": "Участник"
+    },
+    {
+      "name": "nothing-null-phone",
+      "addressBookEnabled": true,
+      "addressBook": [],
+      "user": {
+        "names": []
+      },
+      "expect": "Участник"
+    }
+  ]
+}

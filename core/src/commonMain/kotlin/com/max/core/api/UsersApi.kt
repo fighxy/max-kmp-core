@@ -189,7 +189,8 @@ data class ContactByPhone(val user: MaxUser, val isNew: Boolean)
  * Phone numbers for matching the device address book against users, by the rules the Orbitle
  * iOS and Android clients share (fixtures `test-fixtures/names/`):
  *
- * 1. spaces (any whitespace), dashes, parentheses and dots are dropped; a leading `+` is kept;
+ * 1. spaces (any whitespace, also no-break), dashes (`-` and every Unicode dash: non-breaking
+ *    hyphen, en and em dash...), parentheses, dots and slashes are dropped; a leading `+` is kept;
  * 2. a leading `00` counts as `+`;
  * 3. without `+`: 11 digits starting with `8` become `+7…` (8 913 123-45-67 → +79131234567),
  *    11 digits starting with `7` get the `+`;
@@ -201,13 +202,19 @@ data class ContactByPhone(val user: MaxUser, val isNew: Boolean)
  * The server's `phone` of a user (digits as a number, e.g. `79131234567`) normalizes the same way.
  */
 object PhoneNumbers {
+    /** A character the rules drop (rule 1). */
+    private fun Char.isSeparator(): Boolean =
+        isWhitespace() || this == '\u00A0' || this == '\u202F' || this == '\u2007' ||
+            this == '-' || category == CharCategory.DASH_PUNCTUATION || this == '\u2212' ||
+            this == '(' || this == ')' || this == '.' || this == '/'
+
     fun normalize(value: Any?): String? {
         val raw = when (value) {
             is Number -> value.toLong().takeIf { it > 0 }?.toString()
             is String -> value
             else -> null
         } ?: return null
-        var t = raw.filterNot { it.isWhitespace() || it == '-' || it == '(' || it == ')' || it == '.' }
+        var t = raw.filterNot { it.isSeparator() }
         var plus = false
         if (t.startsWith("+")) {
             plus = true
