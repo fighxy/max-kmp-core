@@ -6,6 +6,7 @@ import com.max.core.protocol.Opcode
 import com.max.core.transport.TransportPacket
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.updateAndGet
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Client message ids (`cid`) as PyMax `MessageService._next_cid`: the current time in ms, but
@@ -39,7 +40,8 @@ enum class HistoryItemType { REGULAR, DELAYED }
  * parses Markdown in the text (`Formatter.format_markdown`) into the plain text plus
  * `elements`. Attachments are sent through `com.max.core.media.MediaApi.sendMessage`. Delayed
  * sending ([scheduleMessage]), polls ([sendPoll], [votePoll]) and channel-post comments
- * ([sendComment] and the other `*Comment*` methods) follow the same service.
+ * ([sendComment] and the other `*Comment*` methods) follow the same service. [sendTyping]
+ * (`MSG_TYPING` 65) is fire-and-forget and never throws for send errors.
  *
  * Errors: ERROR replies throw `ServerErrorException`; an OK reply without the required fields
  * throws [MalformedReplyException]; invalid arguments throw `IllegalArgumentException`.
@@ -407,6 +409,31 @@ class MessagesApi(
         if (postId != null) payload["postId"] = postId
         return payload
     }
+
+    /**
+     * Tells the chat that this account is typing (`MSG_TYPING` 65, [typingPayload]). The frame is
+     * fire-and-forget: it goes out without waiting for a reply, and send errors (not connected, a
+     * failed write) are swallowed. Cancellation is still passed on.
+     *
+     * No throttling here: every call sends a frame. Callers repeat it while the user is busy, at
+     * most once per 6 s per chat.
+     *
+     * @param type what is being prepared: a [TypingType] constant (any other string is sent as given).
+     * @param postId the channel post when typing a comment under it; left out when `null`.
+     * @return `true` when the frame was written, `false` when it could not be sent.
+     */
+    suspend fun sendTyping(chatId: Long, type: String, postId: Long? = null): Boolean = try {
+        sink.sendWithoutReply(Opcode.MSG_TYPING, typingPayload(chatId, type, postId))
+        true
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        false
+    }
+
+    /** `MSG_TYPING` 65 body: `{chatId, type}`, plus `postId` when [postId] is set. */
+    fun typingPayload(chatId: Long, type: String, postId: Long? = null): Map<String, Any?> =
+        linkedMapOf<String, Any?>("chatId" to chatId, "type" to type).apply { if (postId != null) put("postId", postId) }
 
     /**
      * Next client message id (PyMax `_next_cid`); exposed so a caller that must resend the same

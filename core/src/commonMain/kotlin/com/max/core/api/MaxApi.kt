@@ -1,6 +1,7 @@
 package com.max.core.api
 
 import com.max.core.auth.RequestSink
+import com.max.core.auth.asRequestSink
 import com.max.core.calls.CallsApi
 import com.max.core.epochMillis
 import com.max.core.session.SessionMachine
@@ -20,12 +21,12 @@ import com.max.core.session.SessionMachine
 class MaxApi(sink: RequestSink, clock: () -> Long, val cids: ClientIdGenerator) {
     constructor(sink: RequestSink, clock: () -> Long = ::epochMillis) : this(sink, clock, ClientIdGenerator(clock))
 
-    /** Over [session]'s `request`. */
+    /** Over [session]'s `request` (and `sendWithoutReply` for fire-and-forget frames such as typing). */
     constructor(session: SessionMachine, clock: () -> Long = ::epochMillis) : this(session, clock, ClientIdGenerator(clock))
 
-    /** Over [session]'s `request`, drawing `cid`s from [cids]. */
+    /** Over [session]'s `request` and `sendWithoutReply`, drawing `cid`s from [cids]. */
     constructor(session: SessionMachine, clock: () -> Long, cids: ClientIdGenerator) :
-        this(RequestSink { opcode, payload -> session.request(opcode, payload) }, clock, cids)
+        this(session.asRequestSink(), clock, cids)
 
     val messages: MessagesApi = MessagesApi(sink, clock, cids)
     val chats: ChatsApi = ChatsApi(sink, clock, messages)

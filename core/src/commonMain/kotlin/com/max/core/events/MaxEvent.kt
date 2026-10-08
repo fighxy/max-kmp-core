@@ -47,8 +47,26 @@ sealed interface MaxEvent {
     /** A chat changed (`NOTIF_CHAT` 135 `{chat}`; PyMax `CHAT_UPDATE`). */
     data class ChatUpdated(val chat: Chat, override val opcode: Int, override val raw: Any?) : MaxEvent
 
-    /** Someone is typing (`NOTIF_TYPING` 129 `{chatId, userId}`; PyMax `TypingEvent`). */
-    data class Typing(val chatId: Long, val userId: Long, override val opcode: Int, override val raw: Any?) : MaxEvent
+    /**
+     * Someone is typing (`NOTIF_TYPING` 129 `{chatId, userId, type?}`; PyMax `TypingEvent`).
+     *
+     * @property type the raw `type` as the server sent it (`null` when the push has none). Known
+     *   values are in [com.max.core.api.TypingType]; use [effectiveType] for the normalised one.
+     *   It is the last parameter, so positional calls with four arguments keep compiling.
+     */
+    data class Typing(
+        val chatId: Long,
+        val userId: Long,
+        override val opcode: Int,
+        override val raw: Any?,
+        val type: String? = null,
+    ) : MaxEvent {
+        /**
+         * [type] normalised by [com.max.core.api.TypingType.effective]: a known value as is,
+         * [com.max.core.api.TypingType.TEXT] for a missing, blank or unrecognised one.
+         */
+        val effectiveType: String get() = com.max.core.api.TypingType.effective(type)
+    }
 
     /**
      * Read mark moved (`NOTIF_MARK` 130 `{setAsUnread, chatId, userId, mark}`; PyMax

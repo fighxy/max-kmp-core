@@ -346,4 +346,12 @@ class SessionMachine(
 
     /** [MaxTransport.request] on the current connection. */
     suspend fun request(opcode: Opcode, payload: Any?): TransportPacket = transport.request(opcode, payload)
+
+    /**
+     * [MaxTransport.sendRequest] on the current connection: writes [opcode] with [payload] and
+     * returns its `seq` without waiting for the reply (which is dropped when it comes).
+     *
+     * @throws com.max.core.transport.ConnectionClosedException when not connected.
+     */
+    suspend fun sendWithoutReply(opcode: Opcode, payload: Any?): Int = transport.sendRequest(opcode.value, payload)
 }

@@ -5,6 +5,7 @@ import com.max.core.api.MaxMessage
 import com.max.core.api.MessagesApi
 import com.max.core.api.replyMap
 import com.max.core.auth.RequestSink
+import com.max.core.auth.asRequestSink
 import com.max.core.epochMillis
 import com.max.core.events.MaxEvent
 import com.max.core.events.MaxEvents
@@ -84,7 +85,7 @@ class MediaApi(
         userAgent = session.config.device.userAgent.httpUserAgent,
         events = MaxEvents(session).all,
         clock = clock,
-        messages = MessagesApi(RequestSink { opcode, payload -> session.request(opcode, payload) }, clock, cids),
+        messages = MessagesApi(session.asRequestSink(), clock, cids),
     )
 
     // ---- upload slots -------------------------------------------------------------------------

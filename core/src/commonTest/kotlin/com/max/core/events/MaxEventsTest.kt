@@ -116,6 +116,33 @@ class MaxEventsTest {
     }
 
     @Test
+    fun typingType() {
+        // the PyMax frame has no `type`: raw null, effective TEXT
+        val bare = assertIs<MaxEvent.Typing>(event("typing"))
+        assertNull(bare.type)
+        assertEquals("TEXT", bare.effectiveType)
+        val sticker = mapOf("chatId" to 7, "userId" to 8, "type" to "STICKER")
+        assertEquals(MaxEvent.Typing(7, 8, 129, sticker, "STICKER"), EventParser.parse(129, 0, sticker))
+        val file = assertIs<MaxEvent.Typing>(EventParser.parse(129, 0, mapOf("chatId" to 7L, "userId" to 8L, "type" to "FILE")))
+        assertEquals("FILE", file.type)
+        assertEquals("FILE", file.effectiveType)
+        for (t in listOf("TEXT", "AUDIO", "VIDEO_MSG", "PHOTO", "VIDEO", "FILE", "STICKER")) {
+            val e = assertIs<MaxEvent.Typing>(EventParser.parse(129, 0, mapOf("chatId" to 7, "userId" to 8, "type" to t)))
+            assertEquals(t, e.type)
+            assertEquals(t, e.effectiveType)
+        }
+        // unrecognised strings are kept raw but mean TEXT; a non-string `type` counts as absent
+        val odd = assertIs<MaxEvent.Typing>(EventParser.parse(129, 0, mapOf("chatId" to 7, "userId" to 8, "type" to "SOMETHING_NEW")))
+        assertEquals("SOMETHING_NEW", odd.type)
+        assertEquals("TEXT", odd.effectiveType)
+        assertEquals("TEXT", assertIs<MaxEvent.Typing>(EventParser.parse(129, 0, mapOf("chatId" to 7, "userId" to 8, "type" to ""))).effectiveType)
+        assertNull(assertIs<MaxEvent.Typing>(EventParser.parse(129, 0, mapOf("chatId" to 7, "userId" to 8, "type" to 3))).type)
+        assertNull(assertIs<MaxEvent.Typing>(EventParser.parse(129, 0, mapOf("chatId" to 7, "userId" to 8, "type" to null))).type)
+        // four positional arguments still build an event without type
+        assertNull(MaxEvent.Typing(7, 8, 129, null).type)
+    }
+
+    @Test
     fun unknownFallback() {
         // an upload signal is typed now; NOTIF_ATTACH without a known id and an opcode without a typed event stay raw
         assertEquals(MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.FILE, 99, 136, mapOf("fileId" to 99)), event("attach"))

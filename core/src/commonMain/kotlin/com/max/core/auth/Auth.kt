@@ -54,6 +54,30 @@ fun interface RequestSink {
      * @throws ServerErrorException for an ERROR reply (and other transport exceptions).
      */
     suspend fun request(opcode: Opcode, payload: Any?): TransportPacket
+
+    /**
+     * Sends [opcode] with [payload] without waiting for a reply (fire-and-forget, e.g.
+     * `MSG_TYPING` 65). Sinks over a socket send the frame and return once it is written
+     * ([SessionMachine.sendWithoutReply], `MaxTransport.sendRequest`). The default, for sinks
+     * that can only do request/response, sends through [request] and drops the reply.
+     *
+     * @throws Exception when the frame could not be sent (not connected, write failure); the
+     *   default also throws what [request] throws.
+     */
+    suspend fun sendWithoutReply(opcode: Opcode, payload: Any?) {
+        request(opcode, payload)
+    }
+}
+
+/** This session as a [RequestSink]: [SessionMachine.request], and [SessionMachine.sendWithoutReply] for fire-and-forget frames. */
+fun SessionMachine.asRequestSink(): RequestSink {
+    val session = this
+    return object : RequestSink {
+        override suspend fun request(opcode: Opcode, payload: Any?): TransportPacket = session.request(opcode, payload)
+        override suspend fun sendWithoutReply(opcode: Opcode, payload: Any?) {
+            session.sendWithoutReply(opcode, payload)
+        }
+    }
 }
 
 /** Base class of auth errors. */

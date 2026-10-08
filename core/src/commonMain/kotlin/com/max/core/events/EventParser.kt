@@ -17,7 +17,7 @@ import com.max.core.transport.TransportPacket
  * | `NOTIF_MESSAGE` 128, `MSG_EDIT` 67 | [MaxEvent.NewMessage] / [MaxEvent.MessageEdited] (`status` EDITED) / [MaxEvent.MessagesDeleted] (`status` REMOVED) |
  * | `NOTIF_MSG_DELETE` 142 | [MaxEvent.MessagesDeleted] |
  * | `NOTIF_CHAT` 135 | [MaxEvent.ChatUpdated] |
- * | `NOTIF_TYPING` 129 | [MaxEvent.Typing] |
+ * | `NOTIF_TYPING` 129 | [MaxEvent.Typing] (`type` optional) |
  * | `NOTIF_MARK` 130 | [MaxEvent.MessageRead] |
  * | `NOTIF_PRESENCE` 132 | [MaxEvent.Presence] |
  * | `NOTIF_MSG_REACTIONS_CHANGED` 155 | [MaxEvent.ReactionsChanged] |
@@ -56,7 +56,8 @@ object EventParser {
         Opcode.NOTIF_TYPING.value -> {
             val chatId = map["chatId"].long()
             val userId = map["userId"].long()
-            if (chatId == null || userId == null) null else MaxEvent.Typing(chatId, userId, opcode, raw)
+            // `type` is optional; a non-string value is treated as absent
+            if (chatId == null || userId == null) null else MaxEvent.Typing(chatId, userId, opcode, raw, map["type"] as? String)
         }
         Opcode.NOTIF_MARK.value -> {
             val chatId = map["chatId"].long()
