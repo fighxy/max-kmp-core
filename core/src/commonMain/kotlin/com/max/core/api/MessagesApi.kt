@@ -106,12 +106,51 @@ class MessagesApi(
 
     /**
      * Deletes messages (`MSG_DELETE`, 66; PyMax `delete_message`, `DeleteMessagePayload`):
-     * `{chatId, messageIds, forMe}`. PyMax ignores the reply; it is returned raw.
+     * `{chatId, messageIds, forMe}`. One request takes the whole selection of a multi-select.
+     * PyMax ignores the reply; it is returned raw.
+     *
+     * @param forMe `true` removes the messages only for this account, `false` for everyone.
+     * @param itemType sent as `itemType` when set (KometTeam/Komet `MessagesModule.deleteMessages`
+     *   always adds it, `REGULAR` by default; `DELAYED` deletes scheduled messages). Left out when
+     *   `null`, so the PyMax body stays unchanged.
      */
-    suspend fun deleteMessages(chatId: Long, messageIds: List<Long>, forMe: Boolean = false): Map<*, *> {
+    suspend fun deleteMessages(
+        chatId: Long,
+        messageIds: List<Long>,
+        forMe: Boolean = false,
+        itemType: HistoryItemType? = null,
+    ): Map<*, *> {
         require(messageIds.isNotEmpty()) { "messageIds must not be empty" }
-        val reply = sink.request(Opcode.MSG_DELETE, linkedMapOf("chatId" to chatId, "messageIds" to messageIds, "forMe" to forMe))
-        return rawMap(reply)
+        return rawMap(sink.request(Opcode.MSG_DELETE, deletePayload(chatId, messageIds, forMe, itemType)))
+    }
+
+    /** `MSG_DELETE` 66 body: `{chatId, messageIds, forMe}`, plus `itemType` when [itemType] is set. */
+    fun deletePayload(chatId: Long, messageIds: List<Long>, forMe: Boolean, itemType: HistoryItemType? = null): Map<String, Any?> =
+        linkedMapOf<String, Any?>("chatId" to chatId, "messageIds" to messageIds, "forMe" to forMe).apply {
+            if (itemType != null) put("itemType", itemType.name)
+        }
+
+    /**
+     * Forwards several messages of [sourceChatId] to [chatId] (multi-select). The protocol has no
+     * batch form: as KometTeam/Komet `ForwardSender` does, every message is one [forwardMessage]
+     * (`MSG_SEND` 64 with a `FORWARD` link), sent one after another in the order of [messageIds]
+     * (pass them oldest first to keep the chat order). The first failure stops the batch:
+     * [ForwardBatch.failedIndex] names the message that was not sent, the ones before it are in
+     * [ForwardBatch.sent]. Cancellation is passed on.
+     */
+    suspend fun forwardMessages(chatId: Long, sourceChatId: Long, messageIds: List<Long>, notify: Boolean = true): ForwardBatch {
+        require(messageIds.isNotEmpty()) { "messageIds must not be empty" }
+        val sent = ArrayList<MaxMessage>(messageIds.size)
+        for ((index, id) in messageIds.withIndex()) {
+            try {
+                sent += forwardMessage(chatId, id, sourceChatId, notify)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return ForwardBatch(sent, index, e)
+            }
+        }
+        return ForwardBatch(sent, null, null)
     }
 
     /**
@@ -478,6 +517,15 @@ private fun messageList(reply: TransportPacket, opcode: Opcode, chatId: Long): L
     val items = map["messages"] ?: return emptyList()
     val list = items as? List<*> ?: throw MalformedReplyException(opcode, "messages is not a list", map)
     return list.map { MaxMessage.from(it, chatId) ?: throw MalformedReplyException(opcode, "invalid message in messages", map) }
+}
+
+/**
+ * Result of [MessagesApi.forwardMessages]: the forwarded copies in send order and, when the batch
+ * stopped early, the index (in the requested ids) of the message that failed and the error.
+ */
+data class ForwardBatch(val sent: List<MaxMessage>, val failedIndex: Int?, val error: Throwable?) {
+    /** Every message was forwarded. */
+    val complete: Boolean get() = failedIndex == null
 }
 
 /**
