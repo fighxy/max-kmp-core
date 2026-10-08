@@ -18,7 +18,7 @@ object TextElementType {
     /** Inline monospace (`code`). */
     const val MONOSPACED = "MONOSPACED"
 
-    /** A code block (PyMax only; Komet does not send it but other clients may). */
+    /** A code block: received from some clients, read as [MONOSPACED] ([TextElement.parse]); not sent. */
     const val CODE = "CODE"
     const val HEADING = "HEADING"
     const val QUOTE = "QUOTE"
@@ -83,7 +83,6 @@ data class TextElement(
         fun underline(from: Int, length: Int) = TextElement(TextElementType.UNDERLINE, from, length)
         fun strikethrough(from: Int, length: Int) = TextElement(TextElementType.STRIKETHROUGH, from, length)
         fun monospaced(from: Int, length: Int) = TextElement(TextElementType.MONOSPACED, from, length)
-        fun code(from: Int, length: Int) = TextElement(TextElementType.CODE, from, length)
         fun heading(from: Int, length: Int) = TextElement(TextElementType.HEADING, from, length)
         fun quote(from: Int, length: Int) = TextElement(TextElementType.QUOTE, from, length)
 
@@ -99,16 +98,20 @@ data class TextElement(
             TextElement(TextElementType.ANIMOJI, from, length, entityId = animojiId, attributes = mapOf("animojiLottieUrl" to lottieUrl))
 
         /**
-         * One received element; `null` when it is not a map, has no non-blank `type`, or its
-         * `length` is not positive (Komet skips those too). `from` / `length` may arrive as
-         * numbers or decimal strings; a missing `from` is `0`.
+         * One received element, read as the MAX web client reads it: a missing `from` is `0`, a
+         * missing `length` runs to the end of the text ([textLength]; without it such an element
+         * is dropped), a zero or negative length is dropped. `CODE` reads as [TextElementType.MONOSPACED];
+         * any other unknown type is kept as is. `null` when it is not a map or has no non-blank
+         * `type`. `from` / `length` may arrive as numbers or decimal strings.
          */
-        fun parse(raw: Any?): TextElement? {
+        fun parse(raw: Any?, textLength: Int? = null): TextElement? {
             val m = raw as? Map<*, *> ?: return null
-            val type = (m["type"] as? String)?.takeIf { it.isNotBlank() } ?: return null
-            val length = m["length"].asLong()?.toInt()?.takeIf { it > 0 } ?: return null
+            val sent = (m["type"] as? String)?.takeIf { it.isNotBlank() } ?: return null
+            val type = if (sent == TextElementType.CODE) TextElementType.MONOSPACED else sent
             val from = m["from"].asLong()?.toInt() ?: 0
             if (from < 0) return null
+            val length = (if (m["length"] == null && textLength != null) textLength - from else m["length"].asLong()?.toInt())
+                ?.takeIf { it > 0 } ?: return null
             val attributes = (m["attributes"] as? Map<*, *>)?.entries
                 ?.mapNotNull { (k, v) -> (k as? String)?.let { it to v } }
                 ?.toMap()
@@ -124,7 +127,8 @@ data class TextElement(
         }
 
         /** Every valid element of [raw] in order ([parse]); a non-list is empty. */
-        fun parseAll(raw: Any?): List<TextElement> = (raw as? List<*>).orEmpty().mapNotNull(::parse)
+        fun parseAll(raw: Any?, textLength: Int? = null): List<TextElement> =
+            (raw as? List<*>).orEmpty().mapNotNull { parse(it, textLength) }
 
         /** [elements] that fit [text] ([fits]), as wire maps for `MSG_SEND` / `MSG_EDIT`. */
         fun payloadFor(text: String, elements: List<TextElement>): List<Map<String, Any?>> =

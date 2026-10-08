@@ -49,8 +49,11 @@ data class MaxMessage(
     val raw: Map<*, *>,
     val updateTime: Long? = null,
 ) {
-    /** [elements] as typed formatting ([TextElement.parseAll]; invalid entries are skipped). */
-    val textElements: List<TextElement> get() = TextElement.parseAll(elements)
+    /**
+     * [elements] as typed formatting ([TextElement.parseAll]; invalid entries are skipped, a
+     * missing `length` runs to the end of [text]).
+     */
+    val textElements: List<TextElement> get() = TextElement.parseAll(elements, text.length)
 
     companion object {
         /** Parses [value]; `null` if it is not a map or lacks `id` / `time` / `type`. */

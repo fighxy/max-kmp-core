@@ -35,7 +35,6 @@ class TextElementsTest {
         assertEquals("UNDERLINE", TextElement.underline(0, 1).type)
         assertEquals("STRIKETHROUGH", TextElement.strikethrough(0, 1).type)
         assertEquals("MONOSPACED", TextElement.monospaced(0, 1).type)
-        assertEquals("CODE", TextElement.code(0, 1).type)
         assertEquals("HEADING", TextElement.heading(0, 1).type)
     }
 
@@ -96,5 +95,28 @@ class TextElementsTest {
         val sentMessage = (sink.sent[0].second as Map<*, *>)["message"] as Map<*, *>
         assertEquals(listOf(mapOf("type" to "STRONG", "from" to 0, "length" to 4)), sentMessage["elements"])
         assertEquals(listOf(mapOf("type" to "STRONG", "from" to 0, "length" to 4)), (sink.sent[1].second as Map<*, *>)["elements"])
+    }
+
+    @Test
+    fun parsingFollowsTheWebClientRules() {
+        val raw = listOf(
+            mapOf("type" to "STRONG", "length" to 3), // no from: 0
+            mapOf("type" to "EMPHASIZED", "from" to 4), // no length: to the end
+            mapOf("type" to "UNDERLINE", "from" to 2, "length" to 0), // zero length: dropped
+            mapOf("type" to "CODE", "from" to 0, "length" to 2), // read as monospaced
+            mapOf("type" to "FUTURE_TYPE", "from" to 1, "length" to 1), // kept
+            mapOf("type" to "QUOTE", "from" to 9), // starts at the end: nothing left
+        )
+        val parsed = TextElement.parseAll(raw, textLength = 9)
+        assertEquals(listOf("STRONG", "EMPHASIZED", "MONOSPACED", "FUTURE_TYPE"), parsed.map { it.type })
+        assertEquals(0, parsed[0].from)
+        assertEquals(4 to 5, parsed[1].from to parsed[1].length)
+        // without the text length an open element cannot be placed
+        assertEquals(listOf("STRONG", "MONOSPACED", "FUTURE_TYPE"), TextElement.parseAll(raw).map { it.type })
+        // offsets are UTF-16 code units: an emoji is two
+        val text = "😀 bold"
+        val message = MaxMessage.from(mapOf("id" to 1L, "time" to 1L, "type" to "USER", "text" to text, "elements" to listOf(mapOf("type" to "STRONG", "from" to 3))))!!
+        assertEquals(TextElement(TextElementType.STRONG, 3, 4), message.textElements.single())
+        assertEquals("bold", text.substring(3, 7))
     }
 }
