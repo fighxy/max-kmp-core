@@ -690,6 +690,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 216 | `NOTIF_STORIES_UPDATE` | `NOTIF_STORIES_UPDATE` |  |
 | 217 | `STORIES_EDIT` | `STORIES_EDIT` |  |
 | 218 | `STORIES_DELETE` | `STORIES_DELETE` |  |
+| 219 | `STORIES_HISTORY_GET_BY_OWNER_ID` | `STORIES_HISTORY_GET_BY_OWNER_ID` | архив своих, без id владельца |
 | 220 | `STORIES_GET_BY_STORY_ID` | `STORIES_GET_BY_STORY_ID` |  |
 
 #### Истории (схема KometTeam/Komet `feature/FullStack`, `modules/stories.dart` / `models/story.dart`; только факты, код не брали)
@@ -707,6 +708,22 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
   `{_type: VIDEO, videoType: 2, token, duration}`. Токены — из слотов `PHOTO_UPLOAD` / `VIDEO_UPLOAD`
   с `type` 1 / 3. Ответ: `storiesPreview` владельца и новые `stories`.
 - `STORIES_DELETE` 218 `{storyIds}`.
+- `STORIES_HISTORY_GET_BY_OWNER_ID` 219 — архив своих историй. Запрос всегда `{count: 30}`; `marker`
+  (long) уходит только если он не 0 (первая страница маркер не шлёт, id владельца в запросе нет,
+  несмотря на имя опкода). Ответ `{stories, marker}`: `stories` — те же объекты, что в ленте
+  (`id`, `cid`, `owner`, `settings`, `time`, `updateTime`, `expiration`, `media`); на проводе ещё
+  `version`, `layers`, `reaction`, `viewsCount`, `reactionsCount`, ядро их не хранит. Элемент без
+  `owner` пропускается. `marker` 0 или отсутствие ключа — следующей страницы нет. В ядре
+  `StoriesApi.ownArchive` / `MaxClient.ownStoryArchive` → `StoryArchivePage`; мост
+  `MaxIosClient.ownStoryArchive` (`IosStoryArchive`, курсор строкой, пустая строка — конец).
+  Страница в хранилище не кладётся.
+- Флаги `config.server`, без которых клиент не рисует пункт настроек: `stories-history` (bool,
+  нет ключа — выключено) → `AccountConfig.storiesHistory`; `family-protection-botid` (long,
+  в приложении по умолчанию 0) → `AccountConfig.familyProtectionBotId` (`null`, если ключа нет,
+  это не число, или число не положительное). На мост iOS те же значения приходят в
+  `IosAccountSettings.storiesHistory` и `familyProtectionBotId` (десятичная строка, пустая если
+  бота нет): сырой `server` мост не отдаёт.
+
 - `NOTIF_STORIES_UPDATE` 216 `{storiesPreview}`; `totalCount` 0 — историй не осталось.
 - Кольцо в шапке диалога: владелец — собеседник (`chatId ^ myId`), у «Избранного» и групп колец нет.
 - В ядре: `StoriesApi` (`MaxApi.stories`), `MediaApi.uploadStoryPhoto` / `uploadStoryVideo`,
@@ -1156,6 +1173,7 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
 3. **Закреплённые сообщения (240–243) и часть пропускаемых пушей** — сделано: состояние закрепа, 240/241/242, пуш 243, плюс типы для 156, 159, 293 и ошибки 136 (§G.4). 154, звонки, сторис и остальной каталог не трогались.
 4. **Отложенные сообщения и опросы** — сделано: список/создание/правка/отмена, пуш 154, чтение опроса 306 и голос 304 (§G.5). Пуша счётчиков нет. 305 не делался.
 5. **Отклонение звонка (167) и журнал (163/165)** — сделано (§H.4). Медиа и сигналинг не трогались. Журнал 79 остаётся.
+6. **Архив своих историй (219) и два поля конфига** — сделано (§Stories). Создание истории не добавлялось (отправка 215 уже была). Экран настроек не делался.
 
 ---
 
