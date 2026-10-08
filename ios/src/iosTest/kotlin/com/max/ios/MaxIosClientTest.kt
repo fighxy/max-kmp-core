@@ -109,6 +109,49 @@ class MaxIosClientTest {
     }
 
     @Test
+    fun typingIsSentWithoutWaitingAndReportsKinds() {
+        val c = offlineClient()
+        assertEquals("NETWORK", callback<String?> { d -> c.sendTyping("1", IosTypingType.STICKER, "") { k, _ -> d.complete(k) } })
+        assertEquals("NETWORK", callback<String?> { d -> c.sendTyping("1", IosTypingType.FILE, "7") { k, _ -> d.complete(k) } })
+        assertEquals("UNKNOWN", callback<String?> { d -> c.sendTyping("x", IosTypingType.FILE, "") { k, _ -> d.complete(k) } })
+        assertEquals("UNKNOWN", callback<String?> { d -> c.sendTyping("1", IosTypingType.FILE, "y") { k, _ -> d.complete(k) } })
+        // the callback-free overload never throws
+        c.sendTyping("x", IosTypingType.TEXT)
+        callback<Unit> { d -> c.close { d.complete(Unit) } }
+
+        // a reconnecting session is not awaited: a late typing signal is useless
+        val kv = InMemoryKeyValueStore()
+        CredentialStore(kv, "max.default").save(StoredCredentials("device", "instance", token = "tok", userId = 5))
+        val retrying = TransportConfig(host = "api.test", pingInterval = Duration.INFINITE, autoReconnect = true)
+        val r = MaxIosClient(scope(), sessionWaitMs = 2_000) { s ->
+            MaxClient(MaxClientConfig(host = "api.test", transport = retrying), kv, offline, noHttp, s)
+        }
+        callback<String?> { d -> r.start { p, _, _ -> d.complete(p) } }
+        val started = TimeSource.Monotonic.markNow()
+        assertEquals("NETWORK", callback<String?> { d -> r.sendTyping("1", IosTypingType.STICKER, "") { k, _ -> d.complete(k) } })
+        assertTrue(started.elapsedNow() < 1_500.milliseconds, "waited ${started.elapsedNow()}")
+        callback<Unit> { d -> r.close { d.complete(Unit) } }
+    }
+
+    @Test
+    fun typingEventCarriesTheType() {
+        val withType = typingEvent(MaxEvent.Typing(10, 20, 129, null, "STICKER"))
+        assertEquals("typing", withType.kind)
+        assertEquals("10", withType.chatId)
+        assertEquals("20", withType.authorId)
+        assertEquals("STICKER", withType.text)
+        assertEquals(-1, withType.unread)
+        // no type or an unrecognised one is TEXT
+        assertEquals("TEXT", typingEvent(MaxEvent.Typing(10, 20, 129, null)).text)
+        assertEquals("TEXT", typingEvent(MaxEvent.Typing(10, 20, 129, null, "SOMETHING_NEW")).text)
+        assertEquals("VIDEO_MSG", typingEvent(MaxEvent.Typing(10, 20, 129, null, "VIDEO_MSG")).text)
+        assertEquals(
+            listOf("TEXT", "AUDIO", "VIDEO_MSG", "PHOTO", "VIDEO", "FILE", "STICKER"),
+            listOf(IosTypingType.TEXT, IosTypingType.AUDIO, IosTypingType.VIDEO_MSG, IosTypingType.PHOTO, IosTypingType.VIDEO, IosTypingType.FILE, IosTypingType.STICKER),
+        )
+    }
+
+    @Test
     fun callsWaitForAReconnectingSessionThenFailAsBefore() {
         val kv = InMemoryKeyValueStore()
         CredentialStore(kv, "max.default").save(StoredCredentials("device", "instance", token = "tok", userId = 5))

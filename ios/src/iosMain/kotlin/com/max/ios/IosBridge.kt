@@ -14,6 +14,8 @@ import com.max.core.api.Story
 import com.max.core.api.StoryAudience
 import com.max.core.api.StoryOwner
 import com.max.core.api.StoryPreview
+import com.max.core.api.TypingType
+import com.max.core.transport.ConnectionClosedException
 import com.max.core.api.hasWebApp
 import com.max.core.media.OutgoingMedia
 import com.max.core.media.UploadProgress
@@ -385,6 +387,32 @@ class MaxIosClient internal constructor(
             val reply = replyTo.takeIf { it.isNotBlank() }?.let(::parseId)
             messageSnapshot(c.sendText(parseId(chatId), text, reply), chatId, c.store.state.value)
         }
+    }
+
+    /**
+     * Tells [chatId] that this account is typing (`MSG_TYPING` 65, [MaxClient.sendTyping]).
+     * Fire-and-forget: no reply is awaited, a send error is only reported to [onResult], and the
+     * call does not wait for a reconnecting session (a late typing signal is useless). There is
+     * no throttling here: every call sends a frame. Repeat it while the user is still busy, at
+     * most once per 6 s per chat; the other side drops the indicator after a few seconds.
+     *
+     * [type] is one of [IosTypingType] (`TEXT`, `AUDIO`, `VIDEO_MSG`, `PHOTO`, `VIDEO`, `FILE`,
+     * `STICKER`); any other string is sent as given.
+     * A non-empty [postId] marks typing a comment under that channel post. [onResult] gets a null
+     * error kind once the frame is written; an id that is not a number or a frame that could not
+     * be sent (not connected) gets an error kind.
+     */
+    fun sendTyping(chatId: String, type: String, postId: String, onResult: (String?, String?) -> Unit) {
+        runUnit(onResult, waitsForSession = false) { c ->
+            val chat = parseId(chatId)
+            val post = postId.takeIf { it.isNotBlank() }?.let(::parseId)
+            if (!c.sendTyping(chat, type, post)) throw ConnectionClosedException("typing not sent")
+        }
+    }
+
+    /** [sendTyping] outside comments, without a callback (errors are dropped). */
+    fun sendTyping(chatId: String, type: String) {
+        sendTyping(chatId, type, "") { _, _ -> }
     }
 
     /**
@@ -2194,9 +2222,38 @@ class IosReadMark(val unread: Int, val mark: Long)
 class IosReactionUser(val userId: String, val name: String, val avatarUrl: String, val reaction: String)
 
 /**
+ * `type` strings of [MaxIosClient.sendTyping] and of `typing` [IosEvent]s
+ * ([com.max.core.api.TypingType]). A `typing` event always carries one of these: a push without
+ * a `type`, or with an unrecognised one, arrives as [TEXT].
+ */
+object IosTypingType {
+    /** Typing text. */
+    const val TEXT: String = TypingType.TEXT
+
+    /** Recording a voice message. */
+    const val AUDIO: String = TypingType.AUDIO
+
+    /** Recording a video message (round video note). */
+    const val VIDEO_MSG: String = TypingType.VIDEO_MSG
+
+    /** Sending a photo. */
+    const val PHOTO: String = TypingType.PHOTO
+
+    /** Sending a video. */
+    const val VIDEO: String = TypingType.VIDEO
+
+    /** Sending a file. */
+    const val FILE: String = TypingType.FILE
+
+    /** Choosing a sticker. */
+    const val STICKER: String = TypingType.STICKER
+}
+
+/**
  * A push the app stores or shows.
  *
- * [kind] is `message`, `edited`, `deleted`, `chat`, `typing`, `read`, `reactions`,
+ * [kind] is `message`, `edited`, `deleted`, `chat`, `typing` ([authorId] is typing; [text] is an
+ * [IosTypingType] value, `TEXT` when the push had no or an unrecognised `type`), `read`, `reactions`,
  * `transcription` (the text of a voice message in [text], its status in [unread]) or `stories`
  * (an owner's stories ring changed, see `storiesEvent`).
  * [unread] is `-1` when this event does not change the unread counter.
@@ -2568,7 +2625,7 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
         iosEvent(kind = "deleted", chatId = event.chatId.toString(), messageId = id.toString())
     }
     is MaxEvent.ChatUpdated -> listOf(chatEvent(event.chat, state))
-    is MaxEvent.Typing -> listOf(iosEvent(kind = "typing", chatId = event.chatId.toString(), authorId = event.userId.toString()))
+    is MaxEvent.Typing -> listOf(typingEvent(event))
     is MaxEvent.MessageRead -> listOf(
         iosEvent(
             kind = "read",
@@ -2582,6 +2639,14 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
     is MaxEvent.Unknown -> if (event.opcode == Opcode.TRANSCRIPTION_RESULT.value) transcriptionEvent(event.raw) else emptyList()
     else -> emptyList()
 }
+
+/**
+ * `NOTIF_TYPING` push (129): [IosEvent.authorId] is typing in [IosEvent.chatId]; [IosEvent.text]
+ * is the effective `type` ([MaxEvent.Typing.effectiveType], an [IosTypingType] value; `TEXT` when
+ * the push had no or an unrecognised `type`).
+ */
+internal fun typingEvent(event: MaxEvent.Typing): IosEvent =
+    iosEvent(kind = "typing", chatId = event.chatId.toString(), authorId = event.userId.toString(), text = event.effectiveType)
 
 /**
  * `NOTIF_STORIES_UPDATE` push (216): an owner's ring changed. [IosEvent.chatId] is the owner id,
