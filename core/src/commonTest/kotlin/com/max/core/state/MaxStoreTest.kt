@@ -285,6 +285,70 @@ class MaxStoreTest {
     }
 
     @Test
+    fun typingKeepsTheLastTypePerUser() {
+        val st = loggedIn()
+        st.apply(push(129, mapOf("chatId" to 2, "userId" to 20, "type" to "STICKER")))
+        st.apply(push(129, mapOf("chatId" to 2, "userId" to 21)))
+        st.apply(push(129, mapOf("chatId" to 1, "userId" to 20, "type" to "FILE")))
+        var s = st.state.value
+        // the old shape is unchanged
+        assertEquals(setOf(20L, 21L), s.typingUsers(2, now))
+        // a push without type means TEXT
+        assertEquals(mapOf(20L to "STICKER", 21L to "TEXT"), s.typingUsersWithType(2, now))
+        assertEquals("STICKER", s.typingType(2, 20, now))
+        assertEquals("TEXT", s.typingType(2, 21, now))
+        assertEquals("FILE", s.typingType(1, 20, now))
+        assertNull(s.typingType(2, 99, now))
+        assertEquals(mapOf(2L to mapOf(20L to "STICKER", 21L to "TEXT"), 1L to mapOf(20L to "FILE")), s.typingTypes)
+
+        // a later push replaces the type; one without type or with an unrecognised one is TEXT
+        st.apply(push(129, mapOf("chatId" to 2, "userId" to 20, "type" to "AUDIO")))
+        assertEquals("AUDIO", st.state.value.typingType(2, 20, now))
+        st.apply(push(129, mapOf("chatId" to 2, "userId" to 20, "type" to "SOMETHING_NEW")))
+        assertEquals("TEXT", st.state.value.typingType(2, 20, now))
+        st.apply(push(129, mapOf("chatId" to 2, "userId" to 20, "type" to "VIDEO_MSG")))
+        st.apply(push(129, mapOf("chatId" to 2, "userId" to 20)))
+        s = st.state.value
+        assertEquals("TEXT", s.typingType(2, 20, now))
+        assertEquals(mapOf(2L to mapOf(20L to "TEXT", 21L to "TEXT"), 1L to mapOf(20L to "FILE")), s.typingTypes)
+
+        // same TTL as typingUsers
+        st.apply(push(129, mapOf("chatId" to 2, "userId" to 21, "type" to "STICKER")))
+        now += MaxState.DEFAULT_TYPING_TTL_MS + 1
+        s = st.state.value
+        assertTrue(s.typingUsersWithType(2, now).isEmpty())
+        assertNull(s.typingType(2, 21, now))
+        assertEquals("STICKER", s.typingType(2, 21, now, ttlMs = Long.MAX_VALUE))
+        assertEquals(mapOf(20L to "TEXT", 21L to "STICKER"), s.typingUsersWithType(2, now, ttlMs = Long.MAX_VALUE))
+    }
+
+    @Test
+    fun typingTtlIsEightSeconds() {
+        assertEquals(8_000L, MaxState.DEFAULT_TYPING_TTL_MS)
+        val st = loggedIn()
+        val start = now
+        st.apply(push(129, mapOf("chatId" to 2, "userId" to 20, "type" to "PHOTO")))
+        // still typing at exactly 8 s, gone 1 ms later
+        assertEquals(setOf(20L), st.state.value.typingUsers(2, start + 8_000))
+        assertEquals("PHOTO", st.state.value.typingType(2, 20, start + 8_000))
+        assertTrue(st.state.value.typingUsers(2, start + 8_001).isEmpty())
+        assertNull(st.state.value.typingType(2, 20, start + 8_001))
+    }
+
+    @Test
+    fun aMessageOrARemovedChatClearsTheTypingType() {
+        val st = loggedIn()
+        st.apply(push(129, mapOf("chatId" to 1, "userId" to 20, "type" to "FILE")))
+        st.apply(newMessage(msg(6, 300)))
+        assertNull(st.state.value.typingType(1, 20, now))
+        assertTrue(st.state.value.typingTypes.isEmpty())
+        st.apply(push(129, mapOf("chatId" to 2, "userId" to 20, "type" to "STICKER")))
+        val removed = StateReducer.removeChat(st.state.value, 2)
+        assertTrue(removed.typingTypes.isEmpty())
+        assertTrue(removed.typing[2] == null)
+    }
+
+    @Test
     fun typingExpiresAndOtherEventsAreNoOps() {
         val st = loggedIn()
         st.apply(push(129, mapOf("chatId" to 2, "userId" to 20)))

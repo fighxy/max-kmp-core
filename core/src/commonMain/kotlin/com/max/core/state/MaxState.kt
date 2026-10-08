@@ -8,6 +8,7 @@ import com.max.core.api.MaxMessage
 import com.max.core.api.MaxUser
 import com.max.core.api.PresenceInfo
 import com.max.core.api.ReactionInfo
+import com.max.core.api.TypingType
 import com.max.core.api.asLong
 import com.max.core.auth.LoginResult
 import com.max.core.events.MaxEvent
@@ -34,6 +35,10 @@ import com.max.core.events.MaxEvent
  *   ([MaxStore.closeHistoryGap]); edits, pushes and single inserts of the anchor keep it.
  * @property chatFolders the account's chat folders (with the pinned chats), `null` until a `LOGIN`
  *   config, a `FOLDERS_GET` reply or a `NOTIF_FOLDERS` push brought them.
+ * @property typingTypes per chat id: user id → effective `type` of the last `NOTIF_TYPING`
+ *   ([MaxEvent.Typing.effectiveType]: a `com.max.core.api.TypingType` value, `TEXT` when the push
+ *   had none or an unrecognised one). Kept beside [typing] (same keys) so [typing] keeps its shape;
+ *   read it through [typingUsersWithType] or [typingType], which apply the same TTL as [typingUsers].
  */
 data class MaxState(
     val me: Long? = null,
@@ -46,6 +51,7 @@ data class MaxState(
     val readMarks: Map<Long, Map<Long, Long>> = emptyMap(),
     val gapAnchors: Map<Long, Long> = emptyMap(),
     val chatFolders: ChatFolders? = null,
+    val typingTypes: Map<Long, Map<Long, String>> = emptyMap(),
 ) {
     /**
      * Pinned chat ids, top first, as the server keeps them (`favorites` of the "all chats" folder,
@@ -72,10 +78,29 @@ data class MaxState(
 
     /**
      * Users typing in [chatId] whose last `NOTIF_TYPING` is at most [ttlMs] old at [now]. The TTL is
-     * a client-side heuristic (neither reference defines one); the default is 6 s.
+     * a client-side heuristic (the protocol has no "stopped typing" push); the default is 8 s
+     * ([DEFAULT_TYPING_TTL_MS]), above the 6 s at which clients repeat `MSG_TYPING`.
      */
     fun typingUsers(chatId: Long, now: Long, ttlMs: Long = DEFAULT_TYPING_TTL_MS): Set<Long> =
         typing[chatId].orEmpty().filterValues { now - it <= ttlMs }.keys
+
+    /**
+     * The users of [typingUsers] (same [ttlMs] rule) with the effective `type` of their last
+     * `NOTIF_TYPING` (`TEXT` when it had none).
+     */
+    fun typingUsersWithType(chatId: Long, now: Long, ttlMs: Long = DEFAULT_TYPING_TTL_MS): Map<Long, String> {
+        val types = typingTypes[chatId].orEmpty()
+        return typing[chatId].orEmpty().filterValues { now - it <= ttlMs }.mapValues { (user, _) -> types[user] ?: TypingType.TEXT }
+    }
+
+    /**
+     * Effective `type` of [userId]'s last `NOTIF_TYPING` in [chatId] while the user still counts
+     * as typing ([typingUsers]); `null` when the user is not typing.
+     */
+    fun typingType(chatId: Long, userId: Long, now: Long, ttlMs: Long = DEFAULT_TYPING_TTL_MS): String? {
+        val at = typing[chatId]?.get(userId) ?: return null
+        return if (now - at <= ttlMs) typingTypes[chatId]?.get(userId) ?: TypingType.TEXT else null
+    }
 
     /**
      * Chats with an open history hole. The hole stays open until a `CHAT_HISTORY` page contains
@@ -85,7 +110,7 @@ data class MaxState(
     fun historyGaps(): List<Long> = gapAnchors.keys.toList()
 
     companion object {
-        const val DEFAULT_TYPING_TTL_MS: Long = 6_000
+        const val DEFAULT_TYPING_TTL_MS: Long = 8_000
         private fun activity(c: Chat): Long = maxOf(c.lastEventTime, c.lastMessage?.time ?: 0)
     }
 }
@@ -106,7 +131,8 @@ data class MaxState(
  *   remaining stored message (or `null`).
  * - [MaxEvent.ChatUpdated] — replaces the chat, keeping the previous `lastMessage` when the push
  *   has none.
- * - [MaxEvent.Typing] — records `now` for (chat, user).
+ * - [MaxEvent.Typing] — records `now` for (chat, user), and its effective `type`
+ *   ([MaxEvent.Typing.effectiveType]) in [MaxState.typingTypes].
  * - [MaxEvent.MessageRead] — records the mark. For [MaxState.me]: `setAsUnread = false` gives 0
  *   if the last message is not newer than the mark; otherwise it recounts `newMessages` as the
  *   stored messages from others newer than the mark, but only when the stored messages cover
@@ -128,7 +154,10 @@ object StateReducer {
         is MaxEvent.MessageEdited -> edited(state, event.message, messageLimit)
         is MaxEvent.MessagesDeleted -> deleted(state, event)
         is MaxEvent.ChatUpdated -> putChat(state, event.chat)
-        is MaxEvent.Typing -> state.copy(typing = state.typing.put2(event.chatId, event.userId, now))
+        is MaxEvent.Typing -> state.copy(
+            typing = state.typing.put2(event.chatId, event.userId, now),
+            typingTypes = state.typingTypes.set2(event.chatId, event.userId, event.effectiveType),
+        )
         is MaxEvent.MessageRead -> read(state, event)
         is MaxEvent.Presence -> state.copy(presence = state.presence + (event.userId to PresenceInfo(event.seen, event.status)))
         is MaxEvent.ReactionsChanged -> reactions(state, event)
@@ -237,6 +266,7 @@ object StateReducer {
         chats = state.chats - chatId,
         messages = state.messages - chatId,
         typing = state.typing - chatId,
+        typingTypes = state.typingTypes - chatId,
         readMarks = state.readMarks - chatId,
         gapAnchors = state.gapAnchors - chatId,
     )
@@ -351,6 +381,9 @@ object StateReducer {
             val left = s.typing.getValue(chatId) - sender
             s = s.copy(typing = if (left.isEmpty()) s.typing - chatId else s.typing + (chatId to left))
         }
+        if (sender != null && s.typingTypes[chatId]?.containsKey(sender) == true) {
+            s = s.copy(typingTypes = s.typingTypes.set2(chatId, sender, null))
+        }
         return s
     }
 
@@ -454,4 +487,15 @@ object StateReducer {
 
     private fun Map<Long, Map<Long, Long>>.put2(a: Long, b: Long, v: Long): Map<Long, Map<Long, Long>> =
         this + (a to (this[a].orEmpty() + (b to v)))
+
+    /** Sets (a, b) to [v], or removes it for `null` (dropping an emptied inner map). */
+    private fun Map<Long, Map<Long, String>>.set2(a: Long, b: Long, v: String?): Map<Long, Map<Long, String>> {
+        val inner = this[a].orEmpty()
+        if (v == null) {
+            if (b !in inner) return this
+            val left = inner - b
+            return if (left.isEmpty()) this - a else this + (a to left)
+        }
+        return this + (a to (inner + (b to v)))
+    }
 }
