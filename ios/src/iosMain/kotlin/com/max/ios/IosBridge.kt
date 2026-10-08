@@ -10,6 +10,8 @@ import com.max.core.api.Chat
 import com.max.core.api.ChatMemberEntry
 import com.max.core.api.ContactNames
 import com.max.core.api.PhoneContact
+import com.max.core.api.PinAction
+import com.max.core.api.PinnedMessageState
 import com.max.core.api.PresenceInfo
 import com.max.core.api.PrivacyConfig
 import com.max.core.api.PresenceStatus
@@ -1702,9 +1704,56 @@ class MaxIosClient internal constructor(
         }
     }
 
-    /** Pins [messageId], or unpins when it is `0` (`CHAT_UPDATE` 55). */
+    /** Pins [messageId], or unpins when it is `0` (`CHAT_UPDATE` 55). One pin per chat; not the 242 list. */
     fun pinMessage(chatId: String, messageId: String, onResult: (String?, String?) -> Unit) {
         runUnit(onResult) { c -> c.api.messages.pinMessage(parseId(chatId), parseId(messageId)) }
+    }
+
+    /** Pin state of each chat (`GET_PINNED_MESSAGE_STATES` 240). Ids are decimal strings. */
+    fun pinnedStates(chatIds: List<String>, onResult: (List<IosPinnedState>?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            c.pinnedStates(chatIds.map { parseId(it) }).map { it.toIos() }
+        }
+    }
+
+    /**
+     * Pinned messages of a chat (`PINNED_MESSAGES_GET` 241), oldest first as the server returns them.
+     * An empty [from] is left out. [backward] below 0 is left out. Authors are resolved like history.
+     */
+    fun pinnedMessages(chatId: String, from: String, backward: Int, onResult: (List<IosMessage>?, String?, String?) -> Unit) {
+        perform(onResult, { null }) { c ->
+            val id = parseId(chatId)
+            val fromId = from.trim().let { raw ->
+                if (raw.isEmpty()) null else raw.toLongOrNull() ?: throw IllegalArgumentException("from is not an id")
+            }
+            val messages = c.pinnedMessages(id, fromId, backward.takeIf { it >= 0 })
+            resolveUsers(c, messages.mapNotNull { it.sender })
+            val state = c.store.state.value
+            messages.map { messageSnapshot(it, chatId, state) }
+        }
+    }
+
+    /**
+     * Pin, unpin, or clear (`PINNED_MESSAGE_UPDATE` 242). [action] is `pin`, `unpin` or `unpinAll`.
+     * [forMe] is sent only when true. [notify] false is the only value sent for notify.
+     */
+    fun updatePinned(
+        chatId: String,
+        action: String,
+        messageIds: List<String>,
+        forMe: Boolean,
+        notify: Boolean,
+        onResult: (IosPinnedState?, String?, String?) -> Unit,
+    ) {
+        perform(onResult, { null }) { c ->
+            c.updatePinnedMessages(
+                parseId(chatId),
+                pinAction(action),
+                messageIds.map { parseId(it) },
+                forMe,
+                notify,
+            ).toIos()
+        }
     }
 
     /** Schedules [text] for [sendAt] (epoch milliseconds). */
@@ -3272,6 +3321,48 @@ class IosRefreshedPhoto(
     val gif: Boolean,
 )
 
+/**
+ * Pin state of one chat. Ids are decimal strings (empty when the server sent none).
+ * [totalPinnedCount] is `-1` when the server omitted the count. [lastAction] is `pin`, `unpin`,
+ * `unpinAll`, or empty when the byte was absent or unknown. [forAll] and [forMe] are bits of
+ * `changedPinnedMessageType`.
+ */
+class IosPinnedState(
+    val chatId: String,
+    val lastPinnedUpdateTime: Long,
+    val prevPinnedUpdateTime: Long,
+    val totalPinnedCount: Int,
+    val changedMessageId: String,
+    val forAll: Boolean,
+    val forMe: Boolean,
+    val lastAction: String,
+    val lastPinnedMessageId: String,
+)
+
+private fun PinnedMessageState.toIos(): IosPinnedState = IosPinnedState(
+    chatId = chatId.toString(),
+    lastPinnedUpdateTime = lastPinnedUpdateTime,
+    prevPinnedUpdateTime = prevPinnedUpdateTime,
+    totalPinnedCount = totalPinnedCount ?: -1,
+    changedMessageId = changedMessageId?.toString().orEmpty(),
+    forAll = forAll,
+    forMe = forMe,
+    lastAction = when (lastAction) {
+        PinAction.PIN -> "pin"
+        PinAction.UNPIN -> "unpin"
+        PinAction.UNPIN_ALL -> "unpinAll"
+        null -> ""
+    },
+    lastPinnedMessageId = lastPinnedMessageId?.toString().orEmpty(),
+)
+
+private fun pinAction(action: String): PinAction = when (action) {
+    "pin" -> PinAction.PIN
+    "unpin" -> PinAction.UNPIN
+    "unpinAll" -> PinAction.UNPIN_ALL
+    else -> throw IllegalArgumentException("pin action must be pin, unpin or unpinAll, not \"$action\"")
+}
+
 private fun imageShape(shape: String): ImageShape = when (shape) {
     "square" -> ImageShape.SQUARE
     "width" -> ImageShape.WIDTH
@@ -3800,7 +3891,41 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
     is MaxEvent.ContactUpdated -> listOf(
         iosEvent(kind = "contact", authorId = event.user.id.toString(), title = state.displayLabel(event.user.id), timeMs = event.user.updateTime ?: 0L),
     )
-    is MaxEvent.Unknown -> if (event.opcode == Opcode.TRANSCRIPTION_RESULT.value) transcriptionEvent(event.raw) else emptyList()
+    is MaxEvent.PinsChanged -> listOf(
+        iosEvent(
+            kind = "pinned",
+            chatId = event.chatId.toString(),
+            messageId = (event.state.changedMessageId ?: event.state.lastPinnedMessageId)?.toString().orEmpty(),
+            text = when (event.state.lastAction) {
+                PinAction.PIN -> "pin"
+                PinAction.UNPIN -> "unpin"
+                PinAction.UNPIN_ALL -> "unpinAll"
+                null -> ""
+            },
+            timeMs = event.state.lastPinnedUpdateTime,
+            unread = event.state.totalPinnedCount ?: -1,
+        ),
+    )
+    is MaxEvent.YouReacted -> listOf(
+        iosEvent(
+            kind = "youReacted",
+            chatId = event.chatId.toString(),
+            messageId = event.messageId.toString(),
+            title = event.postId?.toString().orEmpty(),
+            reactionsJson = reactionsJson(event.reaction),
+        ),
+    )
+    is MaxEvent.ProfileUpdated -> listOf(
+        iosEvent(
+            kind = "profile",
+            authorId = event.profile.contact.id.toString(),
+            title = event.profile.contact.displayName ?: state.displayLabel(event.profile.contact.id),
+            timeMs = event.profile.contact.updateTime ?: 0L,
+        ),
+    )
+    is MaxEvent.TranscriptionReady -> transcriptionEvent(event.transcription)
+    is MaxEvent.AttachmentFailed -> listOf(iosEvent(kind = "attachError", text = event.error))
+    is MaxEvent.Unknown -> emptyList()
     else -> emptyList()
 }
 
@@ -3828,8 +3953,7 @@ private fun storiesEvent(preview: StoryPreview): IosEvent = iosEvent(
 )
 
 /** `TRANSCRIPTION_RESULT` push (293): the text of a voice message the server finished. */
-private fun transcriptionEvent(raw: Any?): List<IosEvent> {
-    val result = Transcription.from(raw) ?: return emptyList()
+private fun transcriptionEvent(result: Transcription): List<IosEvent> {
     val messageId = result.messageId ?: return emptyList()
     return listOf(
         iosEvent(

@@ -225,6 +225,60 @@ sealed interface MaxEvent {
     }
 
     /**
+     * Pins of a chat changed (`NOTIF_CHAT_MESSAGE_PINNED` 243): `{chatId, pinnedMessagesState}`.
+     * [chatId] is the push's own id when it is not zero, otherwise the id inside [state].
+     */
+    data class PinsChanged(
+        val chatId: Long,
+        val state: com.max.core.api.PinnedMessageState,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent
+
+    /**
+     * This account's own reaction changed on another device (`NOTIF_MSG_YOU_REACTED` 156):
+     * `{chatId, messageId, reactionInfo, postId?}`.
+     */
+    data class YouReacted(
+        val chatId: Long,
+        val messageId: Long,
+        val reaction: com.max.core.api.ReactionInfo,
+        val postId: Long?,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent
+
+    /**
+     * The account profile changed on another device (`NOTIF_PROFILE` 159): `{profile}` with
+     * `contact` and `profileOptions` (the app also keeps a restrictions map on the raw object).
+     */
+    data class ProfileUpdated(
+        val profile: com.max.core.api.Profile,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent
+
+    /**
+     * A voice message was transcribed (`TRANSCRIPTION_RESULT` 293). Same body as
+     * [com.max.core.api.Transcription.from], including a nested `message`.
+     */
+    data class TranscriptionReady(
+        val transcription: com.max.core.api.Transcription,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent
+
+    /**
+     * An attachment failed (`NOTIF_ATTACH` 136 with `error` and no `fileId` / `videoId` / `audioId`).
+     * A push that names an id stays [AttachmentReady]; the error string is not on that event.
+     */
+    data class AttachmentFailed(
+        val error: String,
+        override val opcode: Int,
+        override val raw: Any?,
+    ) : MaxEvent
+
+    /**
      * Any other push: opcodes without a typed event yet, payloads that do not fit the model, and
      * packets with `cmd != 0` (PyMax only maps `cmd == REQUEST (0)` frames). PyMax's "raw" events.
      */

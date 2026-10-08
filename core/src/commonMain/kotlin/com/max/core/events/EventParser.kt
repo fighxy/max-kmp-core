@@ -91,10 +91,12 @@ object EventParser {
             val file = map["fileId"].long()
             val video = map["videoId"].long()
             val audio = map["audioId"].long()
+            val error = map["error"] as? String
             when {
                 file != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.FILE, file, opcode, raw)
                 video != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.VIDEO, video, opcode, raw)
                 audio != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.AUDIO, audio, opcode, raw)
+                !error.isNullOrEmpty() -> MaxEvent.AttachmentFailed(error, opcode, raw)
                 else -> null
             }
         }
@@ -123,6 +125,24 @@ object EventParser {
         Opcode.NOTIF_CONFIG.value -> com.max.core.api.AccountConfigUpdate.fromPush(map)?.let { MaxEvent.ConfigUpdated(it, opcode, raw) }
         Opcode.NOTIF_STORIES_UPDATE.value ->
             com.max.core.api.StoryPreview.from(map["storiesPreview"])?.let { MaxEvent.StoriesUpdated(it, opcode, raw) }
+        Opcode.NOTIF_CHAT_MESSAGE_PINNED.value -> {
+            val state = com.max.core.api.PinnedMessageState.from(map["pinnedMessagesState"]) ?: return null
+            val chatId = map["chatId"].long()?.takeIf { it != 0L } ?: state.chatId
+            MaxEvent.PinsChanged(chatId, state, opcode, raw)
+        }
+        Opcode.NOTIF_MSG_YOU_REACTED.value -> {
+            val chatId = map["chatId"].long()
+            val messageId = map["messageId"].long()
+            val info = com.max.core.api.ReactionInfo.from(map["reactionInfo"])
+            if (chatId == null || messageId == null || info == null) null
+            else MaxEvent.YouReacted(chatId, messageId, info, map["postId"].long(), opcode, raw)
+        }
+        Opcode.NOTIF_PROFILE.value ->
+            com.max.core.api.Profile.from(map["profile"])?.let { MaxEvent.ProfileUpdated(it, opcode, raw) }
+        Opcode.TRANSCRIPTION_RESULT.value -> {
+            val result = com.max.core.api.Transcription.from(map)
+            if (result?.messageId == null) null else MaxEvent.TranscriptionReady(result, opcode, raw)
+        }
         else -> null
     }
 

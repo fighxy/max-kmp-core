@@ -92,6 +92,10 @@ enum class Opcode(val value: Int) {
     CHATS_LIST(53),
     CHAT_CLEAR(54),
     CHAT_UPDATE(55),
+    // Pin states. 240/241 request bodies are the web client's; the app's builders were not found.
+    GET_PINNED_MESSAGE_STATES(240), // {chatIds} -> {pinnedMessagesStates}
+    PINNED_MESSAGES_GET(241), // {chatId, from?, backward?} -> {pinnedMessages}
+    PINNED_MESSAGE_UPDATE(242), // {chatId, action, messageIds?, forMe?, notify?} -> {pinnedMessagesState}
     CHAT_CHECK_LINK(56),
     CHAT_JOIN(57),
     CHAT_LEAVE(58),
@@ -194,6 +198,7 @@ enum class Opcode(val value: Int) {
     NOTIF_MSG_DELAYED(154),
     NOTIF_MSG_REACTIONS_CHANGED(155),
     NOTIF_MSG_YOU_REACTED(156),
+    NOTIF_CHAT_MESSAGE_PINNED(243), // {chatId, pinnedMessagesState}
     NOTIF_PROFILE(159),
     NOTIF_FOLDERS(277),
     NOTIF_BANNERS(292),

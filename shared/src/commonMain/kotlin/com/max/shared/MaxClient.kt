@@ -32,6 +32,8 @@ import com.max.core.api.MaxUser
 import com.max.core.api.MessageReader
 import com.max.core.api.MessageReaders
 import com.max.core.api.PhoneContact
+import com.max.core.api.PinAction
+import com.max.core.api.PinnedMessageState
 import com.max.core.api.GhostMode
 import com.max.core.api.LocalRead
 import com.max.core.api.PresenceInfo
@@ -1038,6 +1040,34 @@ class MaxClient @Throws(Exception::class) constructor(
         media: List<PhotoUrlMedia>,
         maxPerRequest: Int = accountConfig.value?.photoUrlRefreshMaxMedia ?: AccountConfig.DEFAULT_PHOTO_URL_REFRESH_MAX_MEDIA,
     ): List<RefreshedPhoto> = this.media.refreshPhotoUrls(media, maxPerRequest)
+
+    /**
+     * Pin state of each chat (`GET_PINNED_MESSAGE_STATES` 240). Does not write the store.
+     * The single-pin `CHAT_UPDATE` 55 path stays on [com.max.core.api.MessagesApi.pinMessage].
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun pinnedStates(chatIds: List<Long>): List<PinnedMessageState> = api.messages.pinnedStates(chatIds)
+
+    /**
+     * Pinned messages of a chat (`PINNED_MESSAGES_GET` 241). Not stored: the page is not history.
+     * A null [from] or [backward] is left out of the request.
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun pinnedMessages(chatId: Long, from: Long? = null, backward: Int? = null): List<MaxMessage> =
+        api.messages.pinnedMessages(chatId, from, backward)
+
+    /**
+     * Pin, unpin, or clear pins (`PINNED_MESSAGE_UPDATE` 242). [forMe] is sent only when true;
+     * [notify] is sent only when false. Does not write the store; the 243 push is [com.max.core.events.MaxEvent.PinsChanged].
+     */
+    @Throws(CancellationException::class, Exception::class)
+    suspend fun updatePinnedMessages(
+        chatId: Long,
+        action: PinAction,
+        messageIds: List<Long> = emptyList(),
+        forMe: Boolean = false,
+        notify: Boolean = true,
+    ): PinnedMessageState = api.messages.updatePinnedMessages(chatId, action, messageIds, forMe, notify)
 
     /**
      * Whether the app is in the foreground ([setInteractive]); starts as

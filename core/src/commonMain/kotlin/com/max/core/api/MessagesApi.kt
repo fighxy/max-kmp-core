@@ -273,6 +273,59 @@ class MessagesApi(
     }
 
     /**
+     * Pin state of each chat (`GET_PINNED_MESSAGE_STATES` 240). Request `{chatIds}`.
+     * The app's request builder was not found; the web client sends this shape.
+     * An empty [chatIds] sends nothing and returns an empty list.
+     */
+    suspend fun pinnedStates(chatIds: List<Long>): List<PinnedMessageState> {
+        if (chatIds.isEmpty()) return emptyList()
+        val map = replyMap(sink.request(Opcode.GET_PINNED_MESSAGE_STATES, linkedMapOf("chatIds" to chatIds)), Opcode.GET_PINNED_MESSAGE_STATES)
+        val items = map["pinnedMessagesStates"] ?: return emptyList()
+        val list = items as? List<*> ?: throw MalformedReplyException(Opcode.GET_PINNED_MESSAGE_STATES, "pinnedMessagesStates is not a list", map)
+        return list.mapNotNull { PinnedMessageState.from(it) }
+    }
+
+    /**
+     * The pinned messages of a chat (`PINNED_MESSAGES_GET` 241), newest or oldest as [backward] says.
+     * Request `{chatId, from?, backward?}`. The app's request builder was not found; the web client
+     * sends `chatId`, `from` and `backward`. A null is left out. Items are ordinary messages.
+     */
+    suspend fun pinnedMessages(chatId: Long, from: Long? = null, backward: Int? = null): List<MaxMessage> {
+        val payload = linkedMapOf<String, Any?>("chatId" to chatId)
+        if (from != null) payload["from"] = from
+        if (backward != null) payload["backward"] = backward
+        val map = replyMap(sink.request(Opcode.PINNED_MESSAGES_GET, payload), Opcode.PINNED_MESSAGES_GET)
+        val items = map["pinnedMessages"] ?: return emptyList()
+        val list = items as? List<*> ?: throw MalformedReplyException(Opcode.PINNED_MESSAGES_GET, "pinnedMessages is not a list", map)
+        return list.mapNotNull { MaxMessage.from(it, chatId) }
+    }
+
+    /**
+     * Pins, unpins, or clears pins (`PINNED_MESSAGE_UPDATE` 242) and returns the new state.
+     *
+     * The app sends `chatId` and `action` always, `messageIds` only when the list is not empty,
+     * `forMe` only when it is true (omitted means everyone), and `notify` only when it is false
+     * (omitted means notify). [forMe] false and [notify] true follow that.
+     * `pinned.invalid.operation` and `pinned.invalid.request` come back as protocol errors;
+     * the app treats the first as already done.
+     */
+    suspend fun updatePinnedMessages(
+        chatId: Long,
+        action: PinAction,
+        messageIds: List<Long> = emptyList(),
+        forMe: Boolean = false,
+        notify: Boolean = true,
+    ): PinnedMessageState {
+        val payload = linkedMapOf<String, Any?>("chatId" to chatId, "action" to action.wire)
+        if (messageIds.isNotEmpty()) payload["messageIds"] = messageIds
+        if (forMe) payload["forMe"] = true
+        if (!notify) payload["notify"] = false
+        val map = replyMap(sink.request(Opcode.PINNED_MESSAGE_UPDATE, payload), Opcode.PINNED_MESSAGE_UPDATE)
+        return PinnedMessageState.from(map["pinnedMessagesState"])
+            ?: throw MalformedReplyException(Opcode.PINNED_MESSAGE_UPDATE, "no pinnedMessagesState", map)
+    }
+
+    /**
      * Sets an emoji reaction (`MSG_REACTION`, 178; PyMax `add_reaction`, `AddReactionPayload`):
      * `{chatId, messageId, reaction: {reactionType: "EMOJI", id}}`. Reply: `reactionInfo` (optional).
      */
