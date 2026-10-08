@@ -75,8 +75,9 @@ interface TlsTransport {
  * @property trustMincifryCa trust the Russian Trusted Root/Sub CA ([MincifryCa]) in addition to
  *   the system roots. On by default: Max endpoints chain to these CAs, which are missing from
  *   most system stores (kolibri has the same switch, off by default; PyMax always adds the root).
- * @property pingInterval keepalive period; the first PING goes out one interval after connect.
- *   [Duration.INFINITE] disables the ping loop.
+ * @property pingInterval keepalive period, 29 s like the Android app (`c4e`); the first PING goes
+ *   out right after connect (after the `onConnected` handshake / `LOGIN`), the next ones every
+ *   interval. [Duration.INFINITE] disables the ping loop.
  * @property autoReconnect reconnect after a drop with the 2/4/8/15 s backoff ([reconnectDelay]).
  * @property redirectDomains hosts a server `RECONNECT` (opcode 3) may send the transport to: these
  *   domains and their subdomains ([ServerRedirect]). Empty: redirects to another host are ignored.
@@ -89,7 +90,7 @@ data class TransportConfig(
     val trustMincifryCa: Boolean = true,
     val connectTimeout: Duration = 15.seconds,
     val requestTimeout: Duration = 30.seconds,
-    val pingInterval: Duration = 30.seconds,
+    val pingInterval: Duration = 29.seconds,
     val pingInteractive: Boolean = true,
     val autoReconnect: Boolean = true,
     val redirectDomains: Set<String> = ServerRedirect.DEFAULT_DOMAINS,

@@ -277,7 +277,10 @@ class MaxTransportTest {
         // not connected: only remembered
         assertFalse(t.setPingInteractive(false))
         t.connect()
+        runCurrent()
         val conn = factory.lastConnection!!
+        // the first PING right after connect carries the remembered flag
+        assertEquals(mapOf("interactive" to false), decode(conn.written.tryReceive().getOrNull()!!).second)
         // unchanged: nothing goes out
         assertFalse(t.setPingInteractive(false))
         assertNull(conn.written.tryReceive().getOrNull())
@@ -296,26 +299,39 @@ class MaxTransportTest {
     }
 
     @Test
-    fun pingGoesOutEveryIntervalStartingAfterOneInterval() = runTest {
+    fun pingGoesOutRightAfterConnectThenEvery29s() = runTest {
         val factory = ScriptedConnectionFactory()
-        val t = transport(factory, quiet.copy(pingInterval = 30.seconds))
+        val config = quiet.copy(pingInterval = TransportConfig(host = "x").pingInterval)
+        assertEquals(29.seconds, config.pingInterval)
+        var handshakeDone = false
+        val t = transport(factory, config, onConnected = { _ ->
+            // nothing before the handshake / LOGIN hook has finished
+            kotlinx.coroutines.yield()
+            assertNull(factory.lastConnection!!.written.tryReceive().getOrNull())
+            handshakeDone = true
+        })
         t.connect()
+        assertTrue(handshakeDone)
+        val start = currentTime
         val conn = factory.lastConnection!!
 
-        advanceTimeBy(29_999)
-        runCurrent()
-        assertNull(conn.written.tryReceive().getOrNull())
-        advanceTimeBy(2)
         runCurrent()
         val (h, payload) = decode(conn.written.tryReceive().getOrNull()!!)
+        assertEquals(start, currentTime) // at once, not after one interval
         assertEquals(Opcode.PING.value, h.opcodeValue)
         assertEquals(CmdType.REQUEST.value, h.cmd)
         assertEquals(1, h.seq)
         assertEquals(mapOf("interactive" to true), payload)
 
-        advanceTimeBy(30_000)
+        advanceTimeBy(28_999)
+        runCurrent()
+        assertNull(conn.written.tryReceive().getOrNull())
+        advanceTimeBy(2)
         runCurrent()
         assertEquals(2, decode(conn.written.tryReceive().getOrNull()!!).first.seq)
+        advanceTimeBy(29_000)
+        runCurrent()
+        assertEquals(3, decode(conn.written.tryReceive().getOrNull()!!).first.seq)
         // fire-and-forget: the reply is simply dropped
         conn.feed(ok(1, 1))
         runCurrent()

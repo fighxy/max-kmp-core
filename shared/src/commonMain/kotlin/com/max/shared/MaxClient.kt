@@ -1196,11 +1196,16 @@ class MaxClient @Throws(Exception::class) constructor(
      * in the background. Every later `PING` 1 carries `{interactive}` (the MAX web client sends
      * "not idle", PyMax `set_presence`, kolibri `set_ping_interactive`), and so does the `LOGIN`
      * of the next reconnect. When the flag changes on a live connection one `PING` goes out at
-     * once (as kolibri does), so the server need not wait for the next 30 s tick. The references
+     * once (as kolibri does), so the server need not wait for the next 29 s tick. The references
      * have no explicit "going offline" request: after `interactive: false` the server decides the
      * presence by itself. Returns `true` when that immediate `PING` was written; never throws
      * for a send error. In [ghostMode] the value is only remembered (the server keeps getting
      * `interactive: false`); turning ghost mode off sends it.
+     *
+     * During a call: the Android app keeps its interactive pings going while a call is active
+     * even when the app leaves the foreground (`c4e`: "stopInteractivePingsIfNeed ignored, has
+     * active call"). Do the same by not calling `setInteractive(false)` (or calling
+     * `setInteractive(true)`) while a call runs; nothing else is needed. Ghost mode still wins.
      */
     @Throws(CancellationException::class)
     suspend fun setInteractive(interactive: Boolean): Boolean {

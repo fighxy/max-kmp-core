@@ -88,7 +88,10 @@ class GhostModeTest {
         val t = MaxTransport(quiet.copy(pingInterval = 30.seconds), factory, scope = backgroundScope)
         t.outboundGuard = GhostMode.guard({ ghost }, { hide })
         t.connect()
+        runCurrent()
         val conn = factory.lastConnection!!
+        // the first PING goes out right after connect, before ghost mode is on
+        assertEquals(mapOf("interactive" to true), decodePayloadPacket(conn.written.tryReceive().getOrNull()!!).second)
         ghost = true
         hide = true
         // fire-and-forget and request/response paths both stop, and nothing is written

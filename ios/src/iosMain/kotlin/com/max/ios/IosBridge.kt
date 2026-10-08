@@ -1587,7 +1587,8 @@ class MaxIosClient internal constructor(
      * reconnect `LOGIN` sends it too. The server decides the presence from it; there is no
      * explicit "going offline" request in the protocol. Fire-and-forget, never fails. While
      * [ghostMode] is on the state is only remembered (the server keeps getting `false`) and
-     * goes out when ghost mode is turned off.
+     * goes out when ghost mode is turned off. During a call keep it `true` even in the
+     * background, as the Android app keeps its interactive pings while a call is active.
      */
     fun setAppActive(active: Boolean) {
         val c = attempt<MaxClient?>(null) { client() } ?: return

@@ -57,8 +57,10 @@ import kotlin.time.Duration
  *   connection so a blocked socket cannot hold the caller or later writers, and so does a timeout
  *   during which not a byte came from the server (a dead socket, as after iOS suspended the app).
  *   The connect (TCP + proxy + TLS) times out after [TransportConfig.connectTimeout];
- * - PING (opcode 1, `{"interactive": <pingInteractive>}`) every [TransportConfig.pingInterval],
- *   first one after one interval, fire-and-forget (the reply is dropped); the flag starts as
+ * - PING (opcode 1, `{"interactive": <pingInteractive>}`) right after the connection is up
+ *   ([onConnected] done, i.e. after the handshake and `LOGIN`), then every
+ *   [TransportConfig.pingInterval] (29 s, like the Android app's pinger `c4e`, which also pings
+ *   first and then waits), fire-and-forget (the reply is dropped); the flag starts as
  *   [TransportConfig.pingInteractive] and [setPingInteractive] switches it on a live connection;
  * - a server `RECONNECT` (opcode 3, `{redirectHost: "host:port", tls}`) drops the connection
  *   and reconnects at once, to the given host when it is on [TransportConfig.redirectDomains]
@@ -532,10 +534,10 @@ class MaxTransport(
         }
     }
 
+    /** PING at once, then every [interval]; started once [onConnected] (handshake, `LOGIN`) is done. */
     private suspend fun pingLoop(interval: Duration) {
         if (interval == Duration.INFINITE || !interval.isPositive()) return
         while (true) {
-            delay(interval)
             try {
                 sendRequest(Opcode.PING.value, mapOf("interactive" to pingInteractive))
             } catch (e: CancellationException) {
@@ -545,6 +547,7 @@ class MaxTransport(
             } catch (e: Throwable) {
                 return
             }
+            delay(interval)
         }
     }
 

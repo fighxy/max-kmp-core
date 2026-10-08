@@ -171,4 +171,32 @@ class ConnectionReliabilityClientTest {
         assertNull(rejected.serverText)
         assertNull(CredentialStore(kv, "max.default").load()!!.token)
     }
+
+    @Test
+    fun firstPingGoesOutRightAfterTheStoredTokenLogin() = runTest {
+        val kv = InMemoryKeyValueStore()
+        smsLogin(kv, ScriptedConnectionFactory()).disconnect()
+        val factory = ScriptedConnectionFactory()
+        val keepalive = config.copy(transport = quiet.copy(pingInterval = kotlin.time.Duration.parse("29s")))
+        val c = client(kv, factory, backgroundScope, keepalive)
+        val starting = async { c.start() }
+        runCurrent()
+        val conn = factory.lastConnection!!
+        conn.answer(Opcode.SESSION_INIT, mapOf("callsSeed" to seed))
+        runCurrent()
+        conn.answer(Opcode.LOGIN, loginReply(null))
+        assertEquals(ClientState.Ready(5), starting.await())
+        runCurrent()
+        val (h, payload) = decodePayloadPacket(conn.takeWritten()!!)
+        assertEquals(Opcode.PING.value, h.opcodeValue)
+        assertEquals(mapOf("interactive" to true), payload)
+        // the server's own PING is answered on its seq with an empty body
+        conn.feed(com.max.core.transport.packet(com.max.core.protocol.CmdType.PUSH, 777, Opcode.PING.value, null))
+        runCurrent()
+        val (reply, body) = decodePayloadPacket(conn.takeWritten()!!)
+        assertEquals(1, reply.cmdValue)
+        assertEquals(777, reply.seq)
+        assertNull(body)
+        c.close()
+    }
 }
