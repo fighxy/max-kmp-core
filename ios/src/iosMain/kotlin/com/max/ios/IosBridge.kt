@@ -62,6 +62,7 @@ import com.max.core.auth.CodeRequestType
 import com.max.core.auth.VerifyResult
 import com.max.core.events.MaxEvent
 import com.max.core.protocol.Opcode
+import com.max.core.transport.RefusedOpcodes
 import com.max.core.toMaxError
 import com.max.shared.MaxClient
 import com.max.shared.DeviceProfile
@@ -1760,27 +1761,29 @@ class MaxIosClient internal constructor(
         runUnit(onResult) { c -> c.api.messages.pinMessage(parseId(chatId), parseId(messageId)) }
     }
 
-    /** Pin state of each chat (`GET_PINNED_MESSAGE_STATES` 240). Ids are decimal strings. */
+    /**
+     * Not supported: `GET_PINNED_MESSAGE_STATES` 240 is unknown to the mobile server, which drops
+     * the connection. Sends nothing and calls back at once with `nil`, kind `SERVER` and key
+     * `pinned.unsupported`. Pin state comes from the chat and `chat` events (push 243);
+     * changes go through [updatePinned] (242). Kept so existing Swift code still builds.
+     */
+    @Suppress("UNUSED_PARAMETER")
     fun pinnedStates(chatIds: List<String>, onResult: (List<IosPinnedState>?, String?, String?) -> Unit) {
-        perform(onResult, { null }) { c ->
-            c.pinnedStates(chatIds.map { parseId(it) }).map { it.toIos() }
+        perform<List<IosPinnedState>?>(onResult, { null }, waitsForSession = false) {
+            throw RefusedOpcodes.exception(Opcode.GET_PINNED_MESSAGE_STATES.value)
         }
     }
 
     /**
-     * Pinned messages of a chat (`PINNED_MESSAGES_GET` 241), oldest first as the server returns them.
-     * An empty [from] is left out. [backward] below 0 is left out. Authors are resolved like history.
+     * Not supported: `PINNED_MESSAGES_GET` 241 is unknown to the mobile server, which drops the
+     * connection. Sends nothing and calls back at once with `nil`, kind `SERVER` and key
+     * `pinned.unsupported`. Use the chat's pinned message and push 243. Kept so existing Swift
+     * code still builds.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun pinnedMessages(chatId: String, from: String, backward: Int, onResult: (List<IosMessage>?, String?, String?) -> Unit) {
-        perform(onResult, { null }) { c ->
-            val id = parseId(chatId)
-            val fromId = from.trim().let { raw ->
-                if (raw.isEmpty()) null else raw.toLongOrNull() ?: throw IllegalArgumentException("from is not an id")
-            }
-            val messages = c.pinnedMessages(id, fromId, backward.takeIf { it >= 0 })
-            resolveUsers(c, messages.mapNotNull { it.sender })
-            val state = c.store.state.value
-            messages.map { messageSnapshot(it, chatId, state) }
+        perform<List<IosMessage>?>(onResult, { null }, waitsForSession = false) {
+            throw RefusedOpcodes.exception(Opcode.PINNED_MESSAGES_GET.value)
         }
     }
 
