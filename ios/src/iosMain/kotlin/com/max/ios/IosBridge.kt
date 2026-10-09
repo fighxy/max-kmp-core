@@ -2815,7 +2815,41 @@ class IosChat(
     /** Server time of the last message (ms), `0` without one. Unlike [updatedAtMs] (the chat's
      *  last event, moved by edits and reactions too), it is what read marks compare with. */
     val lastTimeMs: Long = 0,
-)
+    /**
+     * A dialog with a bot that has a mini app: the row may show "Open app" without loading the
+     * profile ([com.max.core.api.Chat.hasWebApp]: `BOT` and a [com.max.core.api.WEB_APP_OPTIONS]
+     * option of the peer already known to the client). `false` for groups, channels, non-bots and
+     * a peer not loaded yet; [IosProfile.hasWebApp] stays the full answer.
+     */
+    val hasWebApp: Boolean = false,
+) {
+    /** The initializer without [hasWebApp] (`false`), kept so existing Swift and Kotlin callers stay unchanged. */
+    constructor(
+        id: String,
+        title: String,
+        type: String,
+        lastMessageId: String,
+        lastText: String,
+        updatedAtMs: Long,
+        unread: Int,
+        avatarUrl: String,
+        lastAuthorId: String,
+        lastMedia: String,
+        lastThumbUrl: String,
+        comments: Int,
+        canWrite: Int,
+        muted: Int,
+        lastAuthorName: String,
+        lastFromMe: Int,
+        lastForwarded: Int,
+        peerReadMs: Long,
+        active: Int,
+        lastTimeMs: Long,
+    ) : this(
+        id, title, type, lastMessageId, lastText, updatedAtMs, unread, avatarUrl, lastAuthorId, lastMedia, lastThumbUrl,
+        comments, canWrite, muted, lastAuthorName, lastFromMe, lastForwarded, peerReadMs, active, lastTimeMs, false,
+    )
+}
 
 /**
  * A chat card for the profile screen. [kind] is `user`, `bot`, `group`, `channel` or `saved`.
@@ -3845,6 +3879,7 @@ private fun chatSnapshot(chat: Chat, state: MaxState, config: AccountConfig? = n
         peerReadMs = peerReadMark(chat, me),
         active = if (isActive(chat)) 1 else 0,
         lastTimeMs = last?.time ?: 0L,
+        hasWebApp = state.chatHasWebApp(chat),
     )
 }
 
