@@ -799,6 +799,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 
 - **Message**: `id`, `chatId?`, `sender?`, `text=""`, `time`, `type`, `cid?`, `attaches[]`, `stats?`, `status?`, `reactionInfo?`, `options?`, `prevMessageId?`, `ttl?`, `unread?`, `mark?`, `elements[]`, `delayedAttributes?`, `link?` (`PyMax:src/pymax/types/domain/message.py:160-244`); у правленого сообщения ещё `updateTime` (мс, время последней правки; `MaxMessage.updateTime`).
 - **Chat**: `id`, `type`, `status`, `owner`, `participants`, `title?`, icon URLs, `lastMessage?`, timestamps, `newMessages`, `link?`, `access?`, `restrictions?`, `pinnedMessage?`, `participantsCount`, `description?`, `options?`, admins, … (`chat.py:17-99`).
+  У `Chat` ядра и `IosChat` есть `hasWebApp`: диалог с ботом, у собеседника из `MaxState.users` в `options` есть `BOT` и один из `HAS_WEBAPP` / `HAS_WEB_APP` / `WEBAPP` (эти — без учёта регистра), как в профиле; профиль ради этого не грузится.
 - **User**: `id`, `accountStatus?`, `registrationTime?`, `country?`, avatar URLs, `names[]`, `options[]`, `photoId?`, `phone?`, `status?`, `description?`, `gender?`, `link?`, … (`user.py:22-77`).
 - Attachments: Photo/Video/File/Audio/Sticker/Share/Contact/Call/Control/InlineKeyboard/Poll/Unknown — discriminator `_type` / `type` (`types/domain/attachments/`).
 - Reactions: `ReactionInfo`, `ReactionCounter`; Poll: `Poll` / `PollAttachment`.
