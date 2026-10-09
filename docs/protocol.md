@@ -439,8 +439,8 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 | 61 | `CHAT_PERSONAL_CONFIG` | `CHAT_PERSONAL_CONFIG` |  |
 | 62 | `—` | `CHAT_LIVESTREAM_INFO` | только PyMax |
 | 63 | `CHAT_CREATE` | `CHAT_CREATE` |  |
-| 240 | `GET_PINNED_MESSAGE_STATES` | — | `{chatIds}` → `{pinnedMessagesStates}`; билдер запроса в приложении не найден, тело — как у веб-клиента (§G.4) |
-| 241 | `PINNED_MESSAGES_GET` | — | `{chatId, from?, backward?}` → `{pinnedMessages}` (обычные сообщения); билдер запроса в приложении не найден |
+| 240 | `GET_PINNED_MESSAGE_STATES` | — | **мобильный сервер не поддерживает**: отвечает ошибкой неизвестного опкода и рвёт соединение; приложение запрос не строит (тело было от веб-клиента). Ядро не отправляет (`RefusedOpcodes`, `pinned.unsupported`) (§G.4) |
+| 241 | `PINNED_MESSAGES_GET` | — | **мобильный сервер не поддерживает**, рвёт соединение; приложение запрос не строит. Ядро не отправляет (`RefusedOpcodes`, `pinned.unsupported`) (§G.4) |
 | 242 | `PINNED_MESSAGE_UPDATE` | — | `{chatId, action, messageIds?, forMe?, notify?}` → `{pinnedMessagesState}`; поля опускаются так же, как в приложении (§G.4) |
 | 243 | `NOTIF_CHAT_MESSAGE_PINNED` | — | пуш `{chatId, pinnedMessagesState}` → `MaxEvent.PinsChanged` |
 
@@ -881,14 +881,13 @@ User-Agent: `OKMessages/{appVersion} ({osVersion}; {deviceName}; {screen})` (`co
 
 Сверено с релизным Android-клиентом (статическое чтение; к серверам не подключались). Один закреп по-прежнему идёт через `CHAT_UPDATE` 55: `{chatId, notifyPin, pinMessageId}`, `pinMessageId: 0` снимает. Список закрепов — отдельные опкоды.
 
-Состояние `pinnedMessagesState` (ответ 240 и 242, вложенный объект пуша 243): `chatId`, `lastPinnedUpdateTime`, `prevPinnedUpdateTime`, `totalPinnedMessagesCount`, `changedPinnedMessageId`, `changedPinnedMessageType`, `lastAction`, `lastPinnedMessageId`. Время без ключа — `0`. Id `0` и отсутствующий id — «нет сообщения». Нет счётчика — не `0` (ноль значит «закрепов нет»). `lastAction`: `0` закрепить, `1` снять, `2` снять все; другой байт — нет действия. `changedPinnedMessageType`: бит 1 «для всех», бит 2 «для меня». Веб-клиент пишет `changedMessageId` вместо `changedPinnedMessageId`; ядро читает короткое имя только если длинного нет.
+Состояние `pinnedMessagesState` (ответ 242, вложенный объект пуша 243): `chatId`, `lastPinnedUpdateTime`, `prevPinnedUpdateTime`, `totalPinnedMessagesCount`, `changedPinnedMessageId`, `changedPinnedMessageType`, `lastAction`, `lastPinnedMessageId`. Время без ключа — `0`. Id `0` и отсутствующий id — «нет сообщения». Нет счётчика — не `0` (ноль значит «закрепов нет»). `lastAction`: `0` закрепить, `1` снять, `2` снять все; другой байт — нет действия. `changedPinnedMessageType`: бит 1 «для всех», бит 2 «для меня». Веб-клиент пишет `changedMessageId` вместо `changedPinnedMessageId`; ядро читает короткое имя только если длинного нет.
 
-- **240** `GET_PINNED_MESSAGE_STATES`. Ответ `{pinnedMessagesStates: [состояние]}`. Тело запроса в приложении не найдено. Веб-клиент шлёт `{chatIds}`; ядро шлёт то же. Пустой список id не уходит на сервер.
-- **241** `PINNED_MESSAGES_GET`. Ответ `{pinnedMessages: [сообщения]}` — те же объекты, что в истории. Тело запроса в приложении не найдено. Веб-клиент шлёт `{chatId, from, backward}`; ядро опускает `from` и `backward`, если их не передали.
-- **242** `PINNED_MESSAGE_UPDATE`. Запрос собран как в приложении: всегда `chatId` и `action` (`0`/`1`/`2`); `messageIds` только если список не пуст; `forMe: true` только когда закреп «для меня» (ложь не шлётся); `notify: false` только когда не надо уведомлять (истина не шлётся, сервер считает её умолчанием). Ответ `{pinnedMessagesState}`. Ошибки `pinned.invalid.operation` и `pinned.invalid.request` ядро отдаёт как ошибки протокола. Приложение считает первую уже выполненным действием и не показывает её.
+- **240** `GET_PINNED_MESSAGE_STATES` и **241** `PINNED_MESSAGES_GET` мобильный сервер не поддерживает: на запрос он отвечает ошибкой неизвестного опкода и разрывает соединение (в iOS это давало цикл переподключений при каждом открытии чата). Приложение эти запросы не строит; тела `{chatIds}` и `{chatId, from, backward}` были от веб-клиента. Ядро их не отправляет: транспорт (`MaxTransport`, список `RefusedOpcodes`) отказывает до записи кадра, `MessagesApi.pinnedStates` / `pinnedMessages`, те же методы `MaxClient` (`@Deprecated`) и методы моста сразу завершаются `OutboundBlockedException` с `errorKey` `pinned.unsupported` (`ErrorKind.SERVER`; в iOS-колбэке kind `SERVER` и этот ключ). Состояние закрепов берётся из чата и пуша 243.
+- **242** `PINNED_MESSAGE_UPDATE`. Приложение предлагает список закрепов только при включённых флагах конфига `multipin-dialog` / `multipin-chat` / `multipin-channel` (по типу чата); ядро эти флаги не проверяет, их сверяет клиент. Запрос собран как в приложении: всегда `chatId` и `action` (`0`/`1`/`2`); `messageIds` только если список не пуст; `forMe: true` только когда закреп «для меня» (ложь не шлётся); `notify: false` только когда не надо уведомлять (истина не шлётся, сервер считает её умолчанием). Ответ `{pinnedMessagesState}`. Ошибки `pinned.invalid.operation` и `pinned.invalid.request` ядро отдаёт как ошибки протокола. Приложение считает первую уже выполненным действием и не показывает её.
 - **243** `NOTIF_CHAT_MESSAGE_PINNED`. Пуш `{chatId, pinnedMessagesState}` → `MaxEvent.PinsChanged`. Свой `chatId` пуша, если он не `0`, важнее id внутри состояния. В хранилище чатов состояние не пишется.
 
-Ядро: `MessagesApi.pinnedStates` / `pinnedMessages` / `updatePinnedMessages` и те же методы `MaxClient`. Мост: `pinnedStates`, `pinnedMessages`, `updatePinned` (`action`: `pin` / `unpin` / `unpinAll`); id — строки. Событие моста `pinned`.
+Ядро: `MessagesApi.updatePinnedMessages` и тот же метод `MaxClient` (242); `pinnedStates` / `pinnedMessages` оставлены ради совместимости и всегда отказывают без запроса. Мост: `updatePinned` (`action`: `pin` / `unpin` / `unpinAll`); id — строки; `pinnedStates` / `pinnedMessages` сразу возвращают `SERVER` / `pinned.unsupported`. Событие моста `pinned`.
 
 **Пуши, которые раньше приходили и терялись, а теперь имеют тип** (хранилище по-прежнему их не меняет):
 
@@ -1174,7 +1173,7 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
 
 1. **Надёжность соединения** — сделано: ответ на серверный `PING`, `RECONNECT` (3), ошибки входа `login.token` / `login.blocked` / `login.flood`, `PING` раз в 29 s с первым сразу, backoff 3 s → 96 s (§C.3–C.6, §D.5).
 2. **`PHOTO_URL_REFRESH` (203) и лестница размеров** — сделано: `fn=sqr_N` / `fn=w_N`, выбор первого размера не меньше запрошенных пикселей, обновление протухших ссылок пачками (§G.3).
-3. **Закреплённые сообщения (240–243) и часть пропускаемых пушей** — сделано: состояние закрепа, 240/241/242, пуш 243, плюс типы для 156, 159, 293 и ошибки 136 (§G.4). 154, звонки, сторис и остальной каталог не трогались.
+3. **Закреплённые сообщения (240–243) и часть пропускаемых пушей** — сделано: состояние закрепа, 240/241/242, пуш 243 (240/241 позже заблокированы: мобильный сервер их не поддерживает), плюс типы для 156, 159, 293 и ошибки 136 (§G.4). 154, звонки, сторис и остальной каталог не трогались.
 4. **Отложенные сообщения и опросы** — сделано: список/создание/правка/отмена, пуш 154, чтение опроса 306 и голос 304 (§G.5). Пуша счётчиков нет. 305 не делался.
 5. **Отклонение звонка (167) и журнал (163/165)** — сделано (§H.4). Медиа и сигналинг не трогались. Журнал 79 остаётся.
 6. **Архив своих историй (219) и два поля конфига** — сделано (§Stories). Создание истории не добавлялось (отправка 215 уже была). Экран настроек не делался.
