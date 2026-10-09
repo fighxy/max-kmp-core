@@ -161,6 +161,12 @@ data class ReactionUser(val userId: Long, val reaction: String)
  *   arrive as integers or decimal strings; entries without a numeric id or mark are skipped. A
  *   chat object without the map gives an empty one. Large groups may list only some members
  *   ([participantsCount] counts all of them).
+ * @property hasWebApp a dialog with a bot that has a mini app, so a chat list can show "Open app"
+ *   without loading the profile: the peer's options in [com.max.core.state.MaxState.users] hold
+ *   `BOT` and one of [WEB_APP_OPTIONS] ([com.max.core.state.MaxState.chatHasWebApp]). The chat
+ *   object itself does not carry it: [from] gives `false`, and [com.max.core.state.MaxStore] sets
+ *   it on every change of its chats or users. `false` for groups, channels, non-bots and users
+ *   not loaded yet.
  */
 data class Chat(
     val id: Long,
@@ -174,7 +180,23 @@ data class Chat(
     val lastMessage: MaxMessage?,
     val raw: Map<*, *>,
     val participants: Map<Long, Long> = emptyMap(),
+    val hasWebApp: Boolean = false,
 ) {
+    /** The constructor without [hasWebApp] (`false`), kept so existing callers stay unchanged. */
+    constructor(
+        id: Long,
+        type: String,
+        status: String?,
+        owner: Long?,
+        title: String?,
+        participantsCount: Int,
+        newMessages: Int,
+        lastEventTime: Long,
+        lastMessage: MaxMessage?,
+        raw: Map<*, *>,
+        participants: Map<Long, Long>,
+    ) : this(id, type, status, owner, title, participantsCount, newMessages, lastEventTime, lastMessage, raw, participants, false)
+
     /**
      * The public name of a group or channel without `@` ([MentionNames.ofChat] of the chat's
      * `link`; an invite link `…/join/…` gives none). For a dialog use the peer's

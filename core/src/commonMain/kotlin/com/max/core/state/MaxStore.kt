@@ -40,11 +40,14 @@ class MaxStore(
     private val clock: () -> Long = ::epochMillis,
     initial: MaxState = MaxState(),
 ) {
-    private val _state = MutableStateFlow(initial)
+    private val _state = MutableStateFlow(StateReducer.applyWebApps(initial))
 
-    /** Every change: [change], then the local reads on top ([StateReducer.applyLocalReads]). */
+    /**
+     * Every change: [change], then the local reads on top ([StateReducer.applyLocalReads]) and the
+     * chats' mini-app flags ([StateReducer.applyWebApps]).
+     */
     private inline fun mutate(crossinline change: (MaxState) -> MaxState) =
-        _state.update { StateReducer.applyLocalReads(change(it)) }
+        _state.update { StateReducer.applyWebApps(StateReducer.applyLocalReads(change(it)), it) }
 
     /** The current snapshot; collect it to observe every change. */
     val state: StateFlow<MaxState> = _state.asStateFlow()

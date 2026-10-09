@@ -20,6 +20,7 @@ import com.max.core.api.Presences
 import com.max.core.api.ReactionInfo
 import com.max.core.api.TypingType
 import com.max.core.api.asLong
+import com.max.core.api.hasWebApp
 import com.max.core.auth.LoginResult
 import com.max.core.events.MaxEvent
 
@@ -180,6 +181,27 @@ data class MaxState(
                 compareBy<Chat> { pins[it.id] ?: Int.MAX_VALUE }.thenByDescending { activity(it) }.thenByDescending { it.id },
             )
         }
+
+    /**
+     * The other participant of a `DIALOG`: the first key of its `participants` that is not [me];
+     * `null` for other chats and for a dialog with only [me] ("saved messages").
+     */
+    fun dialogPeer(chat: Chat): Long? {
+        if (chat.type != "DIALOG") return null
+        val ids = (chat.raw["participants"] as? Map<*, *>).orEmpty().keys.mapNotNull { it.asLong() }
+        return ids.firstOrNull { it != me }
+    }
+
+    /**
+     * [Chat.hasWebApp] from what this state already holds: [chat] is a dialog ([dialogPeer]) whose
+     * peer is in [users] with the option `BOT` and one of [com.max.core.api.WEB_APP_OPTIONS] in its
+     * options (any case, [hasWebApp]). The profile screen applies the same rule and also reads the
+     * bot card of `BOT_INFO`; that card is not loaded for a chat list.
+     */
+    fun chatHasWebApp(chat: Chat): Boolean {
+        val peer = dialogPeer(chat)?.let { users[it] } ?: return false
+        return "BOT" in peer.options && hasWebApp(peer.options)
+    }
 
     /** Messages of [chatId] (empty when unknown). */
     fun messagesOf(chatId: Long): List<MaxMessage> = messages[chatId].orEmpty()
@@ -492,6 +514,26 @@ object StateReducer {
             if (unread < chat.newMessages) chats = chats + (chatId to chat.copy(newMessages = unread))
         }
         return if (reads === state.localReads && chats === state.chats) state else state.copy(localReads = reads, chats = chats)
+    }
+
+    /**
+     * Sets [Chat.hasWebApp] of the chats to [MaxState.chatHasWebApp]. With [prev] (the state before
+     * the change, already up to date) and the same [MaxState.users] and [MaxState.me], only chats
+     * whose object changed are checked. Returns [state] itself when no flag changes.
+     */
+    fun applyWebApps(state: MaxState, prev: MaxState? = null): MaxState {
+        val all = prev == null || prev.users !== state.users || prev.me != state.me
+        if (!all && prev!!.chats === state.chats) return state
+        var chats: LinkedHashMap<Long, Chat>? = null
+        for ((id, chat) in state.chats) {
+            if (!all && prev!!.chats[id] === chat) continue
+            val flag = state.chatHasWebApp(chat)
+            if (chat.hasWebApp != flag) {
+                val out = chats ?: LinkedHashMap(state.chats).also { chats = it }
+                out[id] = chat.copy(hasWebApp = flag)
+            }
+        }
+        return chats?.let { state.copy(chats = it) } ?: state
     }
 
     private fun localUnread(state: MaxState, chatId: Long, chat: Chat, mark: Long): Int {
