@@ -562,7 +562,7 @@ Payloads (178–180 by PyMax, 181 and the catalog by the KometTeam/Komet schema;
 | 132 | `NOTIF_PRESENCE` | `NOTIF_PRESENCE` | `{userId, presence: {seen?, status?}}` → `MaxEvent.Presence`; без `seen` прежнее время сохраняется; в мосте — событие `presence` |
 | 134 | `NOTIF_CONFIG` | `NOTIF_CONFIG` | изменение конфига аккаунта (заглушение с другого устройства): `{config}` или разделы на верхнем уровне → `MaxEvent.ConfigUpdated`, слияние в `MaxClient.accountConfig`, `hash` → `configHash`; схема тела в референсах не описана (см. «Заглушение чатов») |
 | 135 | `NOTIF_CHAT` | `NOTIF_CHAT` |  |
-| 136 | `NOTIF_ATTACH` | `NOTIF_ATTACH` | `{fileId \| videoId \| audioId}` → `AttachmentReady`; без id и с непустым `error` → `AttachmentFailed` |
+| 136 | `NOTIF_ATTACH` | `NOTIF_ATTACH` | `{fileId, videoId, audioId, error}`: непустой `error` важнее id → `AttachmentFailed` (с `kind` / `id` вложения, если id есть); иначе `{fileId \| videoId \| audioId}` → `AttachmentReady` |
 | 137 | `NOTIF_CALL_START` | `NOTIF_CALL_START` |  |
 | 139 | `NOTIF_CONTACT_SORT` | `NOTIF_CONTACT_SORT` |  |
 | 140 | `NOTIF_MSG_DELETE_RANGE` | `NOTIF_MSG_DELETE_RANGE` |  |
@@ -897,7 +897,7 @@ User-Agent: `OKMessages/{appVersion} ({osVersion}; {deviceName}; {screen})` (`co
 | 156 | `YouReacted` | `{chatId, messageId, reactionInfo, postId?}`; в мосте `youReacted` |
 | 159 | `ProfileUpdated` | `{profile}` с `contact` и `profileOptions`; в мосте `profile` |
 | 293 | `TranscriptionReady` | как разбор расшифровки, нужен `messageId`; в мосте по-прежнему `transcription` |
-| 136 | `AttachmentFailed` | только `error` без id вложения; id по-прежнему `AttachmentReady`. В мосте `attachError` |
+| 136 | `AttachmentFailed` | любой пуш с непустым `error`, даже если есть id; `kind` и `id` берутся из `fileId` / `videoId` / `audioId` (в том же порядке), `null` без id. `AttachmentReady` только без `error`. В мосте `attachError`: id в `messageId` (десятичной строкой), тип (`file` / `video` / `audio`) в `title`, пусто без id |
 
 **Не делались в этом шаге:** звонки 163/165/167, сторис, 150 ассеты, 147/148 геолокация, 143 ответ callback, 140 удаление диапазона, 20 выход из аккаунта, 86 видимость закрепа чата (`{chatId, show}` — это не список закрепов сообщений), 292 баннеры, 305 список голосовавших. У 135 по-прежнему нет полей «последняя реакция». Отложенные и опросы — §G.5.
 
