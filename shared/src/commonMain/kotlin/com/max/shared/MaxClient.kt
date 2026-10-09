@@ -1047,17 +1047,24 @@ class MaxClient @Throws(Exception::class) constructor(
     ): List<RefreshedPhoto> = this.media.refreshPhotoUrls(media, maxPerRequest)
 
     /**
-     * Pin state of each chat (`GET_PINNED_MESSAGE_STATES` 240). Does not write the store.
-     * The single-pin `CHAT_UPDATE` 55 path stays on [com.max.core.api.MessagesApi.pinMessage].
+     * Not supported (`GET_PINNED_MESSAGE_STATES` 240 drops the mobile connection): always throws
+     * [com.max.core.transport.OutboundBlockedException] with `errorKey` `pinned.unsupported`
+     * (`ErrorKind.SERVER`), nothing is sent. Pin state: the chat and push 243
+     * ([com.max.core.events.MaxEvent.PinsChanged]); changes: [com.max.core.api.MessagesApi.updatePinnedMessages] (242).
      */
+    @Deprecated("The mobile server does not support GET_PINNED_MESSAGE_STATES 240 / PINNED_MESSAGES_GET 241 and drops the connection; the core refuses to send it. Use the chat's pinned message and MaxEvent.PinsChanged (push 243).")
     @Throws(CancellationException::class, Exception::class)
+    @Suppress("DEPRECATION")
     suspend fun pinnedStates(chatIds: List<Long>): List<PinnedMessageState> = api.messages.pinnedStates(chatIds)
 
     /**
-     * Pinned messages of a chat (`PINNED_MESSAGES_GET` 241). Not stored: the page is not history.
-     * A null [from] or [backward] is left out of the request.
+     * Not supported (`PINNED_MESSAGES_GET` 241 drops the mobile connection): always throws
+     * [com.max.core.transport.OutboundBlockedException] with `errorKey` `pinned.unsupported`
+     * (`ErrorKind.SERVER`), nothing is sent. Use the chat's pinned message and push 243.
      */
+    @Deprecated("The mobile server does not support GET_PINNED_MESSAGE_STATES 240 / PINNED_MESSAGES_GET 241 and drops the connection; the core refuses to send it. Use the chat's pinned message and MaxEvent.PinsChanged (push 243).")
     @Throws(CancellationException::class, Exception::class)
+    @Suppress("DEPRECATION")
     suspend fun pinnedMessages(chatId: Long, from: Long? = null, backward: Int? = null): List<MaxMessage> =
         api.messages.pinnedMessages(chatId, from, backward)
 
