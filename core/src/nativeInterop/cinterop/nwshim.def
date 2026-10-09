@@ -1,6 +1,6 @@
 # Network.framework calls whose callbacks Kotlin/Native must not bridge as they are.
 language = Objective-C
-package = com.max.core.transport.nw
+package = com.maxly.core.transport.nw
 ---
 #import <Network/Network.h>
 

@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.max.android"
+    namespace = "com.maxly.android"
     compileSdk = 35
     defaultConfig {
         minSdk = 26
