@@ -3361,6 +3361,10 @@ object IosTypingType {
  * (its update time, `0` when gone) repeat it.
  * `ghostMode` / `hideReadReceipts`: that switch changed ([MaxIosClient.setGhostMode],
  * [MaxIosClient.setHideReadReceipts]); [text] is `on` or `off`. Reported also while logged out.
+ * `attachError`: an upload failed server-side (`NOTIF_ATTACH` 136 with an `error`); [text] is
+ * the error, [messageId] the failed attachment id as a decimal string (the `fileId`, `videoId`
+ * or `audioId` of the upload) and [title] its type (`file`, `video` or `audio`); both empty when
+ * the push names no attachment.
  * Unknown pushes are not forwarded; incoming calls come from `watchIncomingCalls`.
  */
 class IosEvent(
@@ -4161,7 +4165,7 @@ private fun historyReactions(message: MaxMessage, chatId: Long?, state: MaxState
     return reactionsJson(info, mineKnown = mineKnown)
 }
 
-private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (event) {
+internal fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (event) {
     is MaxEvent.NewMessage -> listOf(messageEvent("message", event.message, state, withReactions = true))
     is MaxEvent.MessageEdited -> listOf(messageEvent("edited", event.message, state, withReactions = false))
     is MaxEvent.ReactionsChanged -> listOf(reactionsEvent(event, state))
@@ -4217,7 +4221,19 @@ private fun flatten(event: MaxEvent, state: MaxState): List<IosEvent> = when (ev
         ),
     )
     is MaxEvent.TranscriptionReady -> transcriptionEvent(event.transcription)
-    is MaxEvent.AttachmentFailed -> listOf(iosEvent(kind = "attachError", text = event.error))
+    is MaxEvent.AttachmentFailed -> listOf(
+        iosEvent(
+            kind = "attachError",
+            text = event.error,
+            messageId = event.id?.toString().orEmpty(),
+            title = when (event.kind) {
+                MaxEvent.AttachmentReady.Kind.FILE -> "file"
+                MaxEvent.AttachmentReady.Kind.VIDEO -> "video"
+                MaxEvent.AttachmentReady.Kind.AUDIO -> "audio"
+                null -> ""
+            },
+        ),
+    )
     is MaxEvent.CallHistoryChanged -> {
         val action = when (event.action) {
             CallHistoryAction.ADD -> "add"
