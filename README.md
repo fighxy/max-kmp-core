@@ -10,6 +10,8 @@
 
 <p align="center">Ядро Maxly на Kotlin Multiplatform: клиент протокола MAX для iOS, Android и Desktop.</p>
 
+<p align="center"><a href="https://t.me/maxly_client">Канал новостей Maxly</a></p>
+
 <p align="center">
   <img alt="Kotlin Multiplatform" src="https://img.shields.io/badge/Kotlin_Multiplatform-7F52FF?style=flat&logo=kotlin&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-2.1-7F52FF?style=flat&logo=kotlin&logoColor=white">
