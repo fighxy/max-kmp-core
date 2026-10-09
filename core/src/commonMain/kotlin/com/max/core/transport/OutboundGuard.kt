@@ -27,8 +27,41 @@ sealed class OutboundDecision {
 }
 
 /**
- * A request [OutboundGuard] stopped before it was written: no frame went out, nothing reached
- * the server. Not a connection failure.
+ * A request [OutboundGuard] or [RefusedOpcodes] stopped before it was written: no frame went out,
+ * nothing reached the server. Not a connection failure.
+ *
+ * [errorKey] is set only for [RefusedOpcodes] (e.g. `pinned.unsupported`); `toMaxError()` then
+ * reports `ErrorKind.SERVER` with that key. A guard block (ghost mode) has none.
  */
-class OutboundBlockedException(val opcode: Int, val reason: String) :
+class OutboundBlockedException(val opcode: Int, val reason: String, val errorKey: String? = null) :
     IllegalStateException("${Opcode.nameOf(opcode)} not sent: $reason")
+
+/**
+ * Opcodes the core never sends, checked by [MaxTransport] for every request before the guard.
+ *
+ * 240 `GET_PINNED_MESSAGE_STATES` and 241 `PINNED_MESSAGES_GET`: the mobile server does not know
+ * them; it answers an unknown-opcode error and drops the connection. The official app never
+ * builds these requests (their bodies came from the web client). Pin state comes from the chat
+ * and push 243; changes go through 242.
+ */
+object RefusedOpcodes {
+    /** `error` key of a refused pins request (240, 241). */
+    const val PINNED_UNSUPPORTED: String = "pinned.unsupported"
+
+    private val keys: Map<Int, String> = mapOf(
+        Opcode.GET_PINNED_MESSAGE_STATES.value to PINNED_UNSUPPORTED,
+        Opcode.PINNED_MESSAGES_GET.value to PINNED_UNSUPPORTED,
+    )
+
+    /** Whether [opcode] is refused. */
+    fun isRefused(opcode: Int): Boolean = opcode in keys
+
+    /** The exception for a refused [opcode]; nothing is written. */
+    fun exception(opcode: Int): OutboundBlockedException =
+        OutboundBlockedException(opcode, "not supported by the mobile server", keys[opcode])
+
+    /** Throws [exception] when [opcode] is refused. */
+    fun check(opcode: Int) {
+        if (isRefused(opcode)) throw exception(opcode)
+    }
+}

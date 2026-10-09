@@ -1,5 +1,6 @@
 package com.max.core.api
 
+import com.max.core.ErrorKind
 import com.max.core.auth.RequestSink
 import com.max.core.events.EventParser
 import com.max.core.events.MaxEvent
@@ -7,65 +8,59 @@ import com.max.core.protocol.CmdType
 import com.max.core.protocol.Opcode
 import com.max.core.protocol.PROTOCOL_VERSION
 import com.max.core.protocol.PacketHeader
+import com.max.core.toMaxError
+import com.max.core.transport.OutboundBlockedException
+import com.max.core.transport.RefusedOpcodes
 import com.max.core.transport.TransportPacket
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PinsApiTest {
     @Test
-    fun statesRequestAndReply() = runTest {
-        val sink = FakeSink(
+    fun stateParsing() {
+        val state = PinnedMessageState.from(
             mapOf(
-                "pinnedMessagesStates" to listOf(
-                    mapOf(
-                        "chatId" to 7L,
-                        "lastPinnedUpdateTime" to 100L,
-                        "prevPinnedUpdateTime" to 90L,
-                        "totalPinnedMessagesCount" to 2,
-                        "changedPinnedMessageId" to 55L,
-                        "changedPinnedMessageType" to 3,
-                        "lastAction" to 0,
-                        "lastPinnedMessageId" to 55L,
-                    ),
-                ),
+                "chatId" to 7L,
+                "lastPinnedUpdateTime" to 100L,
+                "prevPinnedUpdateTime" to 90L,
+                "totalPinnedMessagesCount" to 2,
+                "changedPinnedMessageId" to 55L,
+                "changedPinnedMessageType" to 3,
+                "lastAction" to 0,
+                "lastPinnedMessageId" to 55L,
             ),
-        )
-        val states = MessagesApi(sink).pinnedStates(listOf(7L, 8L))
-        assertEquals(Opcode.GET_PINNED_MESSAGE_STATES, sink.sent.single().first)
-        assertEquals(mapOf("chatIds" to listOf(7L, 8L)), sink.sent.single().second)
-        val state = states.single()
+        )!!
         assertEquals(7L, state.chatId)
         assertEquals(2, state.totalPinnedCount)
         assertEquals(55L, state.changedMessageId)
         assertEquals(PinAction.PIN, state.lastAction)
         assertTrue(state.forAll)
         assertTrue(state.forMe)
-        assertEquals(emptyList(), MessagesApi(FakeSink()).pinnedStates(emptyList()))
     }
 
+    @Suppress("DEPRECATION")
     @Test
-    fun pinnedMessagesAreOrdinaryMessages() = runTest {
-        val sink = FakeSink(
-            mapOf(
-                "pinnedMessages" to listOf(
-                    mapOf("id" to 9L, "time" to 3L, "type" to "USER", "text" to "hi", "chatId" to 7L),
-                    mapOf("id" to "nope"),
-                ),
-            ),
-        )
-        val page = MessagesApi(sink).pinnedMessages(7L, from = 9L, backward = 20)
-        val payload = sink.sent.single().second as Map<*, *>
-        assertEquals(Opcode.PINNED_MESSAGES_GET, sink.sent.single().first)
-        assertEquals(7L, payload["chatId"])
-        assertEquals(9L, payload["from"])
-        assertEquals(20, payload["backward"])
-        assertEquals(listOf(9L), page.map { it.id })
-        assertEquals("hi", page.single().text)
+    fun pinnedStatesAndMessagesAreRefusedWithoutARequest() = runTest {
+        val sink = FakeSink()
+        val api = MessagesApi(sink)
+        val states = assertFailsWith<OutboundBlockedException> { api.pinnedStates(listOf(7L, 8L)) }
+        assertEquals(Opcode.GET_PINNED_MESSAGE_STATES.value, states.opcode)
+        assertEquals(RefusedOpcodes.PINNED_UNSUPPORTED, states.errorKey)
+        assertFailsWith<OutboundBlockedException> { api.pinnedStates(emptyList()) }
+        val messages = assertFailsWith<OutboundBlockedException> { api.pinnedMessages(7L, from = 9L, backward = 20) }
+        assertEquals(Opcode.PINNED_MESSAGES_GET.value, messages.opcode)
+        assertEquals("pinned.unsupported", messages.errorKey)
+        assertTrue(sink.sent.isEmpty())
+        val error = messages.toMaxError()
+        assertEquals(ErrorKind.SERVER, error.kind)
+        assertEquals("pinned.unsupported", error.errorKey)
+        assertFalse(error.retryable)
     }
 
     @Test

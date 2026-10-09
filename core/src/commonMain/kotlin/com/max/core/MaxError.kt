@@ -8,6 +8,7 @@ import com.max.core.media.UploadException
 import com.max.core.session.SessionClosedException
 import com.max.core.transport.ConnectTimeoutException
 import com.max.core.transport.NotFoundException
+import com.max.core.transport.OutboundBlockedException
 import com.max.core.transport.ProxyException
 import com.max.core.transport.RequestTimeoutException
 import com.max.core.transport.ServerErrorException
@@ -31,7 +32,11 @@ enum class ErrorKind {
     /** Wrong password or another auth-flow rejection. */
     AUTH,
 
-    /** An ERROR reply with an error key ([MaxError.errorKey]); not retried automatically. */
+    /**
+     * An ERROR reply with an error key ([MaxError.errorKey]); not retried automatically. Also a
+     * request the core refuses because the server does not support it
+     * ([com.max.core.transport.RefusedOpcodes], e.g. `pinned.unsupported`); nothing was sent.
+     */
     SERVER,
 
     /** A NOT_FOUND reply (`cmd = 2`). */
@@ -102,6 +107,8 @@ fun Throwable.toMaxError(): MaxError {
         is SessionClosedException -> MaxError(ErrorKind.CLOSED, msg, cause = this)
         is ProxyException, is TransportException -> MaxError(ErrorKind.NETWORK, msg, cause = this)
         is MalformedReplyException -> MaxError(ErrorKind.MALFORMED_REPLY, msg, cause = this)
+        is OutboundBlockedException ->
+            if (errorKey != null) MaxError(ErrorKind.SERVER, msg, errorKey, cause = this) else MaxError(ErrorKind.UNKNOWN, msg, cause = this)
         is UploadException -> {
             val io = generateSequence(cause) { it.cause }.any { isPlatformIoException(it) || it is TransportException }
             if (io && status == null) MaxError(ErrorKind.NETWORK, msg, cause = this) else MaxError(ErrorKind.UPLOAD, msg, httpStatus = status, cause = this)

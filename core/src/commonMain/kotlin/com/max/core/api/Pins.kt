@@ -30,7 +30,7 @@ object PinScope {
 }
 
 /**
- * Pin state of one chat (`pinnedMessagesState` of opcodes 240, 242 and push 243).
+ * Pin state of one chat (`pinnedMessagesState` of opcode 242 and push 243).
  *
  * Field names are the app's parser keys. A missing time is `0`. A missing id is `null`
  * (the app stores `0` for "none", and this model does the same by dropping `0`).

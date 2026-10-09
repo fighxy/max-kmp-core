@@ -185,11 +185,17 @@ class MaxTransport(
     @kotlin.concurrent.Volatile
     var outboundGuard: OutboundGuard? = null
 
-    /** [payload] after [outboundGuard]; throws [OutboundBlockedException] for a blocked request. */
-    private fun guarded(opcode: Int, payload: Any?): Any? = when (val d = outboundGuard?.check(opcode, payload) ?: OutboundDecision.Pass) {
-        OutboundDecision.Pass -> payload
-        is OutboundDecision.Rewrite -> d.payload
-        is OutboundDecision.Block -> throw OutboundBlockedException(opcode, d.reason)
+    /**
+     * [payload] after [RefusedOpcodes] and [outboundGuard]; throws [OutboundBlockedException] for a
+     * refused or blocked request.
+     */
+    private fun guarded(opcode: Int, payload: Any?): Any? {
+        RefusedOpcodes.check(opcode)
+        return when (val d = outboundGuard?.check(opcode, payload) ?: OutboundDecision.Pass) {
+            OutboundDecision.Pass -> payload
+            is OutboundDecision.Rewrite -> d.payload
+            is OutboundDecision.Block -> throw OutboundBlockedException(opcode, d.reason)
+        }
     }
     private var supervisorJob: Job? = null
 

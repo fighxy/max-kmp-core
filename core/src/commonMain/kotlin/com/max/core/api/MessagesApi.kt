@@ -3,6 +3,7 @@ package com.max.core.api
 import com.max.core.auth.RequestSink
 import com.max.core.epochMillis
 import com.max.core.protocol.Opcode
+import com.max.core.transport.RefusedOpcodes
 import com.max.core.transport.TransportPacket
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.updateAndGet
@@ -273,32 +274,27 @@ class MessagesApi(
     }
 
     /**
-     * Pin state of each chat (`GET_PINNED_MESSAGE_STATES` 240). Request `{chatIds}`.
-     * The app's request builder was not found; the web client sends this shape.
-     * An empty [chatIds] sends nothing and returns an empty list.
+     * Not supported: `GET_PINNED_MESSAGE_STATES` 240 is unknown to the mobile server, which answers
+     * an error and drops the connection (the official app never sends it; the body came from the
+     * web client). Always throws [com.max.core.transport.OutboundBlockedException] with `errorKey`
+     * `pinned.unsupported` (`ErrorKind.SERVER`) and sends nothing. Pin state comes from the chat
+     * and push 243 ([com.max.core.events.MaxEvent.PinsChanged]).
      */
-    suspend fun pinnedStates(chatIds: List<Long>): List<PinnedMessageState> {
-        if (chatIds.isEmpty()) return emptyList()
-        val map = replyMap(sink.request(Opcode.GET_PINNED_MESSAGE_STATES, linkedMapOf("chatIds" to chatIds)), Opcode.GET_PINNED_MESSAGE_STATES)
-        val items = map["pinnedMessagesStates"] ?: return emptyList()
-        val list = items as? List<*> ?: throw MalformedReplyException(Opcode.GET_PINNED_MESSAGE_STATES, "pinnedMessagesStates is not a list", map)
-        return list.mapNotNull { PinnedMessageState.from(it) }
-    }
+    @Deprecated("The mobile server does not support GET_PINNED_MESSAGE_STATES 240 / PINNED_MESSAGES_GET 241 and drops the connection; the core refuses to send it. Use the chat's pinned message and MaxEvent.PinsChanged (push 243).")
+    @Suppress("UNUSED_PARAMETER")
+    suspend fun pinnedStates(chatIds: List<Long>): List<PinnedMessageState> =
+        throw RefusedOpcodes.exception(Opcode.GET_PINNED_MESSAGE_STATES.value)
 
     /**
-     * The pinned messages of a chat (`PINNED_MESSAGES_GET` 241), newest or oldest as [backward] says.
-     * Request `{chatId, from?, backward?}`. The app's request builder was not found; the web client
-     * sends `chatId`, `from` and `backward`. A null is left out. Items are ordinary messages.
+     * Not supported: `PINNED_MESSAGES_GET` 241 is unknown to the mobile server, which answers an
+     * error and drops the connection (the official app never sends it). Always throws
+     * [com.max.core.transport.OutboundBlockedException] with `errorKey` `pinned.unsupported`
+     * (`ErrorKind.SERVER`) and sends nothing. Use the chat's pinned message and push 243.
      */
-    suspend fun pinnedMessages(chatId: Long, from: Long? = null, backward: Int? = null): List<MaxMessage> {
-        val payload = linkedMapOf<String, Any?>("chatId" to chatId)
-        if (from != null) payload["from"] = from
-        if (backward != null) payload["backward"] = backward
-        val map = replyMap(sink.request(Opcode.PINNED_MESSAGES_GET, payload), Opcode.PINNED_MESSAGES_GET)
-        val items = map["pinnedMessages"] ?: return emptyList()
-        val list = items as? List<*> ?: throw MalformedReplyException(Opcode.PINNED_MESSAGES_GET, "pinnedMessages is not a list", map)
-        return list.mapNotNull { MaxMessage.from(it, chatId) }
-    }
+    @Deprecated("The mobile server does not support GET_PINNED_MESSAGE_STATES 240 / PINNED_MESSAGES_GET 241 and drops the connection; the core refuses to send it. Use the chat's pinned message and MaxEvent.PinsChanged (push 243).")
+    @Suppress("UNUSED_PARAMETER")
+    suspend fun pinnedMessages(chatId: Long, from: Long? = null, backward: Int? = null): List<MaxMessage> =
+        throw RefusedOpcodes.exception(Opcode.PINNED_MESSAGES_GET.value)
 
     /**
      * Pins, unpins, or clears pins (`PINNED_MESSAGE_UPDATE` 242) and returns the new state.

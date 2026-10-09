@@ -93,8 +93,8 @@ enum class Opcode(val value: Int) {
     CHAT_CLEAR(54),
     CHAT_UPDATE(55),
     // Pin states. 240/241 request bodies are the web client's; the app's builders were not found.
-    GET_PINNED_MESSAGE_STATES(240), // {chatIds} -> {pinnedMessagesStates}
-    PINNED_MESSAGES_GET(241), // {chatId, from?, backward?} -> {pinnedMessages}
+    GET_PINNED_MESSAGE_STATES(240), // not supported by the mobile server (drops the connection); never sent, see RefusedOpcodes
+    PINNED_MESSAGES_GET(241), // not supported by the mobile server (drops the connection); never sent, see RefusedOpcodes
     PINNED_MESSAGE_UPDATE(242), // {chatId, action, messageIds?, forMe?, notify?} -> {pinnedMessagesState}
     CHAT_CHECK_LINK(56),
     CHAT_JOIN(57),
