@@ -6,19 +6,19 @@
 
 | Вариант | Что это | Вердикт |
 |---------|---------|---------|
-| **Kotlin/Native framework export → XCFramework** | `binaries.framework` в `:shared`/`:ios` (уже есть `MaxShared`, `MaxIos`, static). Kotlin/Native генерирует Obj-C header; Swift импортирует модуль | **P0, выбран.** Ядро целиком на Kotlin — отдельный C ABI не нужен |
+| **Kotlin/Native framework export → XCFramework** | `binaries.framework` в `:shared`/`:ios` (уже есть `MaxlyShared`, `MaxlyCore`, static). Kotlin/Native генерирует Obj-C header; Swift импортирует модуль | **P0, выбран.** Ядро целиком на Kotlin — отдельный C ABI не нужен |
 | **cinterop + `maxc.def`** | `.def` описывает C-заголовки/статическую либу, которые Kotlin/Native **импортирует** (Kotlin → C). Сейчас `ios/src/nativeInterop/cinterop/maxc.def` — заглушка (`headers = maxc.h`, `staticLibraries = libmaxc.a` закомментированы) | P2/опционально: только если появится внешняя C-библиотека (например, нативный LZ4/Zstd или Rust-ядро через C ABI) |
 | Свой C ABI из Kotlin (`@CName`, экспорт C-символов) | Kotlin/Native → C-функции, Swift зовёт как C | Не нужен на этапе 1 |
 
-Роль `maxc.def`: декларация для cinterop (`headers`, `staticLibraries`, `libraryPaths`, `package = com.max.ios.cinterop`). Это вход **в** Kotlin, а не выход к Swift. Swift-артефакт — статический XCFramework: `./gradlew :ios:assembleMaxIosReleaseXCFramework` (`ios/build.gradle.kts`). Результат: `ios/build/XCFrameworks/release/MaxIos.xcframework`.
+Роль `maxc.def`: декларация для cinterop (`headers`, `staticLibraries`, `libraryPaths`, `package = com.maxly.ios.cinterop`). Это вход **в** Kotlin, а не выход к Swift. Swift-артефакт — статический XCFramework: `./gradlew :ios:assembleMaxlyCoreReleaseXCFramework` (`ios/build.gradle.kts`). Результат: `ios/build/XCFrameworks/release/MaxlyCore.xcframework`.
 
-Наружу из фреймворка экспортируется только `com.max.ios.MaxIosClient` и плоские типы `Ios*` (колбэки вместо `Flow`). `MaxClient` остаётся внутри: профиль устройства по-прежнему Android Pixel 8, токен — в Keychain `com.max.kmp.<namespace>`.
+Наружу из фреймворка экспортируется только `com.maxly.ios.MaxIosClient` и плоские типы `Ios*` (колбэки вместо `Flow`). `MaxClient` остаётся внутри: профиль устройства по-прежнему Android Pixel 8, токен — в Keychain `com.max.kmp.<namespace>` (имя сервиса осталось прежним после переименования в Maxly, чтобы сохранённые сессии не пропали). Swift: `import MaxlyCore`.
 
 ## 2. Swift-обёртки (P0)
 
 ```swift
-// Тонкий слой над MaxIos
-actor MaxSession {                                   // над com.max.shared.Session
+// Тонкий слой над MaxlyCore
+actor MaxSession {                                   // над com.maxly.shared.Session
     func connect() async throws -> HandshakeInfo      // TLS + opcode 6
     func request(_ opcode: UInt16, _ payload: Data) async throws -> Data
     var events: AsyncStream<CoreEvent> { get }        // pushes (NOTIF_MESSAGE 128, NOTIF_TYPING 129, NOTIF_MARK 130, …)

@@ -1,4 +1,4 @@
-# max-kmp-core
+# Maxly core (`maxly-core`)
 
 Нативное сетевое ядро мессенджера Max на **Kotlin Multiplatform**.
 
@@ -19,6 +19,15 @@ API чатов/сообщений/пользователей/аккаунта/м
 
 Клиент всегда представляется Android-устройством (профиль Pixel 8,
 `DeviceProfile.android`); данные iOS-устройства никогда не отправляются.
+
+## Название и идентификаторы
+
+Проект называется **Maxly** (репозиторий `fighxy/maxly-core`, Gradle `rootProject` — `maxly-core`, `group = "com.maxly"`).
+Пакеты Kotlin — `com.maxly.*`. iOS-фреймворк — статический `MaxlyCore` (`import MaxlyCore` в Swift;
+`./gradlew :ios:assembleMaxlyCoreReleaseXCFramework` → `ios/build/XCFrameworks/release/MaxlyCore.xcframework`).
+Классы `MaxClient`, `MaxState`, `MaxEvent`, `MaxError`, `MaxIosClient` и другие названы по протоколу MAX и не переименованы.
+Идентификаторы хранилищ остались прежними, чтобы сохранённые сессии пережили обновление: Keychain `com.max.kmp.<namespace>`,
+SharedPreferences `max_kmp_*`, каталог `~/.max-kmp` (свойство `max.kmp.dir`), ключи `max.<namespace>.*`.
 
 ## Стек
 

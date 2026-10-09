@@ -4,15 +4,15 @@
 
 ## 1. Проект и цель
 
-`fighxy/max-kmp-core` — приватное сетевое ядро на Kotlin Multiplatform для мессенджера Max. Платформы: iOS (приоритет), Android и JVM desktop. Протокол восстановлен по референсам KometTeam/kolibri и MaxApiTeam/PyMax; с 2026-09-29 Иван разрешил и KometTeam/Komet (клиент на Dart). Их используем только как описание схем, **код не копируем** (там GPL). **У Komet актуальная ветка — `feature/FullStack`** (не `main`): схемы сверять с ней (указание Ивана от 2026-10-05).
+`fighxy/maxly-core` — приватное сетевое ядро на Kotlin Multiplatform для мессенджера Max. Платформы: iOS (приоритет), Android и JVM desktop. Протокол восстановлен по референсам KometTeam/kolibri и MaxApiTeam/PyMax; с 2026-09-29 Иван разрешил и KometTeam/Komet (клиент на Dart). Их используем только как описание схем, **код не копируем** (там GPL). **У Komet актуальная ветка — `feature/FullStack`** (не `main`): схемы сверять с ней (указание Ивана от 2026-10-05).
 
 Цель: готовое ядро, которое iOS- и Android-приложения подключают через модуль `shared` (фасад `MaxClient`). В ядре есть транспорт, сессия, авторизация, API, события, локальное состояние и медиа.
 
 Модули:
-- `core/src/commonMain/kotlin/com/max/core/`: `transport`, `protocol`, `session`, `auth`, `api`, `events`, `state`, `media`, `calls`, `MaxError.kt`.
+- `core/src/commonMain/kotlin/com/maxly/core/`: `transport`, `protocol`, `session`, `auth`, `api`, `events`, `state`, `media`, `calls`, `MaxError.kt`.
 - Платформенный код: `core/src/iosMain` (Network.framework, NSURLSession) и `core/src/jvmAndroidShared` (сокеты, OkHttp).
 - `shared/`: `MaxClient` и `PlatformSession` с хранилищами учётных данных (iOS Keychain, Android SharedPreferences, JVM файл).
-- `android/`, `ios/`, `desktop/` — оболочки. У `android/` Java и Kotlin JVM target — 17. `ios/` собирает статический XCFramework `MaxIos` (`assembleMaxIosReleaseXCFramework`). Для Swift наружу только `MaxIosClient` и плоские `Ios*`; `MaxClient` и токен Keychain остаются внутри.
+- `android/`, `ios/`, `desktop/` — оболочки. У `android/` Java и Kotlin JVM target — 17. `ios/` собирает статический XCFramework `MaxlyCore` (`assembleMaxlyCoreReleaseXCFramework`). Для Swift наружу только `MaxIosClient` и плоские `Ios*`; `MaxClient` и токен Keychain остаются внутри.
 - Документация: `README.md`, `docs/protocol.md`, `docs/opcodes.md`, `docs/architecture.md`, `docs/ios-plan.md`.
 
 ## 2. Что сделано
@@ -79,7 +79,7 @@
 ## 7. Исправления по ревью e385796 (15 пунктов, по коммиту на пункт)
 
 Поведение:
-- **Swift-граница.** Все публичные `suspend` у `MaxClient` и `Session` помечены `@Throws(CancellationException::class, Exception::class)`, конструктор `MaxClient` и `openSession` — `@Throws(Exception::class)`. `MaxIosClient` ловит всё и отдаёт вид ошибки в callback ровно один раз, включая `CANCELLED` и вызовы после `close`. Ошибка Keychain приходит видом ошибки, процесс не падает. Swift API `MaxIosClient` не менялся. API ядра (`client.api`, фреймворк MaxCore) аннотациями не покрыт, Swift работает только через `MaxIosClient`.
+- **Swift-граница.** Все публичные `suspend` у `MaxClient` и `Session` помечены `@Throws(CancellationException::class, Exception::class)`, конструктор `MaxClient` и `openSession` — `@Throws(Exception::class)`. `MaxIosClient` ловит всё и отдаёт вид ошибки в callback ровно один раз, включая `CANCELLED` и вызовы после `close`. Ошибка Keychain приходит видом ошибки, процесс не падает. Swift API `MaxIosClient` не менялся. API ядра (`client.api`, фреймворк MaxlyProtocol) аннотациями не покрыт, Swift работает только через `MaxIosClient`.
 - **Полный снимок.** Первый `LOGIN` нового `MaxClient` шлёт нулевые маркеры и `configHash` по умолчанию: снимок не хранится между процессами, дельта на пустой кэш потеряла бы данные.
 - **Поздние ответы.** Операции берут билет (сессия входа + поколение аккаунта) до запроса и применяют результат под lifecycle-lock. Если за это время был logout, отказ токена, close или другой аккаунт, бросается `SessionClosedException`, стор и токен не меняются.
 - **logout/close из обработчика события** работают: роутер не ждёт сам себя, обязательная очистка идёт в `NonCancellable`.

@@ -1,4 +1,4 @@
-# Архитектура протокола Max (референс для max-kmp-core)
+# Архитектура протокола Max (референс для maxly-core)
 
 > **Статус:** справочный документ по поведению кода референсов. Код не копируется.
 > Описывает наблюдаемые факты; раздел J — рекомендация, не факт.
@@ -230,7 +230,7 @@ Payload строится в `build_handshake_payload` (`kolibri:kolibri-net/src/
 
 **PyMax:** `_ping_loop` запускается в `App` (`PyMax:src/pymax/app.py:113`): бесконечный цикл `invoke(Opcode.PING, {"interactive": self.config.interactive})`, затем `asyncio.sleep(30)` (`PyMax:src/pymax/app.py:317-330`). Отличие от kolibri: PyMax ждёт ответа (request с timeout), первый ping — сразу, при ошибке ping соединение помечается failed (`:330`); kolibri шлёт fire-and-forget и первый ping через интервал.
 
-**Android-клиент Max и max-kmp-core.**
+**Android-клиент Max и maxly-core.**
 
 - Клиентский `PING`: в Android-клиенте интервал **29 s**, цикл сначала шлёт `PING`, потом ждёт. Первый `PING` уходит сразу после входа. Ядро делает так же: `TransportConfig.pingInterval` = 29 s, первый `PING` — сразу после `onConnected` (handshake 6 и `LOGIN` сохранённым токеном), дальше раз в интервал. Ответ не ждём (fire-and-forget, как kolibri). `Duration.INFINITE` выключает цикл.
 - `interactive` = `appActive && !ghostMode` (`MaxClient.setInteractive` / мост `setAppActive`, режим призрака — opcodes.md). Фоновые `PING` в Android-клиенте по умолчанию выключены; ядро пингует, пока соединение открыто, с `interactive=false` в фоне.
@@ -245,7 +245,7 @@ PyMax: `ExtraConfig.reconnect: bool = True`, `reconnect_delay: float = 1.0` (ф�
 
 **Android-клиент Max:** экспонента с базой 3 s и потолком 96 s, задержка `min(96, 3·2^n) · (1 + random(−0.1, 0.1))`. Счётчик сбрасывается после успешного соединения, при смене сети и при возврате в foreground. Первое переподключение после обрыва *рабочего* соединения — сразу, без паузы. Таймаут connect — 15 s.
 
-**max-kmp-core** (`reconnectDelay(attempt, random)`, `ReconnectPolicy.kt`): **3, 6, 12, 24, 48, 96, 96, … s ±10 %**, счётчик сбрасывается после успешного соединения. Отличия от Android-клиента:
+**maxly-core** (`reconnectDelay(attempt, random)`, `ReconnectPolicy.kt`): **3, 6, 12, 24, 48, 96, 96, … s ±10 %**, счётчик сбрасывается после успешного соединения. Отличия от Android-клиента:
 
 - после обрыва рабочего соединения ядро тоже ждёт ~3 s, а не переподключается сразу (защита от шторма переподключений);
 - сброса при смене сети и при возврате в foreground нет: ядро не знает о сети и жизненном цикле приложения (возможное продолжение — `reconnectNow()` для приложений);
@@ -257,7 +257,7 @@ Push `cmd=0`, opcode 3, тело `{redirectHost: String, tls: Boolean}`; `redire
 
 **Android-клиент:** пустой `redirectHost` — просто перезапуск сессии на том же хосте. Непустой — хост, порт и `tls` сохраняются в настройках, затем сессия перезапускается. Проверки домена нет. Использует ли релизная сборка сохранённый хост, по декомпилированному коду подтвердить не удалось (адрес по умолчанию там зашит).
 
-**max-kmp-core** (`MaxTransport`, `ServerRedirect.evaluate`):
+**maxly-core** (`MaxTransport`, `ServerRedirect.evaluate`):
 
 | Тело | Действие |
 |------|----------|
@@ -330,7 +330,7 @@ PyMax: `check_password(track_id, password)` → `AUTH_LOGIN_CHECK_PASSWORD` (115
 
 Ошибка — кадр `cmd=3` с телом `{error, message, localizedMessage?, title?, description?}`. Android-клиент принудительно выходит из аккаунта при `error` = `login.token`, `login.blocked` или `login.flood`: код ошибки запоминается для экрана входа, аккаунт и токен удаляются. `login.flood` отдельно не обрабатывается. Для текста берётся `title`, иначе `localizedMessage`.
 
-**max-kmp-core:**
+**maxly-core:**
 
 - `LoginRejection.of(e)`: `login.token` → `TOKEN`, `login.blocked` → `BLOCKED`, `login.flood` → `FLOOD`. Старые признаки `FAIL_LOGIN_TOKEN` / `FAIL_LOGOUT_ALL` в `error` или `message` остаются запасным вариантом и дают `TOKEN`.
 - Отказ — `InvalidTokenException(reason)`, `FatalSessionError`: автопереподключение останавливается, тот же токен не повторяется.
@@ -978,7 +978,7 @@ JSON envelopes: command+sequence / response / notification; keepalive text `ping
 
 ---
 
-## J. Рекомендуемая модульная раскладка max-kmp-core
+## J. Рекомендуемая модульная раскладка maxly-core
 
 > **Рекомендация, не факт.** Раздел описывает предлагаемую структуру; Kotlin-исходники этим коммитом **не** менялись. Старт с Android: P0 = всё, что нужно для входа по SMS и отправки/приёма сообщений.
 >
@@ -988,19 +988,19 @@ JSON envelopes: command+sequence / response / notification; keepalive text `ping
 
 | Пакет | Файл (существует) | P0: что добавить |
 |-------|-------------------|------------------|
-| `com.max.core.protocol` | `Framing.kt` (`Framing`, `Packet`) | encode/decode 10-байтного заголовка, `packetTotalLen`, `PacketReceiver` (reassembly, лимит 16 MiB) |
-| `com.max.core.protocol` | — (новый `Compression.kt`) | LZ4-block out ≥32 B, flag = `raw/comp + 1`; in: sniff Zstd / LZ4-frame / LZ4-block, лимит 32 MiB |
-| `com.max.core.protocol` | `Opcodes.kt` (`Opcodes`) | полный union kolibri ∪ PyMax (см. §E) + `name(code)` |
-| `com.max.core.protocol` | `MessagePack.kt` (`MessagePackCodec`) | msgpack ↔ `MsgValue` (Map/Array/Binary/Ext/Int keys) |
-| `com.max.core.transport` | `TlsTransport.kt` (`TlsTransport`, `TransportConfig`) | TLS-сокет, proxy, opt-in Минцифры CA, `Dispatcher` (seq→pending, pushes) |
-| `com.max.core.session` | `SessionMachine.kt` (`SessionMachine`, `SessionState`) | handshake 6, ping 30 s, backoff 2/4/8/15 |
-| `com.max.core.auth` | `Auth.kt` (`AuthApi`) → новый `AuthService.kt` | AUTH_REQUEST → AUTH → LOGIN; `ChatCacheFingerprint` |
-| `com.max.shared` | `Session.kt` (`Session`, `Push`) | фасад над `SessionMachine` + `AuthService` |
+| `com.maxly.core.protocol` | `Framing.kt` (`Framing`, `Packet`) | encode/decode 10-байтного заголовка, `packetTotalLen`, `PacketReceiver` (reassembly, лимит 16 MiB) |
+| `com.maxly.core.protocol` | — (новый `Compression.kt`) | LZ4-block out ≥32 B, flag = `raw/comp + 1`; in: sniff Zstd / LZ4-frame / LZ4-block, лимит 32 MiB |
+| `com.maxly.core.protocol` | `Opcodes.kt` (`Opcodes`) | полный union kolibri ∪ PyMax (см. §E) + `name(code)` |
+| `com.maxly.core.protocol` | `MessagePack.kt` (`MessagePackCodec`) | msgpack ↔ `MsgValue` (Map/Array/Binary/Ext/Int keys) |
+| `com.maxly.core.transport` | `TlsTransport.kt` (`TlsTransport`, `TransportConfig`) | TLS-сокет, proxy, opt-in Минцифры CA, `Dispatcher` (seq→pending, pushes) |
+| `com.maxly.core.session` | `SessionMachine.kt` (`SessionMachine`, `SessionState`) | handshake 6, ping 30 s, backoff 2/4/8/15 |
+| `com.maxly.core.auth` | `Auth.kt` (`AuthApi`) → новый `AuthService.kt` | AUTH_REQUEST → AUTH → LOGIN; `ChatCacheFingerprint` |
+| `com.maxly.shared` | `Session.kt` (`Session`, `Push`) | фасад над `SessionMachine` + `AuthService` |
 
 ### J.2 Ключевые сигнатуры P0 (эскиз)
 
 ```kotlin
-// com/max/core/protocol/Framing.kt
+// com/maxly/core/protocol/Framing.kt
 object Framing {
     const val HEADER_SIZE = 10
     const val PROTOCOL_VERSION: UByte = 10u
@@ -1012,7 +1012,7 @@ object Framing {
 data class Packet(val ver: UByte, val cmd: UByte, val seq: UShort, val opcode: UShort, val payload: ByteArray)
 object Cmd { const val REQUEST: UByte = 0u; const val OK: UByte = 1u; const val NOT_FOUND: UByte = 2u; const val ERROR: UByte = 3u }
 
-// com/max/core/protocol/Opcodes.kt
+// com/maxly/core/protocol/Opcodes.kt
 object Opcodes {
     const val PING: UShort = 1u; const val SESSION_INIT: UShort = 6u
     const val AUTH_REQUEST: UShort = 17u; const val AUTH: UShort = 18u; const val LOGIN: UShort = 19u
@@ -1022,13 +1022,13 @@ object Opcodes {
     fun name(code: UShort): String
 }
 
-// com/max/core/protocol/MessagePack.kt
+// com/maxly/core/protocol/MessagePack.kt
 object MessagePackCodec {
     fun encode(value: MsgValue): ByteArray
     fun decode(bytes: ByteArray): MsgValue          // empty -> MsgValue.Nil
 }
 
-// com/max/core/transport/TlsTransport.kt
+// com/maxly/core/transport/TlsTransport.kt
 interface TlsTransport {
     suspend fun connect(config: TransportConfig)
     suspend fun send(bytes: ByteArray)
@@ -1039,7 +1039,7 @@ data class TransportConfig(val host: String, val port: Int = 443, val proxyUrl: 
                            val trustMincifryCa: Boolean = false,
                            val connectTimeoutMs: Long = 15_000, val requestTimeoutMs: Long = 30_000)
 
-// com/max/core/session/SessionMachine.kt
+// com/maxly/core/session/SessionMachine.kt
 class SessionMachine(transport: TlsTransport, config: SessionConfig) {
     val state: StateFlow<SessionState>
     val pushes: SharedFlow<Packet>
@@ -1050,7 +1050,7 @@ class SessionMachine(transport: TlsTransport, config: SessionConfig) {
     suspend fun disconnect()
 }
 
-// com/max/core/auth/AuthService.kt (new)
+// com/maxly/core/auth/AuthService.kt (new)
 class AuthService(private val session: SessionMachine, private val digests: ApkDigests) {
     suspend fun requestCode(phone: String, language: String = "ru"): String          // -> temp token
     suspend fun verifyCode(tempToken: String, code: String): VerifyResult           // tokenAttrs.LOGIN / passwordChallenge / REGISTER
@@ -1061,7 +1061,7 @@ object ChatCacheFingerprint {
     fun compute(d: ApkDigests, callsSeed: Long, deviceId: String): ByteArray        // 96 B
 }
 
-// com/max/shared/Session.kt
+// com/maxly/shared/Session.kt
 interface Session {
     suspend fun connect(): SessionInfo
     suspend fun request(opcode: UShort, payload: ByteArray): ByteArray
@@ -1075,7 +1075,7 @@ interface Session {
 Эскизы `MediaUploader` и `CallSignaling` из ранней версии документа устарели; фактический код:
 
 ```kotlin
-// com/max/core/media/MediaApi.kt — control plane (PyMax UploadService) + CDN (kolibri upload.rs)
+// com/maxly/core/media/MediaApi.kt — control plane (PyMax UploadService) + CDN (kolibri upload.rs)
 class MediaApi(sink: RequestSink, http: MediaHttp = defaultMediaHttp(), userAgent: String, events: Flow<MaxEvent>?, ...) {
     // каждый upload есть в трёх вариантах: ByteArray, UploadSource (потоково), path (открыть файл с диска)
     suspend fun uploadPhoto(source: UploadSource, fileName: String = "image.jpg", profile: Boolean = false, progress: UploadProgress? = null): OutgoingAttachment.Photo
@@ -1087,12 +1087,12 @@ class MediaApi(sink: RequestSink, http: MediaHttp = defaultMediaHttp(), userAgen
     suspend fun sendMessage(chatId, attachments, text, ...)   // 64 + повтор на attachment.not.ready
 }
 
-// com/max/core/media/UploadSource.kt — потоковые тела без загрузки файла в память
+// com/maxly/core/media/UploadSource.kt — потоковые тела без загрузки файла в память
 interface UploadSource : AutoCloseable { val size: Long; val filePath: String?; fun read(position: Long, buffer: ByteArray, offset: Int, length: Int): Int }
 expect fun fileUploadSource(path: String): UploadSource  // JVM/Android: FileChannel (позиционное чтение); iOS: POSIX pread
 class UploadBody(parts: List<Part>)                      // Bytes | Range(source, start, length); writeTo сегментами по 64 KiB
 
-// com/max/core/media/MediaHttp.kt — CDN-клиент платформы
+// com/maxly/core/media/MediaHttp.kt — CDN-клиент платформы
 fun interface MediaHttp {
     suspend fun request(method, url, headers, body: ByteArray, progress): HttpResponse
     suspend fun upload(method, url, headers, body: UploadBody, progress): HttpResponse  // по умолчанию → request(body.toByteArray())
@@ -1101,7 +1101,7 @@ fun interface MediaHttp {
 // UrlSessionMediaHttp (iOS): целый файл → uploadTaskWithRequest:fromFile: (ОС читает с диска);
 //   multipart фото и чанки видео (≤ chunkSize) собираются в NSData.
 
-// com/max/core/calls — decodeVcp (kolibri vcp.rs), CallsApi.requestCallsToken (158), NOTIF_CALL_START (137).
+// com/maxly/core/calls — decodeVcp (kolibri vcp.rs), CallsApi.requestCallsToken (158), NOTIF_CALL_START (137).
 // ws2-сигналинг и WebRTC остаются на стороне приложения (см. opcodes.md).
 ```
 
@@ -1116,7 +1116,7 @@ fun interface MediaHttp {
 ### J.4 Итоговое состояние API и фасада
 
 Эскиз `Session` из J.2 остался только как низкоуровневый интерфейс; основной вход — `MaxClient`
-в `:shared` (`com.max.shared`):
+в `:shared` (`com.maxly.shared`):
 
 ```kotlin
 class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStore = PlatformSession.defaultStore(...), ...) {
@@ -1139,7 +1139,7 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
 - События: `MaxEvents.all` → `EventRouter` (применяет к `MaxStore`, затем обработчики `on<T>`).
 - Reconnect: `SessionMachine` повторяет handshake и `LOGIN` с sync-маркерами; `MaxClient` после
   re-login догружает `CHAT_HISTORY` страницами назад, пока страница не перекроет локальный хвост или история не кончится; дыра из `MaxState.historyGaps()` одной короткой страницей не закрывается.
-- Ошибки: `Throwable.toMaxError()` (`com.max.core.MaxError`) — вид и признак повтора.
+- Ошибки: `Throwable.toMaxError()` (`com.maxly.core.MaxError`) — вид и признак повтора.
 - Не реализовано из-за неизвестного payload — список в [opcodes.md](opcodes.md#блокеры-нужен-снятый-трафик).
 
 ## K. Открытые вопросы
@@ -1187,8 +1187,8 @@ class MaxClient(config: MaxClientConfig = MaxClientConfig(), store: KeyValueStor
 3. **Opcode 8:** kolibri `CONTACTS_GET` vs PyMax `LOGIN2`.
 4. **Opcode 158:** kolibri `OK_TOKEN` vs PyMax `CALLS_TOKEN`.
 5. **Opcode 166:** `VIDEO_CHAT_JOIN_BY_LINK` vs `VIDEO_CHAT_JOIN`.
-6. **Backoff:** kolibri 2/4/8/15 s; PyMax fixed `reconnect_delay=1.0`; Android-клиент и max-kmp-core — 3 s → 96 s, ±10 % (§C.4).
+6. **Backoff:** kolibri 2/4/8/15 s; PyMax fixed `reconnect_delay=1.0`; Android-клиент и maxly-core — 3 s → 96 s, ±10 % (§C.4).
 7. **Handshake:** kolibri условно опускает пустые/нулевые поля; PyMax mobile всегда шлёт `clientSessionId` (1..70).
 8. **Вход после SMS:** kolibri — `LOGIN` 19 только в `call_bot` примерах (без `userAgent`, `exp` = `0b32`); PyMax — `SyncPayload` с `userAgent`, `configHash`, `exp` = `0a32`, затем опционально `LOGIN2` (8).
-9. **PING:** оба 30 s; kolibri fire-and-forget после первого интервала, PyMax — request сразу; Android-клиент и max-kmp-core — 29 s, первый сразу, fire-and-forget, плюс ответ на серверный `PING` (§C.3).
+9. **PING:** оба 30 s; kolibri fire-and-forget после первого интервала, PyMax — request сразу; Android-клиент и maxly-core — 29 s, первый сразу, fire-and-forget, плюс ответ на серверный `PING` (§C.3).
 10. **Минцифры:** kolibri opt-in Root+Sub; PyMax Root всегда.
