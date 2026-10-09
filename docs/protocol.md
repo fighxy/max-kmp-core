@@ -899,6 +899,8 @@ User-Agent: `OKMessages/{appVersion} ({osVersion}; {deviceName}; {screen})` (`co
 | 293 | `TranscriptionReady` | как разбор расшифровки, нужен `messageId`; в мосте по-прежнему `transcription` |
 | 136 | `AttachmentFailed` | любой пуш с непустым `error`, даже если есть id; `kind` и `id` берутся из `fileId` / `videoId` / `audioId` (в том же порядке), `null` без id. `AttachmentReady` только без `error`. В мосте `attachError`: id в `messageId` (десятичной строкой), тип (`file` / `video` / `audio`) в `title`, пусто без id |
 
+Загрузки `MediaApi` (файл, видео, видео по частям, повтор `MSG_SEND` для голосового и кружка) ждут не только `AttachmentReady`, но и `AttachmentFailed` с тем же типом и id: такой пуш сразу обрывает загрузку `ServerErrorException` с `errorKey` = `error` пуша (`ErrorKind.SERVER`, в iOS-колбэке kind `SERVER` и этот ключ); `AttachmentFailed` без id загрузку не трогает, таймаут 60 с прежний.
+
 **Не делались в этом шаге:** звонки 163/165/167, сторис, 150 ассеты, 147/148 геолокация, 143 ответ callback, 140 удаление диапазона, 20 выход из аккаунта, 86 видимость закрепа чата (`{chatId, show}` — это не список закрепов сообщений), 292 баннеры, 305 список голосовавших. У 135 по-прежнему нет полей «последняя реакция». Отложенные и опросы — §G.5.
 
 ### G.5 Отложенные сообщения и опросы
