@@ -20,7 +20,7 @@ kotlin {
             }
         }
         target.binaries.framework {
-            baseName = "MaxCore"
+            baseName = "MaxlyProtocol"
             isStatic = true
         }
     }

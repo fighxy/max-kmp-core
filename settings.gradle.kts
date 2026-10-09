@@ -13,7 +13,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "max-kmp-core"
+rootProject.name = "maxly-core"
 
 include(":core")
 include(":shared")

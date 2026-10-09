@@ -6,7 +6,7 @@ import androidx.compose.ui.window.application
 
 /** Minimal desktop shell. TODO: connect shared Session. */
 fun main() = application {
-    Window(onCloseRequest = ::exitApplication, title = "max-kmp-core") {
-        Text("max-kmp-core desktop skeleton")
+    Window(onCloseRequest = ::exitApplication, title = "Maxly") {
+        Text("maxly-core desktop skeleton")
     }
 }

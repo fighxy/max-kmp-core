@@ -5,7 +5,7 @@ plugins {
 }
 
 kotlin {
-    val xcframework = XCFramework("MaxIos")
+    val xcframework = XCFramework("MaxlyCore")
     listOf(
         iosArm64(),
         iosSimulatorArm64(),
@@ -19,9 +19,9 @@ kotlin {
             }
         }
         target.binaries.framework {
-            baseName = "MaxIos"
+            baseName = "MaxlyCore"
             isStatic = true
-            binaryOption("bundleId", "com.max.ios.MaxIos")
+            binaryOption("bundleId", "com.maxly.ios.MaxlyCore")
             xcframework.add(this)
         }
     }

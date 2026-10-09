@@ -1,5 +1,5 @@
 # Compiles and tests :core and :shared for iOS Simulator arm64 (and JVM, Android compile of
-# :core, :shared and :android, plus the :ios MaxIos simulator framework) on macOS. The Linux agent
+# :core, :shared and :android, plus the :ios MaxlyCore simulator framework) on macOS. The Linux agent
 # that authors the Network.framework code cannot run Kotlin/Native for iOS; this workflow is the
 # compile check. None of the targets are run on a device.
 name: iOS core

@@ -11,7 +11,7 @@ kotlin {
         iosSimulatorArm64(),
     ).forEach { target ->
         target.binaries.framework {
-            baseName = "MaxShared"
+            baseName = "MaxlyShared"
             isStatic = true
         }
     }

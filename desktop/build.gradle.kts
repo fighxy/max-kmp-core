@@ -23,7 +23,7 @@ compose.desktop {
         mainClass = "com.maxly.desktop.MainKt"
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
-            packageName = "max-kmp-desktop"
+            packageName = "maxly-desktop"
             packageVersion = "1.0.0"
         }
     }

@@ -11,6 +11,6 @@ plugins {
 }
 
 allprojects {
-    group = "com.max.kmp"
+    group = "com.maxly"
     version = "0.1.0-SNAPSHOT"
 }
