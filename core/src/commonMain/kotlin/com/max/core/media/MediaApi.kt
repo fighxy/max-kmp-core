@@ -13,9 +13,13 @@ import com.max.core.protocol.Opcode
 import com.max.core.session.SessionMachine
 import com.max.core.session.UserAgentInfo
 import com.max.core.session.randomHexId
+import com.max.core.protocol.PROTOCOL_VERSION
+import com.max.core.protocol.PacketHeader
 import com.max.core.transport.ServerErrorException
+import com.max.core.transport.TransportPacket
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -23,7 +27,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -45,7 +52,9 @@ const val DEFAULT_PHOTO_URL_REFRESH_BATCH: Int = 100
  *
  * Upload flow (PyMax): request a slot over the socket → POST the bytes to the slot URL through
  * [http] → for files and videos wait for `NOTIF_ATTACH` 136 ([MaxEvent.AttachmentReady]) → put
- * the resulting [OutgoingAttachment] into [sendMessage].
+ * the resulting [OutgoingAttachment] into [sendMessage]. A `NOTIF_ATTACH` with an `error` for the same
+ * kind and id ([MaxEvent.AttachmentFailed]) fails the wait at once with a [ServerErrorException]
+ * whose `errorKey` is that `error`; a failure push without an id cannot be matched and is ignored.
  *
  * Every upload takes an optional [UploadProgress] (kolibri `ProgressFn`). Videos can also go in
  * parallel resumable chunks ([uploadVideoParallel], kolibri `upload_video`). Stickers:
@@ -529,11 +538,17 @@ class MediaApi(
         if (pending == null || events == null) return sendUntilReady(chatId, payload, notReadyAttempts, notReadyDelay)
         return coroutineScope {
             val seen = MutableStateFlow(emptySet<Pair<MaxEvent.AttachmentReady.Kind, Long>>())
+            val failed = MutableStateFlow<MaxEvent.AttachmentFailed?>(null)
             val collector = launch(start = CoroutineStart.UNDISPATCHED) {
-                events.filterIsInstance<MaxEvent.AttachmentReady>().collect { e -> seen.value = seen.value + (e.kind to e.id) }
+                events.collect { e ->
+                    when {
+                        e is MaxEvent.AttachmentReady -> seen.value = seen.value + (e.kind to e.id)
+                        e is MaxEvent.AttachmentFailed && e.matches(pending.first, pending.second) && failed.value == null -> failed.value = e
+                    }
+                }
             }
             try {
-                sendWhenReady(chatId, payload, pending, seen, notReadyDelay)
+                sendWhenReady(chatId, payload, pending, seen, notReadyDelay, failed)
             } finally {
                 collector.cancel()
             }
@@ -544,7 +559,8 @@ class MediaApi(
      * `MSG_SEND` of a voice or note [payload]. While the server answers `attachment.not.ready`
      * (or `errors.process.attachment.video.not.ready`, its key for voice and notes) the frame
      * goes again after the readiness push for [pending] or [notReadyDelay], whichever comes
-     * first, for [readyTimeout] at most; then [UploadException].
+     * first, for [readyTimeout] at most; then [UploadException]. A failure push for [pending]
+     * ([failed]) ends the wait at once with [attachmentFailure].
      */
     private suspend fun sendWhenReady(
         chatId: Long,
@@ -552,10 +568,12 @@ class MediaApi(
         pending: Pair<MaxEvent.AttachmentReady.Kind, Long>,
         seen: kotlinx.coroutines.flow.StateFlow<Set<Pair<MaxEvent.AttachmentReady.Kind, Long>>>,
         notReadyDelay: Duration = 1.seconds,
+        failed: kotlinx.coroutines.flow.StateFlow<MaxEvent.AttachmentFailed?> = MutableStateFlow(null),
     ): MaxMessage {
         val attempts = maxOf(1, (readyTimeout / notReadyDelay).toInt())
         var attempt = 1
         while (true) {
+            failed.value?.let { throw attachmentFailure(it) }
             try {
                 return messages.sendPrepared(chatId, payload)
             } catch (e: ServerErrorException) {
@@ -565,7 +583,8 @@ class MediaApi(
                 }
             }
             attempt++
-            withTimeoutOrNull(notReadyDelay) { seen.first { pending in it } }
+            failed.value?.let { throw attachmentFailure(it) }
+            withTimeoutOrNull(notReadyDelay) { merge(seen.map { pending in it }, failed.map { it != null }).first { it } }
         }
     }
 
@@ -642,6 +661,9 @@ class MediaApi(
      * A missing signal does not fail the upload: the bytes are on the CDN, and the push can be lost
      * with a reconnect. The attachment is returned anyway and `MSG_SEND` decides, repeating on
      * `attachment.not.ready` like Komet ([sendMessage] with `notReadyAttempts`).
+     *
+     * A failure push for the same kind and [id] ([MaxEvent.AttachmentFailed]) cancels the upload
+     * or the wait and throws [attachmentFailure] at once. One without an id is ignored.
      */
     private suspend fun awaitReady(id: Long, kind: MaxEvent.AttachmentReady.Kind, upload: suspend () -> Unit) {
         val events = events
@@ -653,13 +675,54 @@ class MediaApi(
             val ready = async(start = CoroutineStart.UNDISPATCHED) {
                 events.filterIsInstance<MaxEvent.AttachmentReady>().first { it.kind == kind && it.id == id }
             }
+            val failed = async(start = CoroutineStart.UNDISPATCHED) {
+                events.filterIsInstance<MaxEvent.AttachmentFailed>().first { it.matches(kind, id) }
+            }
             try {
-                upload()
-                withTimeoutOrNull(readyTimeout) { ready.await() }
+                failFast(failed) { upload() }
+                failFast(failed) { withTimeoutOrNull(readyTimeout) { ready.await() } }
             } finally {
                 ready.cancel()
+                failed.cancel()
             }
         }
+    }
+
+    /**
+     * Runs [block], but a [failed] push that arrives first cancels it and throws
+     * [attachmentFailure].
+     */
+    private suspend fun <T> failFast(failed: Deferred<MaxEvent.AttachmentFailed>, block: suspend () -> T): T {
+        if (failed.isCompleted) throw attachmentFailure(failed.await())
+        return coroutineScope {
+            val work = async { block() }
+            select {
+                work.onAwait { it }
+                failed.onAwait { push ->
+                    work.cancel()
+                    throw attachmentFailure(push)
+                }
+            }
+        }
+    }
+
+    private fun MaxEvent.AttachmentFailed.matches(kind: MaxEvent.AttachmentReady.Kind, id: Long): Boolean =
+        this.kind == kind && this.id == id
+
+    /**
+     * The server refused the upload ([MaxEvent.AttachmentFailed] for its kind and id): a
+     * [ServerErrorException] with [ServerErrorException.errorKey] = the push's `error`, so
+     * `toMaxError()` gives `ErrorKind.SERVER` with that key. [ServerErrorException.packet] is the
+     * `NOTIF_ATTACH` push (header rebuilt, `seq` 0).
+     */
+    private fun attachmentFailure(push: MaxEvent.AttachmentFailed): ServerErrorException {
+        val kindName = push.kind?.name?.lowercase() ?: "attachment"
+        return ServerErrorException(
+            message = "$kindName upload failed id=${push.id}: ${push.error}",
+            errorKey = push.error,
+            rawMessage = push.error,
+            packet = TransportPacket(PacketHeader(PROTOCOL_VERSION, 0, 0, push.opcode.toShort(), 0, false), push.raw),
+        )
     }
 
     private fun fileNameOf(path: String): String = path.substringAfterLast('/').substringAfterLast('\\').ifEmpty { "file" }

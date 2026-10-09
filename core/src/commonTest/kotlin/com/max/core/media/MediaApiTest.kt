@@ -2,6 +2,7 @@
 
 package com.max.core.media
 
+import com.max.core.ErrorKind
 import com.max.core.api.MaxMessage
 import com.max.core.api.MalformedReplyException
 import com.max.core.auth.AuthApi
@@ -23,6 +24,7 @@ import com.max.core.transport.ServerErrorException
 import com.max.core.transport.TransportConfig
 import com.max.core.transport.TransportPacket
 import com.max.core.transport.ok
+import com.max.core.toMaxError
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.advanceTimeBy
@@ -317,6 +319,95 @@ class MediaApiTest {
         assertTrue(waiting.isActive)
         advanceTimeBy(2_000)
         assertEquals(OutgoingAttachment.Video(20, "video-token"), waiting.await())
+    }
+
+    private fun attachFailed(kind: MaxEvent.AttachmentReady.Kind?, id: Long?, error: String = "upload.failed") =
+        MaxEvent.AttachmentFailed(error, 136, null, kind, id)
+
+    @Test
+    fun uploadFailsFastOnMatchingAttachmentFailure() = runTest {
+        val events = MutableSharedFlow<MaxEvent>()
+        val slot = mapOf("info" to listOf(mapOf("url" to "https://vu.test/f?id=30", "fileId" to 30, "token" to "ft")))
+        val http = FakeHttp()
+        http.onPost = { events.emit(attachFailed(MaxEvent.AttachmentReady.Kind.FILE, 30, "file.too.big")) }
+        val api = MediaApi(FakeSink(slot, slot), http, ua, events, clock)
+        val e = assertFailsWith<ServerErrorException> { api.uploadFile(byteArrayOf(1), "f.bin") }
+        assertEquals("file.too.big", e.errorKey)
+        assertEquals(Opcode.NOTIF_ATTACH.value, e.packet.opcode)
+        assertEquals(0L, testScheduler.currentTime)
+        val error = e.toMaxError()
+        assertEquals(ErrorKind.SERVER, error.kind)
+        assertEquals("file.too.big", error.errorKey)
+
+        // the failure arrives while waiting for readiness after the POST
+        http.onPost = {}
+        val waiting = async { runCatching { api.uploadFile(byteArrayOf(1), "f.bin") } }
+        runCurrent()
+        advanceTimeBy(5_000)
+        assertTrue(waiting.isActive)
+        events.emit(attachFailed(MaxEvent.AttachmentReady.Kind.FILE, 30))
+        runCurrent()
+        assertEquals("upload.failed", assertIs<ServerErrorException>(waiting.await().exceptionOrNull()).errorKey)
+        assertEquals(5_000L, testScheduler.currentTime)
+    }
+
+    @Test
+    fun uploadIgnoresFailuresForOtherOrNoAttachment() = runTest {
+        val events = MutableSharedFlow<MaxEvent>()
+        val slot = mapOf("info" to listOf(mapOf("url" to "https://vu.test/v", "videoId" to 20, "token" to "video-token")))
+        val http = FakeHttp()
+        http.onPost = {
+            events.emit(attachFailed(MaxEvent.AttachmentReady.Kind.VIDEO, 21))
+            events.emit(attachFailed(MaxEvent.AttachmentReady.Kind.FILE, 20))
+            events.emit(attachFailed(null, null))
+            events.emit(frameEvent("readyVideo"))
+        }
+        val api = MediaApi(FakeSink(slot, slot), http, ua, events, clock)
+        assertEquals(OutgoingAttachment.Video(20, "video-token"), api.uploadVideo(byteArrayOf(9), "v.mp4"))
+
+        // unmatched failures and no readiness: the 60 s timeout still returns the attachment
+        http.onPost = {
+            events.emit(attachFailed(MaxEvent.AttachmentReady.Kind.VIDEO, 21))
+            events.emit(attachFailed(null, null))
+        }
+        val waiting = async { api.uploadVideo(byteArrayOf(9), "v.mp4") }
+        advanceTimeBy(59_000)
+        runCurrent()
+        assertTrue(waiting.isActive)
+        advanceTimeBy(2_000)
+        assertEquals(OutgoingAttachment.Video(20, "video-token"), waiting.await())
+    }
+
+    @Test
+    fun parallelVideoUploadFailsFastOnMatchingFailure() = runTest {
+        val events = MutableSharedFlow<MaxEvent>()
+        val slot = mapOf("info" to listOf(mapOf("url" to "https://vu.test/v", "videoId" to 20, "token" to "video-token")))
+        val waiting = async {
+            runCatching { MediaApi(FakeSink(slot), ChunkCdn(), ua, events, clock).uploadVideoParallel(ByteArray(10), chunkSize = 4) }
+        }
+        runCurrent()
+        events.emit(attachFailed(MaxEvent.AttachmentReady.Kind.VIDEO, 20, "video.broken"))
+        runCurrent()
+        assertEquals("video.broken", assertIs<ServerErrorException>(waiting.await().exceptionOrNull()).errorKey)
+        assertEquals(0L, testScheduler.currentTime)
+    }
+
+    @Test
+    fun voiceSendFailsFastOnMatchingFailure() = runTest {
+        val events = MutableSharedFlow<MaxEvent>()
+        val note = OutgoingAttachment.VideoNote(20, "vn-token", 3500)
+        val sink = FakeSink(*Array(80) { serverError(Opcode.MSG_SEND, "attachment.not.ready") })
+        sink.onRequest = {
+            if (sink.sent.size == 1) {
+                events.emit(attachFailed(MaxEvent.AttachmentReady.Kind.VIDEO, 21))
+                events.emit(attachFailed(null, null))
+            }
+            if (sink.sent.size == 3) events.emit(attachFailed(MaxEvent.AttachmentReady.Kind.VIDEO, 20, "video.broken"))
+        }
+        val e = assertFailsWith<ServerErrorException> { MediaApi(sink, FakeHttp(), ua, events, clock).sendMessage(100, listOf(note)) }
+        assertEquals("video.broken", e.errorKey)
+        assertEquals(3, sink.sent.size)
+        assertEquals(2_000L, testScheduler.currentTime)
     }
 
     @Test
