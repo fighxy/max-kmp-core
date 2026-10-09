@@ -1,4 +1,26 @@
-# Maxly core (`maxly-core`)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/maxly-logo-black.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/brand/maxly-logo-white.png">
+    <img src="docs/brand/maxly-logo-white.png" alt="Maxly" width="120">
+  </picture>
+</p>
+
+<h1 align="center">Maxly Core</h1>
+
+<p align="center">Ядро Maxly на Kotlin Multiplatform: клиент протокола MAX для iOS, Android и Desktop.</p>
+
+<p align="center">
+  <img alt="Kotlin Multiplatform" src="https://img.shields.io/badge/Kotlin_Multiplatform-7F52FF?style=flat&logo=kotlin&logoColor=white">
+  <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-2.1-7F52FF?style=flat&logo=kotlin&logoColor=white">
+  <img alt="Swift / iOS" src="https://img.shields.io/badge/Swift%20%2F%20iOS-F05138?style=flat&logo=swift&logoColor=white">
+  <img alt="Android" src="https://img.shields.io/badge/Android-3DDC84?style=flat&logo=android&logoColor=white">
+  <img alt="JVM Desktop" src="https://img.shields.io/badge/JVM_Desktop-007396?style=flat&logo=openjdk&logoColor=white">
+  <img alt="Gradle" src="https://img.shields.io/badge/Gradle-02303A?style=flat&logo=gradle&logoColor=white">
+  <img alt="msgpack" src="https://img.shields.io/badge/msgpack-555555?style=flat">
+  <img alt="TLS" src="https://img.shields.io/badge/TLS-555555?style=flat">
+  <a href="https://github.com/fighxy/maxly-core/actions/workflows/ios-core.yml"><img alt="iOS core CI" src="https://img.shields.io/github/actions/workflow/status/fighxy/maxly-core/ios-core.yml?branch=main&style=flat&label=CI&logo=githubactions&logoColor=white"></a>
+</p>
 
 Нативное сетевое ядро мессенджера Max на **Kotlin Multiplatform**.
 
