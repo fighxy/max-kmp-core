@@ -144,8 +144,11 @@ class PinsApiTest {
 
         val failed = EventParser.parse(Opcode.NOTIF_ATTACH.value, 0, mapOf("error" to "upload.failed"))
         assertEquals("upload.failed", assertIs<MaxEvent.AttachmentFailed>(failed).error)
-        val readyFile = EventParser.parse(Opcode.NOTIF_ATTACH.value, 0, mapOf("fileId" to 4L, "error" to "ignored"))
-        assertIs<MaxEvent.AttachmentReady>(readyFile)
+        val failedFile = assertIs<MaxEvent.AttachmentFailed>(
+            EventParser.parse(Opcode.NOTIF_ATTACH.value, 0, mapOf("fileId" to 4L, "error" to "upload.failed")),
+        )
+        assertEquals(MaxEvent.AttachmentReady.Kind.FILE, failedFile.kind)
+        assertEquals(4L, failedFile.id)
     }
 
     private class FakeSink(vararg replies: Any?) : RequestSink {

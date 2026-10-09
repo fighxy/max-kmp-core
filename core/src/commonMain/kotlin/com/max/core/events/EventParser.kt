@@ -22,7 +22,7 @@ import com.max.core.transport.TransportPacket
  * | `NOTIF_MARK` 130 | [MaxEvent.MessageRead] |
  * | `NOTIF_PRESENCE` 132 | [MaxEvent.Presence] |
  * | `NOTIF_MSG_REACTIONS_CHANGED` 155 | [MaxEvent.ReactionsChanged] |
- * | `NOTIF_ATTACH` 136 | [MaxEvent.AttachmentReady] (`fileId` / `videoId` / `audioId`) |
+ * | `NOTIF_ATTACH` 136 | [MaxEvent.AttachmentFailed] when `error` is non-empty (with the id, if any), else [MaxEvent.AttachmentReady] (`fileId` / `videoId` / `audioId`) |
  * | `NOTIF_CALL_START` 137 | [MaxEvent.CallStart] (`callerId` + `conversationId`; `vcp` decoded when present) |
  * | `NOTIF_CONFIG` 134 | [MaxEvent.ConfigUpdated] (`{config}` or `chats` / `user` / `server` / `hash` at the top; at least one of them) |
  * | `NOTIF_FOLDERS` 277 | [MaxEvent.FoldersChanged] (`folders` / `folder`, `foldersOrder`, `folderSync`; at least one of them) |
@@ -92,11 +92,15 @@ object EventParser {
             val video = map["videoId"].long()
             val audio = map["audioId"].long()
             val error = map["error"] as? String
+            val (kind, id) = when {
+                file != null -> MaxEvent.AttachmentReady.Kind.FILE to file
+                video != null -> MaxEvent.AttachmentReady.Kind.VIDEO to video
+                audio != null -> MaxEvent.AttachmentReady.Kind.AUDIO to audio
+                else -> null to null
+            }
             when {
-                file != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.FILE, file, opcode, raw)
-                video != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.VIDEO, video, opcode, raw)
-                audio != null -> MaxEvent.AttachmentReady(MaxEvent.AttachmentReady.Kind.AUDIO, audio, opcode, raw)
-                !error.isNullOrEmpty() -> MaxEvent.AttachmentFailed(error, opcode, raw)
+                !error.isNullOrEmpty() -> MaxEvent.AttachmentFailed(error, opcode, raw, kind, id)
+                kind != null && id != null -> MaxEvent.AttachmentReady(kind, id, opcode, raw)
                 else -> null
             }
         }

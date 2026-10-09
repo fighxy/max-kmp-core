@@ -116,6 +116,7 @@ sealed interface MaxEvent {
      * PyMax `resolve_attach` tries, in this order, `FileUploadSignal {fileId}` → `FILE_READY`,
      * `VideoUploadSignal {videoId}` → `VIDEO_READY`, `AudioUploadSignal {audioId}` → `VOICE_READY`
      * (`src/pymax/types/events/{file,video,voice}.py`); its upload service waits for these.
+     * Only when `error` is missing or empty; otherwise the push is [AttachmentFailed].
      */
     data class AttachmentReady(val kind: Kind, val id: Long, override val opcode: Int, override val raw: Any?) : MaxEvent {
         enum class Kind { FILE, VIDEO, AUDIO }
@@ -269,13 +270,17 @@ sealed interface MaxEvent {
     ) : MaxEvent
 
     /**
-     * An attachment failed (`NOTIF_ATTACH` 136 with `error` and no `fileId` / `videoId` / `audioId`).
-     * A push that names an id stays [AttachmentReady]; the error string is not on that event.
+     * An attachment failed (`NOTIF_ATTACH` 136 with a non-empty `error`). The error wins over any id:
+     * such a push is never [AttachmentReady]. [kind] and [id] name the failed upload, taken from
+     * `fileId`, `videoId` or `audioId` (first present, same order as [AttachmentReady]); both are
+     * `null` when the push carries no id.
      */
     data class AttachmentFailed(
         val error: String,
         override val opcode: Int,
         override val raw: Any?,
+        val kind: AttachmentReady.Kind? = null,
+        val id: Long? = null,
     ) : MaxEvent
 
     /**
