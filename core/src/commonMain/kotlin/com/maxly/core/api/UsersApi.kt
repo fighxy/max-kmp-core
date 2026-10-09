@@ -197,7 +197,7 @@ data class PhoneContact(val phone: String, val firstName: String, val lastName: 
 data class ContactByPhone(val user: MaxUser, val isNew: Boolean)
 
 /**
- * Phone numbers for matching the device address book against users, by the rules the Orbitle
+ * Phone numbers for matching the device address book against users, by the rules the Maxly
  * iOS and Android clients share (fixtures `test-fixtures/names/`):
  *
  * 1. spaces (any whitespace, also no-break), dashes (`-` and every Unicode dash: non-breaking

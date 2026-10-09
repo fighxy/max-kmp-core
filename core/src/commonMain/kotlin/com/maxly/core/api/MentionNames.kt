@@ -35,7 +35,7 @@ object MentionNames {
 }
 
 /**
- * Search among loaded group members (shared Orbitle rule, fixture `members/search.json`): a
+ * Search among loaded group members (shared Maxly rule, fixture `members/search.json`): a
  * case-insensitive substring of the full name or of the mention name, `ё` = `е`, the query
  * trimmed, an empty query matches everyone. A query starting with `@` searches only the
  * mention name (`"@"` alone matches everyone). The order of the list is kept.

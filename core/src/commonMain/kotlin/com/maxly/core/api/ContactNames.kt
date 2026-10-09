@@ -1,7 +1,7 @@
 package com.maxly.core.api
 
 /**
- * The one rule for the name a client shows for a user (shared by the Orbitle clients, fixtures
+ * The one rule for the name a client shows for a user (shared by the Maxly clients, fixtures
  * `test-fixtures/names/`), first match wins:
  *
  * 1. the name from the device address book (supplied by the client and matched on the device by

@@ -19,8 +19,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Replays the shared Orbitle fixtures vendored under `src/jvmTest/resources/fixtures/`.
- * Source: fighxy/Orbitle, branch `ios/evening`, commit 8f859e1, `test-fixtures/` (see
+ * Replays the shared Maxly fixtures vendored under `src/jvmTest/resources/fixtures/`.
+ * Source: fighxy/Maxly, branch `ios/evening`, commit 8f859e1, `test-fixtures/` (see
  * `fixtures/SOURCE.md`); update the copies, not the cases, when the shared rule changes.
  */
 class SharedFixturesTest {

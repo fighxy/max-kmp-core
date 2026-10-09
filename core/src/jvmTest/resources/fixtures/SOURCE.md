@@ -1,6 +1,6 @@
-Vendored copies of the shared Orbitle fixtures, unchanged.
+Vendored copies of the shared Maxly fixtures, unchanged.
 
-Source: repository `fighxy/Orbitle`, branch `ios/evening`, commit `8f859e1`, directory
+Source: repository `fighxy/Maxly`, branch `ios/evening`, commit `8f859e1`, directory
 `test-fixtures/`. Copied files (the core-level ones), all replayed by `SharedFixturesTest`:
 
 - `names/phone-normalize.json`, `names/address-book.json`, `names/display-name.json`

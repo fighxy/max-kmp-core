@@ -49,7 +49,7 @@ object TextElementType {
  * @property extra every key of a received element other than `type`, `from`, `length`,
  *   `entityId`, `entityName` and `attributes`, for any type (nested maps, lists and numbers as
  *   decoded; integer numbers as `Long`). Kept by [copy] and sent after the known keys
- *   ([toPayload]), so an edit keeps markup of other clients (shared Orbitle rule,
+ *   ([toPayload]), so an edit keeps markup of other clients (shared Maxly rule,
  *   `formatting/README.md`).
  */
 data class TextElement(
@@ -124,7 +124,7 @@ data class TextElement(
             TextElement(TextElementType.ANIMOJI, from, length, entityId = animojiId, attributes = mapOf("animojiLottieUrl" to lottieUrl))
 
         /**
-         * One received element, read as the MAX web client reads it and as the shared Orbitle
+         * One received element, read as the MAX web client reads it and as the shared Maxly
          * rule (`formatting/parse-*.json`) says: a missing `from` is `0`, a missing `length` runs
          * to the end of the text ([textLength]; without it such an element is dropped), a zero
          * or negative length is dropped. With [textLength] an element starting at or after the

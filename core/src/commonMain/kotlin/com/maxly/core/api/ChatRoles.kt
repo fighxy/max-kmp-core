@@ -130,7 +130,7 @@ data class ChatMembersResult(val members: List<ChatMemberEntry>, val nextMarker:
     /**
      * [loaded] members followed by the new ones of this page (a repeated user id keeps its first
      * entry), and the marker of the next request: [nextMarker], but `null` when the page brought
-     * no new member (shared Orbitle rule, `members/paging.json`).
+     * no new member (shared Maxly rule, `members/paging.json`).
      */
     fun appendTo(loaded: List<ChatMemberEntry>): ChatMembersResult {
         val seen = loaded.mapNotNullTo(HashSet()) { it.userId }
@@ -141,7 +141,7 @@ data class ChatMembersResult(val members: List<ChatMemberEntry>, val nextMarker:
     companion object {
         /**
          * [members] in list order: the owner, then admins, then everyone else, each group in the
-         * server's order (shared Orbitle rule, `members/roles.json`).
+         * server's order (shared Maxly rule, `members/roles.json`).
          */
         fun byRole(members: List<ChatMemberEntry>): List<ChatMemberEntry> = members.sortedBy { it.role.ordinal }
 

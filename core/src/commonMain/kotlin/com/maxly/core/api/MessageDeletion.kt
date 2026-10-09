@@ -39,7 +39,7 @@ data class DeletePlan(
 )
 
 /**
- * Who may delete what (shared Orbitle rule, fixture `selection/delete.json`; the MAX web client's
+ * Who may delete what (shared Maxly rule, fixture `selection/delete.json`; the MAX web client's
  * `Message.canDelete` for the same chat kinds):
  *
  * | chat | rule |
@@ -129,7 +129,7 @@ object MessageDeletion {
         plan(state, chatId, messageIds, editTimeoutSeconds, epochMillis())
 }
 
-/** Order of a forwarded selection (shared Orbitle rule, fixture `selection/forward.json`). */
+/** Order of a forwarded selection (shared Maxly rule, fixture `selection/forward.json`). */
 object ForwardOrder {
     /**
      * [messageIds] without repeats, oldest first by [times] (equal times by id as a number); ids

@@ -22,7 +22,7 @@ data class MaxDraft(
     val attaches: List<Map<*, *>> get() = (raw["attaches"] as? List<*>).orEmpty().filterIsInstance<Map<*, *>>()
 
     /**
-     * No draft at all: blank text (after trimming) and no [replyTo] (shared Orbitle rule, fixtures
+     * No draft at all: blank text (after trimming) and no [replyTo] (shared Maxly rule, fixtures
      * `test-fixtures/drafts/merge.json`; a reply alone is a draft, attachments do not count).
      */
     val isEmpty: Boolean get() = text.isBlank() && replyTo == null
@@ -113,7 +113,7 @@ object Drafts {
 
     /**
      * Rule for a draft saved on another device (push 152): only a strictly later [incoming]
-     * replaces [stored]; on an equal time ours stays (shared Orbitle rule, fixture
+     * replaces [stored]; on an equal time ours stays (shared Maxly rule, fixture
      * `drafts/merge.json` `equal-keeps-local`).
      */
     fun mergeRemote(stored: MaxDraft?, incoming: MaxDraft): MaxDraft =
@@ -122,7 +122,7 @@ object Drafts {
     /**
      * What the composer of one chat should show, from the app's own [local] draft, the server
      * draft kept in the store ([server], `MaxState.draftOf`) and the chat's discard mark
-     * ([discardedAt], `MaxState.draftDiscardedAt`). Shared Orbitle rule (fixture
+     * ([discardedAt], `MaxState.draftDiscardedAt`). Shared Maxly rule (fixture
      * `drafts/merge.json`):
      * 1. an empty draft ([MaxDraft.isEmpty]) counts as none;
      * 2. of the two drafts the later `updateTime` wins, on an equal time [local] stays;
